@@ -1,0 +1,13 @@
+[package]
+name = "smtlib-lower"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+smtlib-syntax = { path = "../smtlib-syntax" }
+
+[dev-dependencies]
+smtlib-lexer = { path = "../smtlib-lexer" }
+
+[lints]
+workspace = true

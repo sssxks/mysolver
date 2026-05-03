@@ -1,6 +1,26 @@
-[package]
-name = "mysolver"
+[workspace]
+members = [
+    "crates/euf-core",
+    "crates/mysolver-cli",
+    "crates/smtlib-lexer",
+    "crates/smtlib-lower",
+    "crates/smtlib-syntax",
+    "crates/solver-core",
+]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+missing_docs_in_private_items = "warn"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[profile.release]
+panic = "abort"

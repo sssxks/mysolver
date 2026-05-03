@@ -1,0 +1,10 @@
+[package]
+name = "smtlib-syntax"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+smtlib-lexer = { path = "../smtlib-lexer" }
+
+[lints]
+workspace = true

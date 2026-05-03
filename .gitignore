@@ -1,3 +1,6 @@
 test/fixture/
 target/
 agent_log/
+
+perf.data
+perf.data.old

@@ -1,0 +1,12 @@
+[package]
+name = "mysolver"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+smtlib-lexer = { path = "../smtlib-lexer" }
+smtlib-syntax = { path = "../smtlib-syntax" }
+solver-core = { path = "../solver-core" }
+
+[lints]
+workspace = true
