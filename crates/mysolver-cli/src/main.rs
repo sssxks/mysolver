@@ -2,10 +2,11 @@
 //! results for each `check-sat`.
 
 use std::io::Read;
+use std::sync::Arc;
 
+use lower::{Solver, SolverEvent};
 use smtlib_lexer::parse_many;
 use smtlib_syntax::Command;
-use solver_core::{Solver, SolverEvent};
 
 fn main() {
     let mut input = String::new();
@@ -23,9 +24,10 @@ fn main() {
         }
     };
 
+    let source = Arc::<str>::from(input);
     let mut solver = Solver::new();
     for expr in exprs {
-        let command = match Command::from_sexpr(expr) {
+        let command = match Command::from_sexpr(&source, expr) {
             Ok(command) => command,
             Err(error) => {
                 eprintln!("command error: {error}");

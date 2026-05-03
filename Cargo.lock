@@ -104,12 +104,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
-name = "mysolver"
+name = "lower"
 version = "0.1.0"
 dependencies = [
+ "euf-core",
  "smtlib-lexer",
  "smtlib-syntax",
  "solver-core",
+ "tar",
+ "zstd",
+]
+
+[[package]]
+name = "mysolver"
+version = "0.1.0"
+dependencies = [
+ "lower",
+ "smtlib-lexer",
+ "smtlib-syntax",
 ]
 
 [[package]]
@@ -163,14 +175,6 @@ name = "smtlib-lexer"
 version = "0.1.0"
 
 [[package]]
-name = "smtlib-lower"
-version = "0.1.0"
-dependencies = [
- "smtlib-lexer",
- "smtlib-syntax",
-]
-
-[[package]]
 name = "smtlib-syntax"
 version = "0.1.0"
 dependencies = [
@@ -182,10 +186,6 @@ name = "solver-core"
 version = "0.1.0"
 dependencies = [
  "euf-core",
- "smtlib-lexer",
- "smtlib-syntax",
- "tar",
- "zstd",
 ]
 
 [[package]]

@@ -64,18 +64,38 @@ impl TermId {
     }
 }
 
-/// Shape of one interned term.
+/// Stable identifier for one interned function symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FunId(u32);
+
+impl FunId {
+    /// Returns the internal dense index backing this function identifier.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// One interned EUF term represented as a function symbol plus argument terms.
+///
+/// Constants are encoded as nullary applications whose [`Self::args`] slice is empty.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TermKind {
-    /// Named constant symbol.
-    Const(Box<str>),
-    /// Uninterpreted function application.
-    App {
-        /// Function symbol name.
-        fun: Box<str>,
-        /// Argument term identifiers in call order.
-        args: Box<[TermId]>,
-    },
+pub struct Term {
+    /// Applied function symbol.
+    fun: FunId,
+    /// Argument term identifiers in call order.
+    args: Box<[TermId]>,
+}
+
+impl Term {
+    /// Returns the function symbol applied by this term.
+    pub fn fun(&self) -> FunId {
+        self.fun
+    }
+
+    /// Returns the argument terms in application order.
+    pub fn args(&self) -> &[TermId] {
+        &self.args
+    }
 }
 
 /// One theory atom to check under EUF.
@@ -120,8 +140,12 @@ impl std::error::Error for TheoryConflict {}
 /// Congruence-closure state for interned EUF terms.
 #[derive(Debug, Clone, Default)]
 pub struct EufSolver {
-    /// Interned [`TermKind`] values in ascending [`TermId`] order.
-    terms: Vec<TermKind>,
+    /// Interned function symbol names in ascending [`FunId`] order.
+    funs: Vec<Box<str>>,
+    /// Reverse map from symbol name to canonical [`FunId`].
+    fun_ids: HashMap<Box<str>, FunId>,
+    /// Interned [`Term`] values in ascending [`TermId`] order.
+    terms: Vec<Term>,
 }
 
 impl EufSolver {
@@ -130,22 +154,44 @@ impl EufSolver {
         Self::default()
     }
 
+    /// Interns a function symbol name and returns its stable identifier.
+    pub fn intern_fun(&mut self, name: impl Into<Box<str>>) -> FunId {
+        let name = name.into();
+        if let Some(&id) = self.fun_ids.get(name.as_ref()) {
+            return id;
+        }
+        debug_assert!(u32::try_from(self.funs.len()).is_ok());
+        let id = FunId(self.funs.len() as u32);
+        self.funs.push(name.clone());
+        self.fun_ids.insert(name, id);
+        id
+    }
+
     /// Interns a constant symbol and returns its stable identifier.
     pub fn intern_const(&mut self, name: impl Into<Box<str>>) -> TermId {
-        self.push_term(TermKind::Const(name.into()))
+        let fun = self.intern_fun(name);
+        self.intern_term(fun, Box::default())
     }
 
     /// Interns an uninterpreted function application and returns its identifier.
     pub fn intern_app(&mut self, fun: impl Into<Box<str>>, args: Box<[TermId]>) -> TermId {
-        self.push_term(TermKind::App {
-            fun: fun.into(),
-            args,
-        })
+        let fun = self.intern_fun(fun);
+        self.intern_term(fun, args)
+    }
+
+    /// Interns a term given its already-resolved function symbol and arguments.
+    pub fn intern_term(&mut self, fun: FunId, args: Box<[TermId]>) -> TermId {
+        self.push_term(Term { fun, args })
     }
 
     /// Returns the term arena in insertion order.
-    pub fn terms(&self) -> &[TermKind] {
+    pub fn terms(&self) -> &[Term] {
         &self.terms
+    }
+
+    /// Returns the original symbol name for `fun` when it exists in this solver.
+    pub fn fun_name(&self, fun: FunId) -> Option<&str> {
+        self.funs.get(fun.index()).map(Box::as_ref)
     }
 
     /// Checks whether the given atoms are jointly consistent in EUF.
@@ -199,11 +245,11 @@ impl EufSolver {
         EufCheckOutcome::Consistent
     }
 
-    /// Appends `kind`, assigns the next dense [`TermId`], and returns it.
-    fn push_term(&mut self, kind: TermKind) -> TermId {
+    /// Appends `term`, assigns the next dense [`TermId`], and returns it.
+    fn push_term(&mut self, term: Term) -> TermId {
         debug_assert!(u32::try_from(self.terms.len()).is_ok());
         let id = TermId(self.terms.len() as u32);
-        self.terms.push(kind);
+        self.terms.push(term);
         id
     }
 
@@ -239,8 +285,8 @@ impl EufSolver {
                 continue;
             }
             seen[index] = true;
-            if let Some(TermKind::App { args, .. }) = self.terms.get(index) {
-                for arg in args.iter().rev() {
+            if let Some(term) = self.terms.get(index) {
+                for arg in term.args().iter().rev() {
                     stack.push(arg.index());
                 }
             }
@@ -266,23 +312,21 @@ impl EufSolver {
                 return false;
             }
             let mut changed = false;
-            let mut signatures = HashMap::<(&str, Box<[usize]>), usize>::new();
+            let mut signatures = HashMap::<(FunId, Box<[usize]>), usize>::new();
 
             for &term_index in relevant_terms {
                 if !budget.checkpoint() {
                     return false;
                 }
-                let TermKind::App { fun, args } = &self.terms[term_index] else {
-                    continue;
-                };
-                let mut canonical_args = Vec::with_capacity(args.len());
-                for arg in args.iter() {
+                let term = &self.terms[term_index];
+                let mut canonical_args = Vec::with_capacity(term.args().len());
+                for arg in term.args().iter() {
                     if !budget.checkpoint() {
                         return false;
                     }
                     canonical_args.push(cc.find(arg.index()));
                 }
-                let signature = (fun.as_ref(), canonical_args.into_boxed_slice());
+                let signature = (term.fun(), canonical_args.into_boxed_slice());
                 if let Some(&other_term) = signatures.get(&signature) {
                     changed |= cc.union(term_index, other_term);
                 } else {
@@ -380,5 +424,23 @@ mod tests {
             euf.check_with_budget(&atoms, &mut fuel),
             EufCheckOutcome::Interrupted
         );
+    }
+
+    #[test]
+    fn stores_terms_as_function_applications() {
+        let mut euf = EufSolver::new();
+        let a = euf.intern_const("a");
+        let nullary_a = euf.intern_app("a", Box::default());
+        let fa = euf.intern_app("f", Box::new([a]));
+
+        let const_term = &euf.terms()[a.index()];
+        let nullary_term = &euf.terms()[nullary_a.index()];
+        let app_term = &euf.terms()[fa.index()];
+
+        assert_eq!(const_term.args(), &[]);
+        assert_eq!(nullary_term.args(), &[]);
+        assert_eq!(app_term.args(), &[a]);
+        assert_eq!(const_term.fun(), nullary_term.fun());
+        assert_eq!(euf.fun_name(app_term.fun()), Some("f"));
     }
 }

@@ -3,21 +3,27 @@
 //! The parser preserves byte spans on every parsed node so later stages can
 //! report syntax and command errors against the original input.
 
+use std::borrow::Cow;
 use std::fmt;
 
 /// Half-open byte range within the original input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     /// First byte covered by the span.
-    pub start: usize,
+    pub start: u32,
     /// First byte after the span.
-    pub end: usize,
+    pub end: u32,
 }
 
 impl Span {
     /// Creates a span from a start and end byte offset.
-    pub fn new(start: usize, end: usize) -> Self {
+    pub fn new(start: u32, end: u32) -> Self {
         Self { start, end }
+    }
+
+    /// Returns the exact source slice covered by this span.
+    pub fn slice<'a>(self, input: &'a str) -> &'a str {
+        &input[self.start as usize..self.end as usize]
     }
 }
 
@@ -37,8 +43,8 @@ pub enum TokenKind {
     OpenParen,
     /// `)`.
     CloseParen,
-    /// Any non-parenthesis atom after SMT-LIB quoting rules are applied.
-    Atom(Box<str>),
+    /// Any non-parenthesis atom.
+    Atom,
 }
 
 /// Parsed SMT-LIB S-expression tree.
@@ -46,8 +52,6 @@ pub enum TokenKind {
 pub enum SExpr {
     /// Atomic leaf expression.
     Atom {
-        /// Atom text after SMT-LIB quoting rules are applied.
-        text: Box<str>,
         /// Source span covering the atom.
         span: Span,
     },
@@ -64,14 +68,14 @@ impl SExpr {
     /// Returns the source span covering this entire expression.
     pub fn span(&self) -> Span {
         match self {
-            Self::Atom { span, .. } | Self::List { span, .. } => *span,
+            Self::Atom { span } | Self::List { span, .. } => *span,
         }
     }
 
-    /// Returns the atom text when this expression is atomic.
-    pub fn as_atom(&self) -> Option<&str> {
+    /// Returns the decoded atom text when this expression is atomic.
+    pub fn as_atom<'a>(&self, input: &'a str) -> Option<Cow<'a, str>> {
         match self {
-            Self::Atom { text, .. } => Some(text),
+            Self::Atom { span } => Some(decode_atom_text(span.slice(input))),
             Self::List { .. } => None,
         }
     }
@@ -118,6 +122,14 @@ impl std::error::Error for ParseError {}
 
 /// Parses zero or more top-level SMT-LIB S-expressions from `input`.
 pub fn parse_many(input: &str) -> Result<Box<[SExpr]>, ParseError> {
+    let input_len = input.len();
+    let max_len = u32::MAX as usize;
+    if input_len > max_len {
+        return Err(ParseError::new(
+            Span::new(u32::MAX, u32::MAX),
+            "input exceeds supported 4 GiB span range",
+        ));
+    }
     Parser::new(input).parse_many()
 }
 
@@ -154,14 +166,14 @@ impl<'a> Parser<'a> {
         match self.peek_char() {
             Some('(') => self.parse_list(),
             Some(')') => Err(ParseError::new(
-                Span::new(start, start + 1),
+                self.span(start, start + 1),
                 "unexpected close parenthesis",
             )),
             Some('|') => self.parse_bar_atom(),
             Some('"') => self.parse_string_atom(),
             Some(_) => self.parse_plain_atom(),
             None => Err(ParseError::new(
-                Span::new(start, start),
+                self.span(start, start),
                 "unexpected end of input",
             )),
         }
@@ -179,13 +191,13 @@ impl<'a> Parser<'a> {
                     self.consume_char();
                     return Ok(SExpr::List {
                         items: items.into_boxed_slice(),
-                        span: Span::new(start, self.pos),
+                        span: self.span(start, self.pos),
                     });
                 }
                 Some(_) => items.push(self.parse_expr()?),
                 None => {
                     return Err(ParseError::new(
-                        Span::new(start, self.pos),
+                        self.span(start, self.pos),
                         "unterminated list",
                     ));
                 }
@@ -197,50 +209,43 @@ impl<'a> Parser<'a> {
     fn parse_bar_atom(&mut self) -> Result<SExpr, ParseError> {
         let start = self.pos;
         self.consume_char();
-        let content_start = self.pos;
         while let Some(ch) = self.peek_char() {
             if ch == '|' {
-                let text = self.input[content_start..self.pos].into();
                 self.consume_char();
                 return Ok(SExpr::Atom {
-                    text,
-                    span: Span::new(start, self.pos),
+                    span: self.span(start, self.pos),
                 });
             }
             self.consume_char();
         }
         Err(ParseError::new(
-            Span::new(start, self.pos),
+            self.span(start, self.pos),
             "unterminated vertical-bar atom",
         ))
     }
 
-    /// Parses `"` ... `"` strings with doubled-quote escapes into an atom payload.
+    /// Parses `"` ... `"` strings with doubled-quote escapes.
     fn parse_string_atom(&mut self) -> Result<SExpr, ParseError> {
         let start = self.pos;
         self.consume_char();
-        let mut text = String::new();
         loop {
             match self.peek_char() {
                 Some('"') => {
                     self.consume_char();
                     if self.peek_char() == Some('"') {
-                        text.push('"');
                         self.consume_char();
                     } else {
                         return Ok(SExpr::Atom {
-                            text: text.into_boxed_str(),
-                            span: Span::new(start, self.pos),
+                            span: self.span(start, self.pos),
                         });
                     }
                 }
-                Some(ch) => {
-                    text.push(ch);
+                Some(_) => {
                     self.consume_char();
                 }
                 None => {
                     return Err(ParseError::new(
-                        Span::new(start, self.pos),
+                        self.span(start, self.pos),
                         "unterminated string",
                     ));
                 }
@@ -258,11 +263,10 @@ impl<'a> Parser<'a> {
             self.consume_char();
         }
         if self.pos == start {
-            return Err(ParseError::new(Span::new(start, start), "expected atom"));
+            return Err(ParseError::new(self.span(start, start), "expected atom"));
         }
         Ok(SExpr::Atom {
-            text: self.input[start..self.pos].into(),
-            span: Span::new(start, self.pos),
+            span: self.span(start, self.pos),
         })
     }
 
@@ -301,6 +305,44 @@ impl<'a> Parser<'a> {
     fn is_eof(&self) -> bool {
         self.pos >= self.input.len()
     }
+
+    /// Converts byte offsets known to fit into the public span representation.
+    fn span(&self, start: usize, end: usize) -> Span {
+        let Ok(start) = u32::try_from(start) else {
+            unreachable!("input length was validated before parsing")
+        };
+        let Ok(end) = u32::try_from(end) else {
+            unreachable!("input length was validated before parsing")
+        };
+        Span::new(start, end)
+    }
+}
+
+/// Decodes one atom slice according to SMT-LIB quoting rules.
+fn decode_atom_text(raw: &str) -> Cow<'_, str> {
+    match raw.as_bytes().first().copied() {
+        Some(b'|') => Cow::Borrowed(&raw[1..raw.len() - 1]),
+        Some(b'"') => decode_string_atom_text(raw),
+        _ => Cow::Borrowed(raw),
+    }
+}
+
+/// Decodes one SMT-LIB string atom, collapsing doubled-quote escapes on demand.
+fn decode_string_atom_text(raw: &str) -> Cow<'_, str> {
+    let inner = &raw[1..raw.len() - 1];
+    if !inner.contains("\"\"") {
+        return Cow::Borrowed(inner);
+    }
+
+    let mut text = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '"' && chars.peek() == Some(&'"') {
+            let _ = chars.next();
+        }
+        text.push(ch);
+    }
+    Cow::Owned(text)
 }
 
 #[cfg(test)]
@@ -319,9 +361,28 @@ mod tests {
         .expect("valid input");
         assert_eq!(exprs.len(), 2);
         assert_eq!(
-            exprs[0].as_list().expect("list")[2].as_atom(),
+            exprs[0].as_list().expect("list")[2]
+                .as_atom(
+                    r#"; x
+            (set-info :source |a
+            b|)
+            (set-info :license "x""y")
+        "#,
+                )
+                .as_deref(),
             Some("a\n            b")
         );
-        assert_eq!(exprs[1].as_list().expect("list")[2].as_atom(), Some("x\"y"));
+        assert_eq!(
+            exprs[1].as_list().expect("list")[2]
+                .as_atom(
+                    r#"; x
+            (set-info :source |a
+            b|)
+            (set-info :license "x""y")
+        "#,
+                )
+                .as_deref(),
+            Some("x\"y")
+        );
     }
 }

@@ -7,11 +7,12 @@ use std::fs::File;
 use std::io::Read;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use lower::{Fuel, SatResult, Solver, SolverEvent};
 use smtlib_lexer::parse_many;
-use smtlib_syntax::Command;
-use solver_core::{Fuel, SatResult, Solver, SolverEvent};
+use smtlib_syntax::{Command, ExpectedStatus};
 use tar::Archive;
 use zstd::stream::read::Decoder;
 
@@ -361,6 +362,7 @@ fn sample_qf_uf_archive_fixtures(
 }
 
 fn run_fixture(path: &str, input: &str, fuel_limit: Option<u64>) -> Result<usize, FixtureError> {
+    let source = Arc::<str>::from(input);
     let exprs = parse_many(input)
         .map_err(|error| FixtureError::new(path, format!("parse error: {error}")))?;
 
@@ -370,11 +372,15 @@ fn run_fixture(path: &str, input: &str, fuel_limit: Option<u64>) -> Result<usize
     let mut check_sat_count = 0usize;
 
     for expr in exprs {
-        let command = Command::from_sexpr(expr)
+        let command = Command::from_sexpr(&source, expr)
             .map_err(|error| FixtureError::new(path, format!("command error: {error}")))?;
         match command {
             Command::SetInfo(info) if info.expected_status.is_some() => {
-                expected_status = info.expected_status.map(SatResult::from);
+                expected_status = info.expected_status.map(|status| match status {
+                    ExpectedStatus::Sat => SatResult::Sat,
+                    ExpectedStatus::Unsat => SatResult::Unsat,
+                    ExpectedStatus::Unknown => SatResult::Unknown,
+                });
             }
             other => {
                 let event = match fuel.as_mut() {

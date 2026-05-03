@@ -1,9 +1,9 @@
 [workspace]
 members = [
     "crates/euf-core",
+    "crates/lower",
     "crates/mysolver-cli",
     "crates/smtlib-lexer",
-    "crates/smtlib-lower",
     "crates/smtlib-syntax",
     "crates/solver-core",
 ]

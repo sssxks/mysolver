@@ -1,13 +1,17 @@
 [package]
-name = "smtlib-lower"
+name = "lower"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+euf-core = { path = "../euf-core" }
+smtlib-lexer = { path = "../smtlib-lexer" }
 smtlib-syntax = { path = "../smtlib-syntax" }
+solver-core = { path = "../solver-core" }
 
 [dev-dependencies]
-smtlib-lexer = { path = "../smtlib-lexer" }
+tar = "0.4.44"
+zstd = "0.13.3"
 
 [lints]
 workspace = true
