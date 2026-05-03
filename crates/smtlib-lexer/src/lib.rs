@@ -22,7 +22,7 @@ impl Span {
     }
 
     /// Returns the exact source slice covered by this span.
-    pub fn slice<'a>(self, input: &'a str) -> &'a str {
+    pub fn slice(self, input: &str) -> &str {
         &input[self.start as usize..self.end as usize]
     }
 }

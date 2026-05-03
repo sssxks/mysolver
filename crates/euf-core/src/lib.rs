@@ -1,8 +1,9 @@
-//! Equality with uninterpreted functions over interned term identifiers.
+//! Equality with uninterpreted functions over caller-assigned symbol and term identifiers.
 //!
 //! This crate provides a minimal congruence-closure checker for the solver
-//! layer. Clients intern terms once, then ask whether a set of equality and
-//! disequality atoms is theory-consistent.
+//! layer. Callers own any surface-level symbol tables, allocate opaque
+//! [`FunId`] handles inside [`EufSolver`], intern terms once, then ask whether a
+//! set of equality and disequality atoms is theory-consistent.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -137,61 +138,46 @@ impl fmt::Display for TheoryConflict {
 
 impl std::error::Error for TheoryConflict {}
 
-/// Congruence-closure state for interned EUF terms.
+/// Congruence-closure state for caller-interned EUF terms.
 #[derive(Debug, Clone, Default)]
 pub struct EufSolver {
-    /// Interned function symbol names in ascending [`FunId`] order.
-    funs: Vec<Box<str>>,
-    /// Reverse map from symbol name to canonical [`FunId`].
-    fun_ids: HashMap<Box<str>, FunId>,
+    /// Next unallocated function-symbol identity.
+    next_fun: u32,
     /// Interned [`Term`] values in ascending [`TermId`] order.
     terms: Vec<Term>,
 }
 
 impl EufSolver {
-    /// Creates an empty EUF solver with no interned terms.
+    /// Creates an empty EUF solver with no allocated symbols or interned terms.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Interns a function symbol name and returns its stable identifier.
-    pub fn intern_fun(&mut self, name: impl Into<Box<str>>) -> FunId {
-        let name = name.into();
-        if let Some(&id) = self.fun_ids.get(name.as_ref()) {
-            return id;
-        }
-        debug_assert!(u32::try_from(self.funs.len()).is_ok());
-        let id = FunId(self.funs.len() as u32);
-        self.funs.push(name.clone());
-        self.fun_ids.insert(name, id);
+    /// Allocates one fresh uninterpreted function symbol identity.
+    ///
+    /// The caller is responsible for mapping any higher-level symbol namespace
+    /// onto this opaque handle.
+    pub fn alloc_fun(&mut self) -> FunId {
+        let id = FunId(self.next_fun);
+        self.next_fun = self.next_fun.wrapping_add(1);
+        debug_assert!(self.next_fun != 0, "function id space exhausted");
         id
-    }
-
-    /// Interns a constant symbol and returns its stable identifier.
-    pub fn intern_const(&mut self, name: impl Into<Box<str>>) -> TermId {
-        let fun = self.intern_fun(name);
-        self.intern_term(fun, Box::default())
-    }
-
-    /// Interns an uninterpreted function application and returns its identifier.
-    pub fn intern_app(&mut self, fun: impl Into<Box<str>>, args: Box<[TermId]>) -> TermId {
-        let fun = self.intern_fun(fun);
-        self.intern_term(fun, args)
     }
 
     /// Interns a term given its already-resolved function symbol and arguments.
     pub fn intern_term(&mut self, fun: FunId, args: Box<[TermId]>) -> TermId {
-        self.push_term(Term { fun, args })
+        let EufSolver { next_fun, terms } = self;
+        debug_assert!(fun.0 < *next_fun, "term uses an unallocated function id");
+        let term = Term { fun, args };
+        debug_assert!(u32::try_from(terms.len()).is_ok());
+        let id = TermId(terms.len() as u32);
+        terms.push(term);
+        id
     }
 
     /// Returns the term arena in insertion order.
     pub fn terms(&self) -> &[Term] {
         &self.terms
-    }
-
-    /// Returns the original symbol name for `fun` when it exists in this solver.
-    pub fn fun_name(&self, fun: FunId) -> Option<&str> {
-        self.funs.get(fun.index()).map(Box::as_ref)
     }
 
     /// Checks whether the given atoms are jointly consistent in EUF.
@@ -243,14 +229,6 @@ impl EufSolver {
             }
         }
         EufCheckOutcome::Consistent
-    }
-
-    /// Appends `term`, assigns the next dense [`TermId`], and returns it.
-    fn push_term(&mut self, term: Term) -> TermId {
-        debug_assert!(u32::try_from(self.terms.len()).is_ok());
-        let id = TermId(self.terms.len() as u32);
-        self.terms.push(term);
-        id
     }
 
     /// Collects the terms that can matter to the current atom set.
@@ -405,10 +383,13 @@ mod tests {
     #[test]
     fn closes_congruence() {
         let mut euf = EufSolver::new();
-        let a = euf.intern_const("a");
-        let b = euf.intern_const("b");
-        let fa = euf.intern_app("f", Box::new([a]));
-        let fb = euf.intern_app("f", Box::new([b]));
+        let a_fun = euf.alloc_fun();
+        let b_fun = euf.alloc_fun();
+        let f_fun = euf.alloc_fun();
+        let a = euf.intern_term(a_fun, Box::default());
+        let b = euf.intern_term(b_fun, Box::default());
+        let fa = euf.intern_term(f_fun, Box::new([a]));
+        let fb = euf.intern_term(f_fun, Box::new([b]));
         let atoms = [TheoryAtom::Eq(a, b), TheoryAtom::Diseq(fa, fb)];
         assert!(euf.check(&atoms).is_err());
     }
@@ -416,8 +397,10 @@ mod tests {
     #[test]
     fn interrupts_when_fuel_runs_out() {
         let mut euf = EufSolver::new();
-        let a = euf.intern_const("a");
-        let b = euf.intern_const("b");
+        let a_fun = euf.alloc_fun();
+        let b_fun = euf.alloc_fun();
+        let a = euf.intern_term(a_fun, Box::default());
+        let b = euf.intern_term(b_fun, Box::default());
         let atoms = [TheoryAtom::Eq(a, b)];
         let mut fuel = Fuel::new(0);
         assert_eq!(
@@ -429,9 +412,11 @@ mod tests {
     #[test]
     fn stores_terms_as_function_applications() {
         let mut euf = EufSolver::new();
-        let a = euf.intern_const("a");
-        let nullary_a = euf.intern_app("a", Box::default());
-        let fa = euf.intern_app("f", Box::new([a]));
+        let a_fun = euf.alloc_fun();
+        let f_fun = euf.alloc_fun();
+        let a = euf.intern_term(a_fun, Box::default());
+        let nullary_a = euf.intern_term(a_fun, Box::default());
+        let fa = euf.intern_term(f_fun, Box::new([a]));
 
         let const_term = &euf.terms()[a.index()];
         let nullary_term = &euf.terms()[nullary_a.index()];
@@ -441,6 +426,6 @@ mod tests {
         assert_eq!(nullary_term.args(), &[]);
         assert_eq!(app_term.args(), &[a]);
         assert_eq!(const_term.fun(), nullary_term.fun());
-        assert_eq!(euf.fun_name(app_term.fun()), Some("f"));
+        assert_eq!(app_term.fun(), f_fun);
     }
 }

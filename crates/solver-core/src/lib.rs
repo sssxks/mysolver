@@ -77,6 +77,8 @@ impl BoolVar {
     }
 }
 
+use std::ops::Not;
+
 /// DIMACS-style signed literal referencing one [`BoolVar`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Lit {
@@ -102,17 +104,21 @@ impl Lit {
         self.positive
     }
 
+    /// Returns the dense watch-list slot for this literal.
+    fn watch_index(self) -> usize {
+        (self.var.0 as usize) * 2 + usize::from(!self.positive)
+    }
+}
+
+impl Not for Lit {
+    type Output = Self;
+
     /// Negates polarity while keeping the same underlying [`BoolVar`].
-    pub fn not(self) -> Self {
+    fn not(self) -> Self::Output {
         Self {
             var: self.var,
             positive: !self.positive,
         }
-    }
-
-    /// Returns the dense watch-list slot for this literal.
-    fn watch_index(self) -> usize {
-        (self.var.0 as usize) * 2 + usize::from(!self.positive)
     }
 }
 
@@ -167,17 +173,6 @@ impl TheoryKey {
     }
 }
 
-/// Solves one already-lowered boolean-plus-EUF problem without a budget limit.
-pub fn solve(
-    next_bool_var: u32,
-    clauses: Vec<Box<[Lit]>>,
-    theory_atoms: Vec<(BoolVar, TheoryKey)>,
-    euf: EufSolver,
-) -> SatResult {
-    let mut budget = UnlimitedBudget;
-    solve_with_budget(next_bool_var, clauses, theory_atoms, euf, &mut budget)
-}
-
 /// Solves one already-lowered boolean-plus-EUF problem under `budget`.
 ///
 /// `next_bool_var` must be the first unallocated variable id, with all used
@@ -189,7 +184,7 @@ pub fn solve_with_budget<B: CheckBudget>(
     euf: EufSolver,
     budget: &mut B,
 ) -> SatResult {
-    Dpll::new(next_bool_var, clauses, theory_atoms, euf).solve(budget)
+    Cdcl::new(next_bool_var, clauses, theory_atoms, euf).solve(budget)
 }
 
 /// Sentinel budget used to preserve the unbounded entrypoint.
@@ -233,7 +228,7 @@ struct AssignmentEntry {
 }
 
 /// CDCL(T) search state with watched literals, clause learning, and eager EUF checks.
-struct Dpll {
+struct Cdcl {
     /// Boolean clauses guarding both pure props and bridged EUF predicates.
     clauses: Vec<Clause>,
     /// Clauses currently watching each literal polarity.
@@ -264,7 +259,7 @@ struct Dpll {
     has_empty_clause: bool,
 }
 
-impl Dpll {
+impl Cdcl {
     /// Prepares a solver reserving one slot per boolean variable (index zero stays unused).
     fn new(
         next_bool_var: u32,

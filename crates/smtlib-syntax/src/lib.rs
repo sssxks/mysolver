@@ -8,7 +8,6 @@
 
 use std::borrow::Cow;
 use std::fmt;
-use std::sync::Arc;
 
 use smtlib_lexer::{SExpr, Span};
 
@@ -58,7 +57,7 @@ pub enum Command {
     /// `(define-fun ...)`.
     DefineFun(DefineFun),
     /// `(assert ...)`.
-    Assert(TermExpr),
+    Assert(SExpr),
     /// `(push n)`.
     Push(u32),
     /// `(pop n)`.
@@ -132,7 +131,7 @@ pub struct DefineFun {
     /// Result sort.
     pub result: SortExpr,
     /// Function body expression.
-    pub body: TermExpr,
+    pub body: SExpr,
 }
 
 /// One `define-fun` binder.
@@ -149,40 +148,6 @@ pub struct Binder {
 pub enum SortExpr {
     /// Non-parametric sort reference.
     Simple(Symbol),
-}
-
-/// Term expression preserved as a syntax tree.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TermExpr {
-    /// Shared original source text backing every span in [`Self::expr`].
-    source: Arc<str>,
-    /// Parsed S-expression tree backing this logical term surface form.
-    expr: SExpr,
-}
-
-impl TermExpr {
-    /// Wraps a parsed S-expression as a term.
-    pub fn new(source: &Arc<str>, expr: SExpr) -> Self {
-        Self {
-            source: Arc::clone(source),
-            expr,
-        }
-    }
-
-    /// Returns the underlying syntax tree.
-    pub fn sexpr(&self) -> &SExpr {
-        &self.expr
-    }
-
-    /// Returns the original source text backing the stored syntax tree.
-    pub fn source(&self) -> &str {
-        self.source.as_ref()
-    }
-
-    /// Returns the shared source handle backing the stored syntax tree.
-    pub fn shared_source(&self) -> &Arc<str> {
-        &self.source
-    }
 }
 
 /// Failure while converting an S-expression into a [`Command`].
@@ -218,7 +183,7 @@ impl std::error::Error for CommandError {}
 
 impl Command {
     /// Parses one SMT-LIB command from a pre-parsed S-expression.
-    pub fn from_sexpr(source: &Arc<str>, expr: SExpr) -> Result<Self, CommandError> {
+    pub fn from_sexpr(source: &str, expr: SExpr) -> Result<Self, CommandError> {
         let span = expr.span();
         let items = expr
             .as_list()
@@ -242,7 +207,7 @@ impl Command {
                 let term = items
                     .get(1)
                     .ok_or_else(|| CommandError::new(span, "assert missing term"))?;
-                Ok(Self::Assert(TermExpr::new(source, term.clone())))
+                Ok(Self::Assert(term.clone()))
             }
             "push" => Ok(Self::Push(parse_optional_count(source, items, 1)?)),
             "pop" => Ok(Self::Pop(parse_optional_count(source, items, 1)?)),
@@ -257,12 +222,12 @@ impl Command {
 }
 
 /// Interprets `(set-info ...)` into [`Command::SetInfo`], validating `:status` values.
-fn parse_set_info(source: &Arc<str>, items: &[SExpr]) -> Result<Command, CommandError> {
+fn parse_set_info(source: &str, items: &[SExpr]) -> Result<Command, CommandError> {
     let span = items[0].span();
     let keyword = Keyword::new(atom_at(source, items, 1, "info keyword")?.into_owned());
     let value = items
         .get(2)
-        .and_then(|expr| expr.as_atom(source.as_ref()))
+        .and_then(|expr| expr.as_atom(source))
         .map(|text| text.into_owned().into_boxed_str());
     let expected_status = if keyword.as_str() == ":status" {
         match value.as_deref() {
@@ -288,7 +253,7 @@ fn parse_set_info(source: &Arc<str>, items: &[SExpr]) -> Result<Command, Command
 }
 
 /// Builds [`Command::DeclareFun`] after parsing argument-sort list and result sort.
-fn parse_declare_fun(source: &Arc<str>, items: &[SExpr]) -> Result<Command, CommandError> {
+fn parse_declare_fun(source: &str, items: &[SExpr]) -> Result<Command, CommandError> {
     let name = Symbol::new(atom_at(source, items, 1, "function name")?.into_owned());
     let arg_items = items
         .get(2)
@@ -301,15 +266,15 @@ fn parse_declare_fun(source: &Arc<str>, items: &[SExpr]) -> Result<Command, Comm
         .into_boxed_slice();
     let result = parse_sort(
         source,
-        items.get(3).ok_or_else(|| {
-            CommandError::new(items[0].span(), "declare-fun missing result sort")
-        })?,
+        items
+            .get(3)
+            .ok_or_else(|| CommandError::new(items[0].span(), "declare-fun missing result sort"))?,
     )?;
     Ok(Command::DeclareFun(DeclareFun { name, args, result }))
 }
 
 /// Builds [`Command::DefineFun`] after parsing binder list, result sort, and body.
-fn parse_define_fun(source: &Arc<str>, items: &[SExpr]) -> Result<Command, CommandError> {
+fn parse_define_fun(source: &str, items: &[SExpr]) -> Result<Command, CommandError> {
     let name = Symbol::new(atom_at(source, items, 1, "function name")?.into_owned());
     let binder_items = items
         .get(2)
@@ -322,9 +287,9 @@ fn parse_define_fun(source: &Arc<str>, items: &[SExpr]) -> Result<Command, Comma
         .into_boxed_slice();
     let result = parse_sort(
         source,
-        items.get(3).ok_or_else(|| {
-            CommandError::new(items[0].span(), "define-fun missing result sort")
-        })?,
+        items
+            .get(3)
+            .ok_or_else(|| CommandError::new(items[0].span(), "define-fun missing result sort"))?,
     )?;
     let body = items
         .get(4)
@@ -333,12 +298,12 @@ fn parse_define_fun(source: &Arc<str>, items: &[SExpr]) -> Result<Command, Comma
         name,
         binders,
         result,
-        body: TermExpr::new(source, body.clone()),
+        body: body.clone(),
     }))
 }
 
 /// Parses `(name sort)` binder pairs nested inside `(define-fun ...)`.
-fn parse_binder(source: &Arc<str>, expr: &SExpr) -> Result<Binder, CommandError> {
+fn parse_binder(source: &str, expr: &SExpr) -> Result<Binder, CommandError> {
     let items = expr
         .as_list()
         .ok_or_else(|| CommandError::new(expr.span(), "binder must be a list"))?;
@@ -354,10 +319,10 @@ fn parse_binder(source: &Arc<str>, expr: &SExpr) -> Result<Binder, CommandError>
 }
 
 /// Maps a lone symbol sort reference into [`SortExpr`]; rejects functor sorts here.
-fn parse_sort(source: &Arc<str>, expr: &SExpr) -> Result<SortExpr, CommandError> {
+fn parse_sort(source: &str, expr: &SExpr) -> Result<SortExpr, CommandError> {
     match expr {
         SExpr::Atom { .. } => {
-            let Some(text) = expr.as_atom(source.as_ref()) else {
+            let Some(text) = expr.as_atom(source) else {
                 unreachable!("atom arm guarantees atom text")
             };
             Ok(SortExpr::Simple(Symbol::new(text.into_owned())))
@@ -371,7 +336,7 @@ fn parse_sort(source: &Arc<str>, expr: &SExpr) -> Result<SortExpr, CommandError>
 
 /// Returns the atomic string payload at `index` inside `items` or fails with [`CommandError`].
 fn atom_at<'a>(
-    source: &'a Arc<str>,
+    source: &'a str,
     items: &'a [SExpr],
     index: usize,
     what: &str,
@@ -379,20 +344,16 @@ fn atom_at<'a>(
     let expr = items
         .get(index)
         .ok_or_else(|| CommandError::new(items[0].span(), format!("missing {what}")))?;
-    expr.as_atom(source.as_ref())
+    expr.as_atom(source)
         .ok_or_else(|| CommandError::new(expr.span(), format!("{what} must be an atom")))
 }
 
 /// Reads an optional repeating command count atom, defaulting to `1` when absent.
-fn parse_optional_count(
-    source: &Arc<str>,
-    items: &[SExpr],
-    index: usize,
-) -> Result<u32, CommandError> {
+fn parse_optional_count(source: &str, items: &[SExpr], index: usize) -> Result<u32, CommandError> {
     match items.get(index) {
         Some(expr) => {
             let span = expr.span();
-            let Some(text) = expr.as_atom(source.as_ref()) else {
+            let Some(text) = expr.as_atom(source) else {
                 return Err(CommandError::new(span, "count must be an atom"));
             };
             parse_u32(text.as_ref(), span)
@@ -409,17 +370,15 @@ fn parse_u32(text: &str, span: Span) -> Result<u32, CommandError> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use smtlib_lexer::parse_many;
 
     use super::*;
 
     #[test]
     fn parses_expected_status() {
-        let source = Arc::<str>::from("(set-info :status unsat)");
-        let exprs = parse_many(source.as_ref()).expect("valid sexpr");
-        let command = Command::from_sexpr(&source, exprs[0].clone()).expect("valid command");
+        let source = "(set-info :status unsat)";
+        let exprs = parse_many(source).expect("valid sexpr");
+        let command = Command::from_sexpr(source, exprs[0].clone()).expect("valid command");
         assert!(matches!(
             command,
             Command::SetInfo(SetInfo {

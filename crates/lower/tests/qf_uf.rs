@@ -7,7 +7,6 @@ use std::fs::File;
 use std::io::Read;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lower::{Fuel, SatResult, Solver, SolverEvent};
@@ -362,17 +361,17 @@ fn sample_qf_uf_archive_fixtures(
 }
 
 fn run_fixture(path: &str, input: &str, fuel_limit: Option<u64>) -> Result<usize, FixtureError> {
-    let source = Arc::<str>::from(input);
+    let source = input;
     let exprs = parse_many(input)
         .map_err(|error| FixtureError::new(path, format!("parse error: {error}")))?;
 
-    let mut solver = Solver::new();
+    let mut solver = Solver::new(source);
     let mut fuel = fuel_limit.map(Fuel::new);
     let mut expected_status = None;
     let mut check_sat_count = 0usize;
 
     for expr in exprs {
-        let command = Command::from_sexpr(&source, expr)
+        let command = Command::from_sexpr(source, expr)
             .map_err(|error| FixtureError::new(path, format!("command error: {error}")))?;
         match command {
             Command::SetInfo(info) if info.expected_status.is_some() => {

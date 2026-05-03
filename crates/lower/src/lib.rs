@@ -13,11 +13,11 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use euf_core::{EufSolver, TermId};
+use euf_core::{EufSolver, FunId, TermId};
 use smtlib_lexer::SExpr;
-use smtlib_syntax::{Command, DefineFun, Symbol, TermExpr};
-pub use solver_core::{CheckBudget, Fuel, SatResult};
+use smtlib_syntax::{Command, DefineFun, Symbol};
 use solver_core::{BoolVar, Lit, TheoryKey, TheoryRelation};
+pub use solver_core::{CheckBudget, Fuel, SatResult};
 
 /// Result payload emitted by a `check-sat` command.
 pub type CheckSatResult = SatResult;
@@ -41,12 +41,12 @@ pub struct ActivationLiteral(pub u32);
 /// Structural EUF term key used to deduplicate lowering results before interning into [`EufSolver`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum EufTermKey {
-    /// Named constant symbol.
-    Const(Box<str>),
+    /// Nullary uninterpreted symbol allocated by the lowering layer.
+    Const(FunId),
     /// Uninterpreted function application.
     App {
-        /// Function symbol name.
-        fun: Box<str>,
+        /// Function symbol identity allocated by the lowering layer.
+        fun: FunId,
         /// Argument term identifiers in call order.
         args: Box<[TermId]>,
     },
@@ -58,7 +58,7 @@ pub struct AssertedFormula {
     /// Monotonic identifier assigned when the formula enters the assertion stack.
     pub id: AssertedFormulaId,
     /// Original SMT-LIB term as parsed by `smtlib-syntax`.
-    pub formula: TermExpr,
+    pub formula: SExpr,
 }
 
 /// Snapshot of one incremental frame.
@@ -108,23 +108,28 @@ impl std::error::Error for SolverError {}
 
 /// Incremental solver state for the supported SMT-LIB subset.
 #[derive(Debug, Default)]
-pub struct Solver {
+pub struct Solver<'src> {
+    /// Original SMT-LIB source text backing every stored S-expression span.
+    source: &'src str,
     /// Top-level asserted formulas in stack order across all active frames.
     assertions: Vec<AssertedFormula>,
     /// Frames recorded by `(push)`, newest last; [`Frame::asserted_len`] trims on `(pop)`.
     frames: Vec<Frame>,
     /// Zero-arity `define-fun` bodies keyed by declared symbol names.
-    definitions: HashMap<Symbol, TermExpr>,
+    definitions: HashMap<Symbol, SExpr>,
     /// Next monotonic [`FrameId`] counter for newly pushed scopes.
     next_frame: u32,
     /// Next reserved [`ActivationLiteral`] counter paired with frames.
     next_activation: u32,
 }
 
-impl Solver {
+impl<'src> Solver<'src> {
     /// Creates an empty solver with no declarations, assertions, or frames.
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(source: &'src str) -> Self {
+        Self {
+            source,
+            ..Self::default()
+        }
     }
 
     /// Applies one parsed SMT-LIB command to the incremental solver state.
@@ -187,7 +192,7 @@ impl Solver {
     /// semantic incompleteness and caller-imposed resource limits.
     pub fn check_sat_with_budget<B: CheckBudget>(&self, budget: &mut B) -> CheckSatResult {
         let mut budget = SearchBudget::new(budget);
-        let mut checker = SatEufCheck::new(&self.definitions);
+        let mut checker = SatEufCheck::new(self.source, &self.definitions);
         for asserted in &self.assertions {
             if !budget.checkpoint() {
                 return SatResult::Interrupted;
@@ -213,7 +218,7 @@ impl Solver {
     }
 
     /// Assigns [`AssertedFormulaId`] and pushes `formula` onto the assertion stack.
-    fn assert_formula(&mut self, formula: TermExpr) -> Result<(), SolverError> {
+    fn assert_formula(&mut self, formula: SExpr) -> Result<(), SolverError> {
         let id = AssertedFormulaId(
             self.assertions
                 .len()
@@ -306,11 +311,15 @@ impl<B: CheckBudget> CheckBudget for SearchBudget<'_, B> {
 }
 
 /// One-shot SAT+EUF checker built from solver definitions and asserted formulas.
-struct SatEufCheck<'a> {
+struct SatEufCheck<'src> {
+    /// Original SMT-LIB source text used to decode atoms from stored spans.
+    source: &'src str,
     /// Zero-arity definitional expansions available while lowering formulas.
-    definitions: &'a HashMap<Symbol, TermExpr>,
+    definitions: &'src HashMap<Symbol, SExpr>,
     /// Backend congruence solver sharing interned term ids.
     euf: EufSolver,
+    /// Surface-level uninterpreted symbol table owned by lowering rather than the EUF core.
+    fun_symbols: HashMap<Box<str>, FunId>,
     /// Structural EUF term cache mapping to reusable [`TermId`] handles.
     terms: HashMap<EufTermKey, TermId>,
     /// Boolean atom names mapped onto dedicated DIMACS-style literals.
@@ -327,12 +336,14 @@ struct SatEufCheck<'a> {
     next_term_proxy: u32,
 }
 
-impl<'a> SatEufCheck<'a> {
+impl<'src> SatEufCheck<'src> {
     /// Seeds an empty checker referencing `definitions` for macro expansion lookups.
-    fn new(definitions: &'a HashMap<Symbol, TermExpr>) -> Self {
+    fn new(source: &'src str, definitions: &'src HashMap<Symbol, SExpr>) -> Self {
         Self {
+            source,
             definitions,
             euf: EufSolver::new(),
+            fun_symbols: HashMap::new(),
             terms: HashMap::new(),
             bool_symbols: HashMap::new(),
             theory_atoms: Vec::new(),
@@ -344,9 +355,9 @@ impl<'a> SatEufCheck<'a> {
     }
 
     /// Parses `formula`, maps it through `self`, then encodes top-level satisfaction as clauses.
-    fn assert_formula(&mut self, formula: &TermExpr) -> Result<(), SolverError> {
+    fn assert_formula(&mut self, formula: &SExpr) -> Result<(), SolverError> {
         let mut env = HashMap::new();
-        let value = self.formula(formula.shared_source(), formula.sexpr(), &mut env)?;
+        let value = self.formula(formula, &mut env)?;
         self.assert_value(value);
         Ok(())
     }
@@ -365,17 +376,16 @@ impl<'a> SatEufCheck<'a> {
     /// Recursive boolean lowering for atoms, connectors, equality, `(ite)`, `(let)`, and definitions.
     fn formula(
         &mut self,
-        source: &std::sync::Arc<str>,
         expr: &SExpr,
-        env: &mut HashMap<Box<str>, TermExpr>,
+        env: &mut HashMap<Box<str>, SExpr>,
     ) -> Result<BoolValue, SolverError> {
-        if let Some(atom) = expr.as_atom(source.as_ref()) {
+        if let Some(atom) = expr.as_atom(self.source) {
             let atom = atom.as_ref();
             if let Some(bound) = env.get(atom).cloned() {
-                return self.formula(bound.shared_source(), bound.sexpr(), env);
+                return self.formula(&bound, env);
             }
             if let Some(definition) = self.definitions.get(&Symbol::new(atom)) {
-                return self.formula(definition.shared_source(), definition.sexpr(), env);
+                return self.formula(definition, env);
             }
             return Ok(match atom {
                 "true" => BoolValue::Const(true),
@@ -389,29 +399,29 @@ impl<'a> SatEufCheck<'a> {
             .ok_or_else(|| SolverError::new("formula must be an atom or list"))?;
         let head = items
             .first()
-            .and_then(|expr| expr.as_atom(source.as_ref()))
+            .and_then(|expr| expr.as_atom(self.source))
             .ok_or_else(|| SolverError::new("formula list must start with an atom"))?;
 
         match head.as_ref() {
-            "and" => self.formula_and(source, &items[1..], env),
-            "or" => self.formula_or(source, &items[1..], env),
-            "not" if items.len() == 2 => Ok(self.formula(source, &items[1], env)?.not()),
+            "and" => self.formula_and(&items[1..], env),
+            "or" => self.formula_or(&items[1..], env),
+            "not" if items.len() == 2 => Ok(self.formula(&items[1], env)?.not()),
             "=>" if items.len() == 3 => {
-                let premise = self.formula(source, &items[1], env)?.not();
-                let conclusion = self.formula(source, &items[2], env)?;
+                let premise = self.formula(&items[1], env)?.not();
+                let conclusion = self.formula(&items[2], env)?;
                 self.or_values([premise, conclusion])
             }
-            "=" => self.formula_equal(source, &items[1..], env),
-            "distinct" => self.formula_distinct(source, &items[1..], env),
+            "=" => self.formula_equal(&items[1..], env),
+            "distinct" => self.formula_distinct(&items[1..], env),
             "ite" if items.len() == 4 => {
-                let cond = self.formula(source, &items[1], env)?;
-                let then_value = self.formula(source, &items[2], env)?;
-                let else_value = self.formula(source, &items[3], env)?;
+                let cond = self.formula(&items[1], env)?;
+                let then_value = self.formula(&items[2], env)?;
+                let else_value = self.formula(&items[3], env)?;
                 let left = self.and_values([cond, then_value])?;
                 let right = self.and_values([cond.not(), else_value])?;
                 self.or_values([left, right])
             }
-            "let" if items.len() == 3 => self.formula_let(source, &items[1], &items[2], env),
+            "let" if items.len() == 3 => self.formula_let(&items[1], &items[2], env),
             _ => Err(SolverError::new(format!(
                 "unsupported formula shape headed by `{head}`"
             ))),
@@ -421,13 +431,12 @@ impl<'a> SatEufCheck<'a> {
     /// Builds the conjunction semantics for `"and"` with constant folding shortcuts.
     fn formula_and(
         &mut self,
-        source: &std::sync::Arc<str>,
         args: &[SExpr],
-        env: &mut HashMap<Box<str>, TermExpr>,
+        env: &mut HashMap<Box<str>, SExpr>,
     ) -> Result<BoolValue, SolverError> {
         let values = args
             .iter()
-            .map(|arg| self.formula(source, arg, env))
+            .map(|arg| self.formula(arg, env))
             .collect::<Result<Vec<_>, _>>()?;
         self.and_values(values)
     }
@@ -435,13 +444,12 @@ impl<'a> SatEufCheck<'a> {
     /// Builds the disjunction semantics for `"or"` with constant folding shortcuts.
     fn formula_or(
         &mut self,
-        source: &std::sync::Arc<str>,
         args: &[SExpr],
-        env: &mut HashMap<Box<str>, TermExpr>,
+        env: &mut HashMap<Box<str>, SExpr>,
     ) -> Result<BoolValue, SolverError> {
         let values = args
             .iter()
-            .map(|arg| self.formula(source, arg, env))
+            .map(|arg| self.formula(arg, env))
             .collect::<Result<Vec<_>, _>>()?;
         self.or_values(values)
     }
@@ -449,16 +457,15 @@ impl<'a> SatEufCheck<'a> {
     /// Handles `"="` chains for pure booleans versus EUF terms.
     fn formula_equal(
         &mut self,
-        source: &std::sync::Arc<str>,
         args: &[SExpr],
-        env: &mut HashMap<Box<str>, TermExpr>,
+        env: &mut HashMap<Box<str>, SExpr>,
     ) -> Result<BoolValue, SolverError> {
         if args.len() < 2 {
             return Ok(BoolValue::Const(true));
         }
         let term_values = args
             .iter()
-            .map(|arg| self.term_value(source, arg, env))
+            .map(|arg| self.term_value(arg, env))
             .collect::<Result<Vec<_>, _>>()?;
         if term_values.iter().all(Option::is_some) {
             let terms = term_values
@@ -470,7 +477,7 @@ impl<'a> SatEufCheck<'a> {
         } else {
             let values = args
                 .iter()
-                .map(|arg| self.formula(source, arg, env))
+                .map(|arg| self.formula(arg, env))
                 .collect::<Result<Vec<_>, _>>()?;
             self.chain_equivalence(values)
         }
@@ -479,16 +486,15 @@ impl<'a> SatEufCheck<'a> {
     /// Expands pairwise disequalities into conjoined [`TheoryRelation::Diseq`] guarded literals.
     fn formula_distinct(
         &mut self,
-        source: &std::sync::Arc<str>,
         args: &[SExpr],
-        env: &mut HashMap<Box<str>, TermExpr>,
+        env: &mut HashMap<Box<str>, SExpr>,
     ) -> Result<BoolValue, SolverError> {
         if args.len() < 2 {
             return Ok(BoolValue::Const(true));
         }
         let terms = args
             .iter()
-            .map(|arg| self.term_value(source, arg, env))
+            .map(|arg| self.term_value(arg, env))
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .collect::<Option<Vec<_>>>()
@@ -511,10 +517,9 @@ impl<'a> SatEufCheck<'a> {
     /// Applies temporary symbol bindings inside `bindings_expr`, evaluates `body`, then restores `env`.
     fn formula_let(
         &mut self,
-        source: &std::sync::Arc<str>,
         bindings_expr: &SExpr,
         body: &SExpr,
-        env: &mut HashMap<Box<str>, TermExpr>,
+        env: &mut HashMap<Box<str>, SExpr>,
     ) -> Result<BoolValue, SolverError> {
         let bindings = bindings_expr
             .as_list()
@@ -528,15 +533,12 @@ impl<'a> SatEufCheck<'a> {
                 return Err(SolverError::new("let binding must contain name and value"));
             }
             let name = pair[0]
-                .as_atom(source.as_ref())
+                .as_atom(self.source)
                 .ok_or_else(|| SolverError::new("let binding name must be an atom"))?;
-            let previous = env.insert(
-                name.clone().into_owned().into_boxed_str(),
-                TermExpr::new(source, pair[1].clone()),
-            );
+            let previous = env.insert(name.clone().into_owned().into_boxed_str(), pair[1].clone());
             inserted.push((name.into_owned().into_boxed_str(), previous));
         }
-        let result = self.formula(source, body, env);
+        let result = self.formula(body, env);
         for (name, previous) in inserted.into_iter().rev() {
             match previous {
                 Some(value) => {
@@ -553,24 +555,22 @@ impl<'a> SatEufCheck<'a> {
     /// Converts `expr` to a term-valued lowering result when it denotes EUF structure.
     fn term_value(
         &mut self,
-        source: &std::sync::Arc<str>,
         expr: &SExpr,
-        env: &mut HashMap<Box<str>, TermExpr>,
+        env: &mut HashMap<Box<str>, SExpr>,
     ) -> Result<Option<TermValue>, SolverError> {
-        if let Some(atom) = expr.as_atom(source.as_ref()) {
+        if let Some(atom) = expr.as_atom(self.source) {
             let atom = atom.as_ref();
             if atom == "true" || atom == "false" {
                 return Ok(None);
             }
             if let Some(bound) = env.get(atom).cloned() {
-                return self.term_value(bound.shared_source(), bound.sexpr(), env);
+                return self.term_value(&bound, env);
             }
             if let Some(definition) = self.definitions.get(&Symbol::new(atom)) {
-                return self.term_value(definition.shared_source(), definition.sexpr(), env);
+                return self.term_value(definition, env);
             }
-            return Ok(Some(TermValue::Term(
-                self.intern(EufTermKey::Const(atom.into())),
-            )));
+            let fun = self.fun_symbol(atom.into());
+            return Ok(Some(TermValue::Term(self.intern(EufTermKey::Const(fun)))));
         }
 
         let items = expr
@@ -578,18 +578,18 @@ impl<'a> SatEufCheck<'a> {
             .ok_or_else(|| SolverError::new("term must be an atom or list"))?;
         let head = items
             .first()
-            .and_then(|expr| expr.as_atom(source.as_ref()))
+            .and_then(|expr| expr.as_atom(self.source))
             .ok_or_else(|| SolverError::new("term list must start with an atom"))?;
         if head.as_ref() == "let" && items.len() == 3 {
-            return self.term_value_let(source, &items[1], &items[2], env);
+            return self.term_value_let(&items[1], &items[2], env);
         }
         if head.as_ref() == "ite" && items.len() == 4 {
-            let cond = self.formula(source, &items[1], env)?;
+            let cond = self.formula(&items[1], env)?;
             let then_branch = self
-                .term_value(source, &items[2], env)?
+                .term_value(&items[2], env)?
                 .ok_or_else(|| SolverError::new("term ite then-branch is not a term"))?;
             let else_branch = self
-                .term_value(source, &items[3], env)?
+                .term_value(&items[3], env)?
                 .ok_or_else(|| SolverError::new("term ite else-branch is not a term"))?;
             return Ok(Some(TermValue::Ite {
                 cond,
@@ -597,12 +597,15 @@ impl<'a> SatEufCheck<'a> {
                 else_branch: Box::new(else_branch),
             }));
         }
-        if matches!(head.as_ref(), "and" | "or" | "not" | "=>" | "=" | "distinct") {
+        if matches!(
+            head.as_ref(),
+            "and" | "or" | "not" | "=>" | "=" | "distinct"
+        ) {
             return Ok(None);
         }
         let args = items[1..]
             .iter()
-            .map(|arg| self.term_value(source, arg, env))
+            .map(|arg| self.term_value(arg, env))
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .collect::<Option<Vec<_>>>()
@@ -612,19 +615,18 @@ impl<'a> SatEufCheck<'a> {
             .map(|arg| self.materialize_term_value(arg))
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice();
-        Ok(Some(TermValue::Term(self.intern(EufTermKey::App {
-            fun: head.into_owned().into_boxed_str(),
-            args,
-        }))))
+        let fun = self.fun_symbol(head.into_owned().into_boxed_str());
+        Ok(Some(TermValue::Term(
+            self.intern(EufTermKey::App { fun, args }),
+        )))
     }
 
     /// `let`-binder aware variant of [`Self::term_value`] sharing the rollback discipline of formula lets.
     fn term_value_let(
         &mut self,
-        source: &std::sync::Arc<str>,
         bindings_expr: &SExpr,
         body: &SExpr,
-        env: &mut HashMap<Box<str>, TermExpr>,
+        env: &mut HashMap<Box<str>, SExpr>,
     ) -> Result<Option<TermValue>, SolverError> {
         let bindings = bindings_expr
             .as_list()
@@ -638,15 +640,12 @@ impl<'a> SatEufCheck<'a> {
                 return Err(SolverError::new("let binding must contain name and value"));
             }
             let name = pair[0]
-                .as_atom(source.as_ref())
+                .as_atom(self.source)
                 .ok_or_else(|| SolverError::new("let binding name must be an atom"))?;
-            let previous = env.insert(
-                name.clone().into_owned().into_boxed_str(),
-                TermExpr::new(source, pair[1].clone()),
-            );
+            let previous = env.insert(name.clone().into_owned().into_boxed_str(), pair[1].clone());
             inserted.push((name.into_owned().into_boxed_str(), previous));
         }
-        let result = self.term_value(source, body, env);
+        let result = self.term_value(body, env);
         for (name, previous) in inserted.into_iter().rev() {
             match previous {
                 Some(value) => {
@@ -666,11 +665,25 @@ impl<'a> SatEufCheck<'a> {
             return *id;
         }
         let id = match &kind {
-            EufTermKey::Const(name) => self.euf.intern_const(name.clone()),
-            EufTermKey::App { fun, args } => self.euf.intern_app(fun.clone(), args.clone()),
+            EufTermKey::Const(fun) => self.euf.intern_term(*fun, Box::default()),
+            EufTermKey::App { fun, args } => self.euf.intern_term(*fun, args.clone()),
         };
         self.terms.insert(kind, id);
         id
+    }
+
+    /// Finds or allocates one EUF function-symbol identity for `name`.
+    ///
+    /// Constants and function applications intentionally share this namespace so
+    /// a nullary surface symbol reuses the same underlying uninterpreted symbol.
+    fn fun_symbol(&mut self, name: Box<str>) -> FunId {
+        if let Some(fun) = self.fun_symbols.get(&name) {
+            *fun
+        } else {
+            let fun = self.euf.alloc_fun();
+            self.fun_symbols.insert(name, fun);
+            fun
+        }
     }
 
     /// Encodes pairwise boolean equality via bidirectional implication clauses over literals.
@@ -715,7 +728,8 @@ impl<'a> SatEufCheck<'a> {
                     .next_term_proxy
                     .checked_add(1)
                     .ok_or_else(|| SolverError::new("term ite proxy overflow"))?;
-                let proxy = self.intern(EufTermKey::Const(proxy_name.into_boxed_str()));
+                let proxy_fun = self.fun_symbol(proxy_name.into_boxed_str());
+                let proxy = self.intern(EufTermKey::Const(proxy_fun));
 
                 let then_equal =
                     self.theory_atom(TheoryKey::new(TheoryRelation::Eq, proxy, then_term))?;
@@ -762,8 +776,8 @@ impl<'a> SatEufCheck<'a> {
             let lit = value
                 .as_lit()
                 .ok_or_else(|| SolverError::new("non-literal value after constant filtering"))?;
-            self.add_clause(Box::new([result.not(), lit]));
-            defining_clause.push(lit.not());
+            self.add_clause(Box::new([!result, lit]));
+            defining_clause.push(!lit);
         }
         self.add_clause(defining_clause.into_boxed_slice());
         Ok(BoolValue::Lit(result))
@@ -789,12 +803,12 @@ impl<'a> SatEufCheck<'a> {
         }
         let result = self.fresh_bool()?.positive();
         let mut forward_clause = Vec::with_capacity(values.len() + 1);
-        forward_clause.push(result.not());
+        forward_clause.push(!result);
         for value in values {
             let lit = value
                 .as_lit()
                 .ok_or_else(|| SolverError::new("non-literal value after constant filtering"))?;
-            self.add_clause(Box::new([lit.not(), result]));
+            self.add_clause(Box::new([!lit, result]));
             forward_clause.push(lit);
         }
         self.add_clause(forward_clause.into_boxed_slice());
@@ -863,7 +877,7 @@ impl BoolValue {
     fn not(self) -> Self {
         match self {
             Self::Const(value) => Self::Const(!value),
-            Self::Lit(lit) => Self::Lit(lit.not()),
+            Self::Lit(lit) => Self::Lit(!lit),
         }
     }
 
@@ -894,18 +908,16 @@ enum TermValue {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use smtlib_lexer::parse_many;
     use smtlib_syntax::Command;
 
     use super::*;
 
     fn run(input: &str) -> SatResult {
-        let source = Arc::<str>::from(input);
-        let mut solver = Solver::new();
-        for expr in parse_many(source.as_ref()).expect("valid sexpr") {
-            let command = Command::from_sexpr(&source, expr).expect("valid command");
+        let source = input;
+        let mut solver = Solver::new(source);
+        for expr in parse_many(source).expect("valid sexpr") {
+            let command = Command::from_sexpr(source, expr).expect("valid command");
             if let SolverEvent::CheckSat(result) =
                 solver.handle_command(command).expect("command succeeds")
             {
@@ -916,10 +928,10 @@ mod tests {
     }
 
     fn run_with_fuel(input: &str, fuel: &mut Fuel) -> SatResult {
-        let source = Arc::<str>::from(input);
-        let mut solver = Solver::new();
-        for expr in parse_many(source.as_ref()).expect("valid sexpr") {
-            let command = Command::from_sexpr(&source, expr).expect("valid command");
+        let source = input;
+        let mut solver = Solver::new(source);
+        for expr in parse_many(source).expect("valid sexpr") {
+            let command = Command::from_sexpr(source, expr).expect("valid command");
             if let SolverEvent::CheckSat(result) = solver
                 .handle_command_with_budget(command, fuel)
                 .expect("command succeeds")
