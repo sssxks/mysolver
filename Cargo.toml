@@ -1,8 +1,5 @@
 [workspace]
 members = [
-    "crates/euf-core",
-    "crates/solver-core",
-    "crates/mysolver-cli",
 ]
 resolver = "3"
 
