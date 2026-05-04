@@ -8,135 +8,9 @@
 use std::collections::HashMap;
 use std::fmt;
 
-/// Cooperative budget checked by long-running search loops.
-pub trait CheckBudget {
-    /// Consumes one unit of budget and returns `false` when the caller must stop.
-    fn checkpoint(&mut self) -> bool;
-}
-
-/// Deterministic work budget counted in abstract solver steps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Fuel {
-    /// Remaining checkpoint count before the next checkpoint interrupts the run.
-    remaining: u64,
-}
-
-impl Fuel {
-    /// Creates a budget that allows exactly `remaining` successful checkpoints.
-    pub fn new(remaining: u64) -> Self {
-        Self { remaining }
-    }
-
-    /// Returns the number of checkpoints still available.
-    pub fn remaining(self) -> u64 {
-        self.remaining
-    }
-}
-
-impl CheckBudget for Fuel {
-    fn checkpoint(&mut self) -> bool {
-        if self.remaining == 0 {
-            return false;
-        }
-        self.remaining -= 1;
-        true
-    }
-}
-
-/// Outcome of a budget-aware EUF consistency check.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EufCheckOutcome {
-    /// The atom set is jointly consistent.
-    Consistent,
-    /// The atom set implies a concrete theory contradiction.
-    Conflict(TheoryConflict),
-    /// The caller-provided budget was exhausted before the check finished.
-    Interrupted,
-}
-
-/// Stable identifier for one interned term.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct TermId(u32);
-
-impl TermId {
-    /// Returns the internal dense index backing this term identifier.
-    pub fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-/// Stable identifier for one interned function symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FunId(u32);
-
-impl FunId {
-    /// Returns the internal dense index backing this function identifier.
-    pub fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-/// One interned EUF term represented as a function symbol plus argument terms.
-///
-/// Constants are encoded as nullary applications whose [`Self::args`] slice is empty.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Term {
-    /// Applied function symbol.
-    fun: FunId,
-    /// Argument term identifiers in call order.
-    args: Box<[TermId]>,
-}
-
-impl Term {
-    /// Returns the function symbol applied by this term.
-    pub fn fun(&self) -> FunId {
-        self.fun
-    }
-
-    /// Returns the argument terms in application order.
-    pub fn args(&self) -> &[TermId] {
-        &self.args
-    }
-}
-
-/// One theory atom to check under EUF.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TheoryAtom {
-    /// Equality constraint.
-    Eq(TermId, TermId),
-    /// Disequality constraint.
-    Diseq(TermId, TermId),
-}
-
-/// Human-readable explanation for a theory conclusion.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Explanation {
-    /// Textual reason attached to the explanation.
-    pub reason: Box<str>,
-}
-
-/// Inconsistency discovered by the EUF checker.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TheoryConflict {
-    /// Left side of the conflicting disequality.
-    pub left: TermId,
-    /// Right side of the conflicting disequality.
-    pub right: TermId,
-    /// Explanation for why the conflict is implied.
-    pub explanation: Explanation,
-}
-
-impl fmt::Display for TheoryConflict {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "conflicting disequality between terms {:?} and {:?}: {}",
-            self.left, self.right, self.explanation.reason
-        )
-    }
-}
-
-impl std::error::Error for TheoryConflict {}
+mod fuel;
+mod outcome;
+mod term;
 
 /// Congruence-closure state for caller-interned EUF terms.
 #[derive(Debug, Clone, Default)]
@@ -191,10 +65,10 @@ impl EufSolver {
     }
 
     /// Checks whether the given atoms are jointly consistent in EUF under `budget`.
-    pub fn check_with_budget<B: CheckBudget>(
+    pub fn check_with_budget(
         &self,
         atoms: &[TheoryAtom],
-        budget: &mut B,
+        budget: &mut fuel::Fuel,
     ) -> EufCheckOutcome {
         let relevant_terms = self.relevant_terms(atoms, budget);
         let Some(relevant_terms) = relevant_terms else {
@@ -219,13 +93,7 @@ impl EufSolver {
             if let TheoryAtom::Diseq(left, right) = *atom
                 && cc.find(left.index()) == cc.find(right.index())
             {
-                return EufCheckOutcome::Conflict(TheoryConflict {
-                    left,
-                    right,
-                    explanation: Explanation {
-                        reason: "equality closure implies both sides are equal".into(),
-                    },
-                });
+                return EufCheckOutcome::Conflict(TheoryConflict { left, right });
             }
         }
         EufCheckOutcome::Consistent
@@ -236,11 +104,7 @@ impl EufSolver {
     /// Only atom endpoints and their recursive subterms can participate in a proof about
     /// those atoms. Unmentioned terms are ignored so guard-heavy incremental benchmarks do
     /// not pay congruence-closure cost for dormant formula regions.
-    fn relevant_terms<B: CheckBudget>(
-        &self,
-        atoms: &[TheoryAtom],
-        budget: &mut B,
-    ) -> Option<Vec<usize>> {
+    fn relevant_terms(&self, atoms: &[TheoryAtom], budget: &mut B) -> Option<Vec<usize>> {
         let mut seen = vec![false; self.terms.len()];
         let mut stack = Vec::new();
 
@@ -279,7 +143,7 @@ impl EufSolver {
     }
 
     /// Repeats signature bucketing until congruence-derived equalities stabilize in `cc`.
-    fn close_congruence<B: CheckBudget>(
+    fn close_congruence(
         &self,
         cc: &mut Congruence,
         relevant_terms: &[usize],
