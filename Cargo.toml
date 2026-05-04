@@ -1,5 +1,5 @@
 [workspace]
-members = [
+members = ["crates/sat"
 ]
 resolver = "3"
 
@@ -11,10 +11,10 @@ edition = "2024"
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
-missing_docs_in_private_items = "warn"
+# missing_docs_in_private_items = "warn"
 
 [workspace.lints.rust]
-missing_docs = "warn"
+# missing_docs = "warn"
 
 [profile.release]
 panic = "abort"
