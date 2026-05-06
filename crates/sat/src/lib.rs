@@ -1,978 +1,343 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+//! A small conflict-driven clause learning SAT solver.
+//!
+//! The crate exposes a [`Solver`] for programmatic construction of CNF formulas and
+//! a [`parse_dimacs`] helper for loading formulas from DIMACS CNF text.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ENodeId(u32);
+use std::cmp::Ordering;
+use std::mem;
+use std::ops::Not;
 
-impl ENodeId {
-    fn index(self) -> usize {
+/// A zero-based propositional variable identifier.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub struct Var(u32);
+
+impl Var {
+    /// Returns the zero-based index of this variable.
+    pub fn index(self) -> usize {
         self.0 as usize
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FunId(u32);
-
-impl FunId {
-    fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BoolVar(u32);
-
-impl BoolVar {
-    fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ClauseId(u32);
-
-impl ClauseId {
-    fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Lit {
-    var: BoolVar,
-    neg: bool,
-}
+/// A propositional literal encoded as `var << 1 | negated`.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub struct Lit(u32);
 
 impl Lit {
-    pub fn positive(var: BoolVar) -> Self {
-        Self { var, neg: false }
+    /// Creates a literal from a variable and its sign.
+    pub fn new(var: Var, negated: bool) -> Self {
+        Self((var.0 << 1) | negated as u32)
     }
 
-    pub fn negative(var: BoolVar) -> Self {
-        Self { var, neg: true }
+    /// Returns the underlying variable.
+    pub fn var(self) -> Var {
+        Var(self.0 >> 1)
     }
 
-    pub fn var(self) -> BoolVar {
-        self.var
+    /// Returns whether the literal is negated.
+    pub fn is_negated(self) -> bool {
+        (self.0 & 1) != 0
     }
 
-    pub fn is_negative(self) -> bool {
-        self.neg
+    /// Returns the zero-based packed literal index.
+    pub fn index(self) -> usize {
+        self.0 as usize
     }
 
-    pub fn negated(self) -> Self {
-        Self {
-            var: self.var,
-            neg: !self.neg,
-        }
-    }
-
-    fn watch_index(self) -> usize {
-        self.var.index() * 2 + usize::from(self.neg)
+    /// Converts a non-zero DIMACS integer into a literal.
+    ///
+    /// Positive integers map to positive literals and negative integers map to
+    /// negated literals.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `x == 0`, because `0` is the DIMACS clause terminator rather than
+    /// a literal.
+    pub fn from_dimacs(x: i32) -> Self {
+        assert!(x != 0);
+        let v = Var(x.unsigned_abs() - 1);
+        Lit::new(v, x < 0)
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl Not for Lit {
+    type Output = Lit;
+
+    fn not(self) -> Lit {
+        Lit(self.0 ^ 1)
+    }
+}
+
+/// A three-valued boolean used for partial assignments.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum LBool {
-    Undef,
-    True,
+    /// The value is assigned to false.
     False,
+    /// The value is currently unassigned.
+    Undef,
+    /// The value is assigned to true.
+    True,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SolveResult {
-    Sat,
-    Unsat,
-}
+/// An index into the solver's clause arena.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct ClauseId(usize);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The reason why a variable assignment was enqueued.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum Reason {
+    /// The assignment was a decision or top-level unit without a stored antecedent.
+    None,
+    /// The assignment came from a binary clause represented by its two literals.
+    Binary(Lit, Lit),
+    /// The assignment came from a long clause stored in the clause arena.
     Clause(ClauseId),
 }
 
-#[derive(Clone, Debug)]
-struct Assignment {
-    value: LBool,
-    level: usize,
-    reason: Option<Reason>,
-}
-
-#[derive(Clone, Debug)]
-struct Clause {
-    lits: Vec<Lit>,
-    learnt: bool,
-}
-
-#[derive(Default)]
-struct SatCore {
-    assigns: Vec<Assignment>,
-    clauses: Vec<Clause>,
-    watches: Vec<Vec<ClauseId>>,
-    trail: Vec<Lit>,
-    trail_head: usize,
-    level_starts: Vec<usize>,
-    immediate_conflict: Option<ClauseId>,
-}
-
-impl SatCore {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn new_var(&mut self) -> BoolVar {
-        let var = BoolVar(self.assigns.len() as u32);
-        self.assigns.push(Assignment {
-            value: LBool::Undef,
-            level: 0,
-            reason: None,
-        });
-        self.watches.push(Vec::new());
-        self.watches.push(Vec::new());
-        var
-    }
-
-    fn decision_level(&self) -> usize {
-        self.level_starts.len()
-    }
-
-    fn new_decision_level(&mut self) {
-        self.level_starts.push(self.trail.len());
-    }
-
-    fn value_var(&self, var: BoolVar) -> LBool {
-        self.assigns[var.index()].value
-    }
-
-    fn value_lit(&self, lit: Lit) -> LBool {
-        match self.value_var(lit.var) {
-            LBool::Undef => LBool::Undef,
-            LBool::True => {
-                if lit.neg {
-                    LBool::False
-                } else {
-                    LBool::True
-                }
-            }
-            LBool::False => {
-                if lit.neg {
-                    LBool::True
-                } else {
-                    LBool::False
-                }
-            }
-        }
-    }
-
-    fn enqueue(&mut self, lit: Lit, reason: Option<Reason>) -> bool {
-        match self.value_lit(lit) {
-            LBool::True => true,
-            LBool::False => false,
-            LBool::Undef => {
-                let level = self.decision_level();
-                let assignment = &mut self.assigns[lit.var.index()];
-                assignment.value = if lit.neg { LBool::False } else { LBool::True };
-                assignment.level = level;
-                assignment.reason = reason;
-                self.trail.push(lit);
-                true
-            }
-        }
-    }
-
-    fn add_clause(&mut self, lits: Vec<Lit>, learnt: bool) -> ClauseId {
-        let id = ClauseId(self.clauses.len() as u32);
-        self.clauses.push(Clause { lits, learnt });
-        self.attach_clause(id);
-        id
-    }
-
-    fn add_problem_clause(&mut self, lits: Vec<Lit>) {
-        let id = self.add_clause(lits, false);
-        if self.clauses[id.index()].lits.is_empty() {
-            self.immediate_conflict = Some(id);
-            return;
-        }
-        if self.clauses[id.index()].lits.len() == 1 {
-            let lit = self.clauses[id.index()].lits[0];
-            if !self.enqueue(lit, Some(Reason::Clause(id))) {
-                self.immediate_conflict = Some(id);
-            }
-        }
-    }
-
-    fn attach_clause(&mut self, id: ClauseId) {
-        let lits = &self.clauses[id.index()].lits;
-        match lits.len() {
-            0 => {}
-            1 => self.watches[lits[0].watch_index()].push(id),
-            _ => {
-                self.watches[lits[0].watch_index()].push(id);
-                self.watches[lits[1].watch_index()].push(id);
-            }
-        }
-    }
-
-    fn propagate(&mut self) -> Option<ClauseId> {
-        if let Some(conflict) = self.immediate_conflict {
-            return Some(conflict);
-        }
-
-        while self.trail_head < self.trail.len() {
-            let assigned = self.trail[self.trail_head];
-            self.trail_head += 1;
-            let false_lit = assigned.negated();
-            let watch_index = false_lit.watch_index();
-            let old_watch_list = std::mem::take(&mut self.watches[watch_index]);
-            let mut cursor = 0;
-
-            while cursor < old_watch_list.len() {
-                let cid = old_watch_list[cursor];
-                cursor += 1;
-
-                match self.propagate_watched_clause(cid, false_lit) {
-                    WatchResult::KeepWatching => self.watches[watch_index].push(cid),
-                    WatchResult::MovedWatch => {}
-                    WatchResult::Conflict => {
-                        self.watches[watch_index].push(cid);
-                        self.watches[watch_index].extend_from_slice(&old_watch_list[cursor..]);
-                        return Some(cid);
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn propagate_watched_clause(&mut self, cid: ClauseId, false_lit: Lit) -> WatchResult {
-        let len = self.clauses[cid.index()].lits.len();
-        if len == 0 {
-            return WatchResult::Conflict;
-        }
-
-        if len == 1 {
-            let unit = self.clauses[cid.index()].lits[0];
-            return match self.value_lit(unit) {
-                LBool::True => WatchResult::KeepWatching,
-                LBool::Undef => {
-                    if self.enqueue(unit, Some(Reason::Clause(cid))) {
-                        WatchResult::KeepWatching
-                    } else {
-                        WatchResult::Conflict
-                    }
-                }
-                LBool::False => WatchResult::Conflict,
-            };
-        }
-
-        let (false_pos, other_pos) = {
-            let lits = &self.clauses[cid.index()].lits;
-            if lits[0] == false_lit {
-                (0, 1)
-            } else if lits[1] == false_lit {
-                (1, 0)
-            } else {
-                return WatchResult::KeepWatching;
-            }
-        };
-
-        let other_lit = self.clauses[cid.index()].lits[other_pos];
-        if self.value_lit(other_lit) == LBool::True {
-            return WatchResult::KeepWatching;
-        }
-
-        for i in 2..len {
-            let candidate = self.clauses[cid.index()].lits[i];
-            if self.value_lit(candidate) != LBool::False {
-                self.clauses[cid.index()].lits.swap(false_pos, i);
-                self.watches[candidate.watch_index()].push(cid);
-                return WatchResult::MovedWatch;
-            }
-        }
-
-        match self.value_lit(other_lit) {
-            LBool::True => WatchResult::KeepWatching,
-            LBool::Undef => {
-                if self.enqueue(other_lit, Some(Reason::Clause(cid))) {
-                    WatchResult::KeepWatching
-                } else {
-                    WatchResult::Conflict
-                }
-            }
-            LBool::False => WatchResult::Conflict,
-        }
-    }
-
-    fn cancel_until(&mut self, target_level: usize) {
-        while self.decision_level() > target_level {
-            let start = self.level_starts.pop().unwrap();
-            for lit in self.trail.drain(start..).rev() {
-                let assignment = &mut self.assigns[lit.var.index()];
-                assignment.value = LBool::Undef;
-                assignment.level = 0;
-                assignment.reason = None;
-            }
-            self.trail_head = self.trail_head.min(self.trail.len());
-        }
-    }
-
-    fn pick_branch_lit(&self) -> Option<Lit> {
-        self.assigns
-            .iter()
-            .enumerate()
-            .find(|(_, a)| a.value == LBool::Undef)
-            .map(|(idx, _)| Lit::positive(BoolVar(idx as u32)))
-    }
-
-    fn all_assigned(&self) -> bool {
-        self.assigns.iter().all(|a| a.value != LBool::Undef)
-    }
-
-    fn analyze(&self, conflict: ClauseId) -> (Vec<Lit>, usize) {
-        let current_level = self.decision_level();
-        let mut seen = vec![false; self.assigns.len()];
-        let mut learnt_tail = Vec::new();
-        let mut path_count = 0usize;
-        let mut clause_lits = self.clauses[conflict.index()].lits.clone();
-        let mut skip_var = None;
-        let mut trail_idx = self.trail.len();
-        let asserting_lit;
-
-        loop {
-            for &lit in &clause_lits {
-                if Some(lit.var) == skip_var {
-                    continue;
-                }
-                let var = lit.var;
-                if seen[var.index()] {
-                    continue;
-                }
-                let level = self.assigns[var.index()].level;
-                if level == 0 {
-                    continue;
-                }
-                seen[var.index()] = true;
-                if level == current_level {
-                    path_count += 1;
-                } else {
-                    learnt_tail.push(lit);
-                }
-            }
-
-            let p = loop {
-                trail_idx -= 1;
-                let lit = self.trail[trail_idx];
-                if seen[lit.var.index()] {
-                    break lit;
-                }
-            };
-
-            seen[p.var.index()] = false;
-            path_count -= 1;
-
-            if path_count == 0 {
-                asserting_lit = p.negated();
-                break;
-            }
-
-            skip_var = Some(p.var);
-            clause_lits = match self.assigns[p.var.index()].reason {
-                Some(Reason::Clause(reason)) => self.clauses[reason.index()].lits.clone(),
-                None => Vec::new(),
-            };
-        }
-
-        let mut learnt = Vec::with_capacity(1 + learnt_tail.len());
-        learnt.push(asserting_lit);
-        learnt.extend(learnt_tail);
-
-        let backtrack_level = learnt
-            .iter()
-            .skip(1)
-            .map(|lit| self.assigns[lit.var.index()].level)
-            .max()
-            .unwrap_or(0);
-
-        (learnt, backtrack_level)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WatchResult {
-    KeepWatching,
-    MovedWatch,
-    Conflict,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct AppKey {
-    fun: FunId,
-    args: Vec<ENodeId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct AppSignature {
-    fun: FunId,
-    arg_roots: Vec<ENodeId>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct EqKey {
-    a: ENodeId,
-    b: ENodeId,
-}
-
-impl EqKey {
-    fn new(a: ENodeId, b: ENodeId) -> Self {
-        if a <= b {
-            Self { a, b }
-        } else {
-            Self { a: b, b: a }
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ENode {
-    fun: FunId,
-    args: Vec<ENodeId>,
-    root: ENodeId,
-    next: ENodeId,
-
-    /// Number of nodes in this equivalence class.
-    ///
-    /// This field is meaningful only when this node is the current representative.
-    class_size_if_root: u32,
-
-    /// Syntactic parent applications that directly mention this node as an argument.
-    ///
-    /// This is meaningful for every node, not just representatives. Class-level parents
-    /// are obtained by traversing the intrusive class list and concatenating each member's
-    /// parent list.
-    parents: Vec<ENodeId>,
-}
-
-#[derive(Clone, Debug)]
-struct Diseq {
-    lhs: ENodeId,
-    rhs: ENodeId,
-    reason_lit: Lit,
-}
-
-#[derive(Clone, Debug)]
-struct PendingMerge {
-    lhs: ENodeId,
-    rhs: ENodeId,
-    reason: MergeReason,
-}
-
-#[derive(Clone, Debug)]
-enum MergeReason {
-    Input(Lit),
-    Congruence { lhs_app: ENodeId, rhs_app: ENodeId },
-}
-
-#[derive(Clone, Debug)]
-struct EqEdge {
-    lhs: ENodeId,
-    rhs: ENodeId,
-    reason: MergeReason,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct EqEdgeId(u32);
-
-impl EqEdgeId {
-    fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-#[derive(Clone, Debug)]
-enum EufUndo {
-    Merge {
-        absorbed_root: ENodeId,
-        absorbing_root: ENodeId,
-
-        /// Size of `absorbing_root` before it absorbed `absorbed_root`.
-        ///
-        /// Undo restores this value after splitting the intrusive cyclic class list.
-        absorbing_root_size_before_merge: u32,
-        edge: EqEdgeId,
+/// A watched-literal entry attached to a literal's watch list.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum Watcher {
+    /// Watches a binary clause via the other literal in the clause.
+    Binary {
+        /// The other literal in the watched binary clause.
+        other: Lit,
+    },
+    /// Watches a long clause together with a blocker literal.
+    Long {
+        /// The watched long clause.
+        clause: ClauseId,
+        /// A literal that can satisfy the clause without reopening it.
+        blocker: Lit,
     },
 }
 
-#[derive(Clone, Copy, Debug)]
-struct EufScope {
-    undo_len: usize,
-    signature_log_len: usize,
-    pending_len: usize,
-    diseq_len: usize,
+/// A clause stored in the solver's arena.
+#[derive(Clone, Debug)]
+struct Clause {
+    /// The clause literals, with the first two entries used as watched literals.
+    lits: Vec<Lit>,
+    /// Whether this clause was learned during conflict analysis.
+    learnt: bool,
+    /// VSIDS-style activity score for database reduction.
+    activity: f64,
+    /// Whether the clause has been lazily deleted from the database.
+    deleted: bool,
 }
 
-#[derive(Default)]
-struct EGraph {
-    fun_ids: HashMap<String, FunId>,
-    fun_names: Vec<String>,
-
-    app_ids: HashMap<AppKey, ENodeId>,
-    enodes: Vec<ENode>,
-
-    signatures: HashMap<AppSignature, ENodeId>,
-
-    /// Append-only log of normalized application signatures inserted after merges.
-    ///
-    /// A signature is derived from the current representatives of an application's
-    /// arguments. We never rewrite `ENode.args`, and we also avoid deleting old
-    /// signatures when classes merge. Old signatures simply become stale because
-    /// future lookups use current representatives. Backtracking removes only the
-    /// signatures inserted after the target scope. This is the cvc5-style
-    /// alternative to rebuilding the whole signature table on every backjump.
-    signature_log: Vec<AppSignature>,
-
-    pending: Vec<PendingMerge>,
-    diseqs: Vec<Diseq>,
-
-    undo: Vec<EufUndo>,
-    scopes: Vec<EufScope>,
-
-    edges: Vec<EqEdge>,
-    adjacency: Vec<Vec<EqEdgeId>>,
-
-    marks: Vec<u32>,
-    mark_stamp: u32,
+/// A conflict discovered during propagation.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum Conflict {
+    /// A conflict caused by a falsified binary clause.
+    Binary(Lit, Lit),
+    /// A conflict caused by a falsified long clause.
+    Clause(ClauseId),
 }
 
-impl EGraph {
+/// The result of updating a watched long clause.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum LongAction {
+    /// Drop the watcher because the clause has been deleted.
+    Drop,
+    /// Keep the watcher on the current literal with an updated blocker.
+    Keep {
+        /// A literal currently satisfying or otherwise blocking the clause.
+        blocker: Lit,
+    },
+    /// Move the watcher to a different literal.
+    Move {
+        /// The literal that should receive the moved watcher.
+        new_watch: Lit,
+        /// The blocker paired with the moved watcher.
+        blocker: Lit,
+    },
+    /// The clause became unit and now forces the given literal.
+    Unit {
+        /// The unit literal implied by the clause.
+        lit: Lit,
+    },
+    /// The clause became conflicting under the current assignment.
+    Conflict,
+}
+
+/// A clause-like source used during conflict analysis.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum AnalyzeSource {
+    /// Treat a binary clause as an analysis source.
+    Binary(Lit, Lit),
+    /// Treat a long clause as an analysis source.
+    Clause(ClauseId),
+}
+
+/// The outcome of a SAT solve attempt.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum SatResult {
+    /// The formula is satisfiable.
+    Sat,
+    /// The formula is unsatisfiable.
+    Unsat,
+}
+
+/// A max-heap over decision variables ordered by activity.
+#[derive(Debug)]
+struct VarHeap {
+    /// Heap storage containing variable identifiers.
+    heap: Vec<Var>,
+    /// Heap positions indexed by variable, or `-1` when absent.
+    pos: Vec<i32>,
+}
+
+impl VarHeap {
+    /// Creates an empty activity heap.
     fn new() -> Self {
-        Self::default()
-    }
-
-    fn fun(&mut self, name: impl Into<String>) -> FunId {
-        let name = name.into();
-        if let Some(&fun) = self.fun_ids.get(&name) {
-            return fun;
-        }
-        let fun = FunId(self.fun_names.len() as u32);
-        self.fun_ids.insert(name.clone(), fun);
-        self.fun_names.push(name);
-        fun
-    }
-
-    fn constant(&mut self, name: impl Into<String>) -> ENodeId {
-        let fun = self.fun(name);
-        self.app(fun, &[])
-    }
-
-    fn app_named(&mut self, name: impl Into<String>, args: &[ENodeId]) -> ENodeId {
-        let fun = self.fun(name);
-        self.app(fun, args)
-    }
-
-    fn app(&mut self, fun: FunId, args: &[ENodeId]) -> ENodeId {
-        let key = AppKey {
-            fun,
-            args: args.to_vec(),
-        };
-        if let Some(&id) = self.app_ids.get(&key) {
-            return id;
-        }
-
-        let id = ENodeId(self.enodes.len() as u32);
-        self.enodes.push(ENode {
-            fun,
-            args: args.to_vec(),
-            root: id,
-            next: id,
-            class_size_if_root: 1,
-            parents: Vec::new(),
-        });
-        self.adjacency.push(Vec::new());
-        self.marks.push(0);
-        self.app_ids.insert(key, id);
-
-        for &arg in args {
-            self.enodes[arg.index()].parents.push(id);
-        }
-
-        if !args.is_empty() {
-            self.insert_signature_or_schedule_merge(id);
-            self.propagate_pending();
-        }
-
-        id
-    }
-
-    fn push_level(&mut self) {
-        self.scopes.push(EufScope {
-            undo_len: self.undo.len(),
-            signature_log_len: self.signature_log.len(),
-            pending_len: self.pending.len(),
-            diseq_len: self.diseqs.len(),
-        });
-    }
-
-    fn pop_to_level(&mut self, target_level: usize) {
-        while self.scopes.len() > target_level {
-            let scope = self.scopes.pop().unwrap();
-
-            self.pending.truncate(scope.pending_len);
-            self.pop_signatures_to(scope.signature_log_len);
-
-            while self.undo.len() > scope.undo_len {
-                let undo = self.undo.pop().unwrap();
-                self.undo_one(undo);
-            }
-
-            self.diseqs.truncate(scope.diseq_len);
+        Self {
+            heap: Vec::new(),
+            pos: Vec::new(),
         }
     }
 
-    fn root(&self, node: ENodeId) -> ENodeId {
-        self.enodes[node.index()].root
+    /// Reserves a position slot for a newly created variable.
+    fn new_var(&mut self) {
+        self.pos.push(-1);
     }
 
-    fn are_equal(&self, lhs: ENodeId, rhs: ENodeId) -> bool {
-        self.root(lhs) == self.root(rhs)
+    /// Returns whether the heap currently contains `v`.
+    fn contains(&self, v: Var) -> bool {
+        self.pos[v.index()] >= 0
     }
 
-    fn class_members(&self, root: ENodeId) -> Vec<ENodeId> {
-        let mut result = Vec::new();
-        let mut current = root;
-        loop {
-            result.push(current);
-            current = self.enodes[current.index()].next;
-            if current == root {
-                break;
-            }
-        }
-        result
-    }
-
-    fn assert_eq(&mut self, lhs: ENodeId, rhs: ENodeId, reason_lit: Lit) -> Option<Vec<Lit>> {
-        self.pending.push(PendingMerge {
-            lhs,
-            rhs,
-            reason: MergeReason::Input(reason_lit),
-        });
-        self.propagate_pending();
-        self.find_disequality_conflict()
-    }
-
-    fn assert_ne(&mut self, lhs: ENodeId, rhs: ENodeId, reason_lit: Lit) -> Option<Vec<Lit>> {
-        if self.are_equal(lhs, rhs) {
-            return Some(self.explain_diseq_conflict(lhs, rhs, reason_lit));
-        }
-        self.diseqs.push(Diseq {
-            lhs,
-            rhs,
-            reason_lit,
-        });
-        None
-    }
-
-    fn propagate_pending(&mut self) {
-        while let Some(pending) = self.pending.pop() {
-            self.merge(pending.lhs, pending.rhs, pending.reason);
-        }
-    }
-
-    fn merge(&mut self, lhs: ENodeId, rhs: ENodeId, reason: MergeReason) {
-        let mut absorbed_root = self.root(lhs);
-        let mut absorbing_root = self.root(rhs);
-        if absorbed_root == absorbing_root {
+    /// Inserts `v` into the heap unless it is already present.
+    fn insert(&mut self, v: Var, activity: &[f64]) {
+        if self.contains(v) {
             return;
         }
+        self.pos[v.index()] = self.heap.len() as i32;
+        self.heap.push(v);
+        self.percolate_up(self.heap.len() - 1, activity);
+    }
 
-        if self.enodes[absorbed_root.index()].class_size_if_root
-            > self.enodes[absorbing_root.index()].class_size_if_root
-        {
-            std::mem::swap(&mut absorbed_root, &mut absorbing_root);
-        }
-
-        let affected_parents = self.collect_affected_parents(absorbed_root);
-
-        let edge = self.add_edge(lhs, rhs, reason.clone());
-        let absorbing_root_size_before_merge =
-            self.enodes[absorbing_root.index()].class_size_if_root;
-        self.undo.push(EufUndo::Merge {
-            absorbed_root,
-            absorbing_root,
-            absorbing_root_size_before_merge,
-            edge,
-        });
-
-        for member in self.class_members(absorbed_root) {
-            self.enodes[member.index()].root = absorbing_root;
-        }
-
-        self.swap_next(absorbed_root, absorbing_root);
-        let absorbed_size = self.enodes[absorbed_root.index()].class_size_if_root;
-        self.enodes[absorbing_root.index()].class_size_if_root += absorbed_size;
-
-        for parent in affected_parents {
-            self.insert_signature_or_schedule_merge(parent);
+    /// Reorders `v` upward after its activity has increased.
+    fn increase(&mut self, v: Var, activity: &[f64]) {
+        if self.contains(v) {
+            self.percolate_up(self.pos[v.index()] as usize, activity);
         }
     }
 
-    fn undo_one(&mut self, undo: EufUndo) {
-        match undo {
-            EufUndo::Merge {
-                absorbed_root,
-                absorbing_root,
-                absorbing_root_size_before_merge,
-                edge,
-            } => {
-                self.pop_edge(edge);
-                self.enodes[absorbing_root.index()].class_size_if_root =
-                    absorbing_root_size_before_merge;
-                self.swap_next(absorbed_root, absorbing_root);
-                for member in self.class_members(absorbed_root) {
-                    self.enodes[member.index()].root = absorbed_root;
-                }
-            }
-        }
-    }
-
-    fn add_edge(&mut self, lhs: ENodeId, rhs: ENodeId, reason: MergeReason) -> EqEdgeId {
-        let id = EqEdgeId(self.edges.len() as u32);
-        self.edges.push(EqEdge { lhs, rhs, reason });
-        self.adjacency[lhs.index()].push(id);
-        self.adjacency[rhs.index()].push(id);
-        id
-    }
-
-    fn pop_edge(&mut self, edge: EqEdgeId) {
-        let data = self.edges.pop().unwrap();
-        debug_assert_eq!(edge.index(), self.edges.len());
-        debug_assert_eq!(self.adjacency[data.lhs.index()].pop(), Some(edge));
-        debug_assert_eq!(self.adjacency[data.rhs.index()].pop(), Some(edge));
-    }
-
-    fn swap_next(&mut self, lhs: ENodeId, rhs: ENodeId) {
-        let lhs_next = self.enodes[lhs.index()].next;
-        let rhs_next = self.enodes[rhs.index()].next;
-        self.enodes[lhs.index()].next = rhs_next;
-        self.enodes[rhs.index()].next = lhs_next;
-    }
-
-    fn collect_affected_parents(&mut self, absorbed_root: ENodeId) -> Vec<ENodeId> {
-        let stamp = self.fresh_mark_stamp();
-        let mut result = Vec::new();
-        for member in self.class_members(absorbed_root) {
-            let parents = self.enodes[member.index()].parents.clone();
-            for parent in parents {
-                let mark = &mut self.marks[parent.index()];
-                if *mark != stamp {
-                    *mark = stamp;
-                    result.push(parent);
-                }
-            }
-        }
-        result
-    }
-
-    fn fresh_mark_stamp(&mut self) -> u32 {
-        self.mark_stamp = self.mark_stamp.wrapping_add(1);
-        if self.mark_stamp == 0 {
-            self.marks.fill(0);
-            self.mark_stamp = 1;
-        }
-        self.mark_stamp
-    }
-
-    fn signature(&self, node: ENodeId) -> Option<AppSignature> {
-        let enode = &self.enodes[node.index()];
-        if enode.args.is_empty() {
+    /// Removes and returns the highest-activity variable, if any.
+    fn pop_max(&mut self, activity: &[f64]) -> Option<Var> {
+        if self.heap.is_empty() {
             return None;
         }
-        Some(AppSignature {
-            fun: enode.fun,
-            arg_roots: enode.args.iter().map(|&arg| self.root(arg)).collect(),
-        })
+        let out = self.heap[0];
+        let last = self.heap.pop().unwrap();
+        self.pos[out.index()] = -1;
+        if !self.heap.is_empty() {
+            self.heap[0] = last;
+            self.pos[last.index()] = 0;
+            self.percolate_down(0, activity);
+        }
+        Some(out)
     }
 
-    fn insert_signature_or_schedule_merge(&mut self, node: ENodeId) {
-        let Some(sig) = self.signature(node) else {
-            return;
-        };
-        if let Some(existing) = self.signatures.get(&sig).copied() {
-            if self.root(existing) != self.root(node) {
-                self.pending.push(PendingMerge {
-                    lhs: existing,
-                    rhs: node,
-                    reason: MergeReason::Congruence {
-                        lhs_app: existing,
-                        rhs_app: node,
-                    },
-                });
-            }
-        } else {
-            self.store_signature(sig, node);
-        }
+    /// Returns whether `a` should be ordered below `b`.
+    fn less(a: Var, b: Var, activity: &[f64]) -> bool {
+        activity[a.index()] < activity[b.index()]
     }
 
-    fn store_signature(&mut self, sig: AppSignature, node: ENodeId) {
-        let old = self.signatures.insert(sig.clone(), node);
-        debug_assert!(old.is_none());
-        self.signature_log.push(sig);
-    }
-
-    fn pop_signatures_to(&mut self, target_len: usize) {
-        while self.signature_log.len() > target_len {
-            let sig = self.signature_log.pop().unwrap();
-            self.signatures.remove(&sig);
-        }
-    }
-
-    fn find_disequality_conflict(&self) -> Option<Vec<Lit>> {
-        for diseq in &self.diseqs {
-            if self.are_equal(diseq.lhs, diseq.rhs) {
-                return Some(self.explain_diseq_conflict(diseq.lhs, diseq.rhs, diseq.reason_lit));
-            }
-        }
-        None
-    }
-
-    fn explain_diseq_conflict(&self, lhs: ENodeId, rhs: ENodeId, diseq_lit: Lit) -> Vec<Lit> {
-        let premises = self.explain_eq(lhs, rhs);
-        let mut clause = Vec::with_capacity(premises.len() + 1);
-        for lit in premises {
-            clause.push(lit.negated());
-        }
-        clause.push(diseq_lit.negated());
-        clause
-    }
-
-    fn explain_eq_clause_for_propagation(
-        &self,
-        lhs: ENodeId,
-        rhs: ENodeId,
-        propagated: Lit,
-    ) -> Vec<Lit> {
-        let premises = self.explain_eq(lhs, rhs);
-        let mut clause = Vec::with_capacity(premises.len() + 1);
-        for lit in premises {
-            clause.push(lit.negated());
-        }
-        clause.push(propagated);
-        clause
-    }
-
-    fn explain_eq(&self, lhs: ENodeId, rhs: ENodeId) -> Vec<Lit> {
-        if lhs == rhs {
-            return Vec::new();
-        }
-        debug_assert!(self.are_equal(lhs, rhs));
-        let mut out = HashSet::new();
-        let mut active = HashSet::new();
-        self.explain_eq_rec(lhs, rhs, &mut out, &mut active);
-        out.into_iter().collect()
-    }
-
-    fn explain_eq_rec(
-        &self,
-        lhs: ENodeId,
-        rhs: ENodeId,
-        out: &mut HashSet<Lit>,
-        active: &mut HashSet<EqKey>,
-    ) {
-        if lhs == rhs {
-            return;
-        }
-        let key = EqKey::new(lhs, rhs);
-        if !active.insert(key) {
-            return;
-        }
-
-        let path = self.find_equality_path(lhs, rhs);
-        for edge in path {
-            self.explain_edge(edge, out, active);
-        }
-
-        active.remove(&key);
-    }
-
-    fn explain_edge(
-        &self,
-        edge: EqEdgeId,
-        out: &mut HashSet<Lit>,
-        active: &mut HashSet<EqKey>,
-    ) {
-        match &self.edges[edge.index()].reason {
-            MergeReason::Input(lit) => {
-                out.insert(*lit);
-            }
-            MergeReason::Congruence { lhs_app, rhs_app } => {
-                let lhs_node = &self.enodes[lhs_app.index()];
-                let rhs_node = &self.enodes[rhs_app.index()];
-                debug_assert_eq!(lhs_node.fun, rhs_node.fun);
-                debug_assert_eq!(lhs_node.args.len(), rhs_node.args.len());
-                for (&lhs_arg, &rhs_arg) in lhs_node.args.iter().zip(&rhs_node.args) {
-                    if self.root(lhs_arg) != self.root(rhs_arg) {
-                        continue;
-                    }
-                    self.explain_eq_rec(lhs_arg, rhs_arg, out, active);
-                }
-            }
-        }
-    }
-
-    fn find_equality_path(&self, lhs: ENodeId, rhs: ENodeId) -> Vec<EqEdgeId> {
-        let mut queue = VecDeque::new();
-        let mut seen = vec![false; self.enodes.len()];
-        let mut prev: Vec<Option<(ENodeId, EqEdgeId)>> = vec![None; self.enodes.len()];
-
-        seen[lhs.index()] = true;
-        queue.push_back(lhs);
-
-        while let Some(current) = queue.pop_front() {
-            if current == rhs {
+    /// Moves the element at `i` upward until the heap invariant is restored.
+    fn percolate_up(&mut self, mut i: usize, activity: &[f64]) {
+        let x = self.heap[i];
+        while i > 0 {
+            let p = (i - 1) >> 1;
+            if !Self::less(self.heap[p], x, activity) {
                 break;
             }
-            for &edge in &self.adjacency[current.index()] {
-                let data = &self.edges[edge.index()];
-                let next = if data.lhs == current { data.rhs } else { data.lhs };
-                if !seen[next.index()] {
-                    seen[next.index()] = true;
-                    prev[next.index()] = Some((current, edge));
-                    queue.push_back(next);
-                }
-            }
+            self.heap[i] = self.heap[p];
+            self.pos[self.heap[i].index()] = i as i32;
+            i = p;
         }
-
-        debug_assert!(seen[rhs.index()]);
-        let mut path = Vec::new();
-        let mut current = rhs;
-        while current != lhs {
-            let (p, edge) = prev[current.index()].expect("missing equality explanation path");
-            path.push(edge);
-            current = p;
-        }
-        path
+        self.heap[i] = x;
+        self.pos[x.index()] = i as i32;
     }
 
-    fn format_term(&self, node: ENodeId) -> String {
-        let enode = &self.enodes[node.index()];
-        let name = &self.fun_names[enode.fun.index()];
-        if enode.args.is_empty() {
-            return name.clone();
+    /// Moves the element at `i` downward until the heap invariant is restored.
+    fn percolate_down(&mut self, mut i: usize, activity: &[f64]) {
+        let x = self.heap[i];
+        loop {
+            let l = (i << 1) + 1;
+            if l >= self.heap.len() {
+                break;
+            }
+            let r = l + 1;
+            let best = if r < self.heap.len() && Self::less(self.heap[l], self.heap[r], activity) {
+                r
+            } else {
+                l
+            };
+            if !Self::less(x, self.heap[best], activity) {
+                break;
+            }
+            self.heap[i] = self.heap[best];
+            self.pos[self.heap[i].index()] = i as i32;
+            i = best;
         }
-        let args = enode
-            .args
-            .iter()
-            .map(|&arg| self.format_term(arg))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("{name}({args})")
+        self.heap[i] = x;
+        self.pos[x.index()] = i as i32;
     }
 }
 
+/// A CDCL SAT solver over CNF formulas.
+#[derive(Debug)]
 pub struct Solver {
-    sat: SatCore,
-    egraph: EGraph,
-    eq_vars: HashMap<EqKey, BoolVar>,
-    var_eqs: Vec<Option<EqKey>>,
-    theory_head: usize,
+    /// Whether the clause database is still known to be consistent.
+    ok: bool,
+    /// The number of variables allocated in the solver.
+    nvars: usize,
+
+    /// Current assignment for each variable.
+    assigns: Vec<LBool>,
+    /// Decision level at which each variable was assigned.
+    level: Vec<usize>,
+    /// Antecedent reason for each assignment.
+    reason: Vec<Reason>,
+    /// Saved branching polarity for phase saving.
+    phase: Vec<bool>,
+    /// Count of variables that are currently assigned.
+    assigned_count: usize,
+
+    /// Assignment trail in chronological order.
+    trail: Vec<Lit>,
+    /// Trail indices that start each decision level.
+    trail_lim: Vec<usize>,
+    /// Read cursor into `trail` for propagation.
+    qhead: usize,
+
+    /// Watch lists indexed by packed literal.
+    watches: Vec<Vec<Watcher>>,
+    /// Arena storing all long clauses.
+    clauses: Vec<Clause>,
+    /// Active learned clauses eligible for reduction.
+    learnts: Vec<ClauseId>,
+
+    /// VSIDS activity per variable.
+    var_activity: Vec<f64>,
+    /// Current increment added when bumping variable activity.
+    var_inc: f64,
+    /// Multiplicative decay factor for variable activity.
+    var_decay: f64,
+    /// Heap of unassigned decision candidates.
+    order: VarHeap,
+
+    /// Current increment added when bumping clause activity.
+    clause_inc: f64,
+    /// Multiplicative decay factor for clause activity.
+    clause_decay: f64,
+
+    /// Temporary marks used during conflict analysis.
+    seen: Vec<bool>,
+    /// Variables marked during conflict analysis for later cleanup.
+    analyze_stack: Vec<Var>,
+
+    /// Number of conflicts seen during the current search.
+    conflicts: usize,
 }
 
 impl Default for Solver {
@@ -982,367 +347,798 @@ impl Default for Solver {
 }
 
 impl Solver {
+    /// Creates an empty solver with no variables or clauses.
     pub fn new() -> Self {
         Self {
-            sat: SatCore::new(),
-            egraph: EGraph::new(),
-            eq_vars: HashMap::new(),
-            var_eqs: Vec::new(),
-            theory_head: 0,
+            ok: true,
+            nvars: 0,
+            assigns: Vec::new(),
+            level: Vec::new(),
+            reason: Vec::new(),
+            phase: Vec::new(),
+            assigned_count: 0,
+            trail: Vec::new(),
+            trail_lim: Vec::new(),
+            qhead: 0,
+            watches: Vec::new(),
+            clauses: Vec::new(),
+            learnts: Vec::new(),
+            var_activity: Vec::new(),
+            var_inc: 1.0,
+            var_decay: 0.95,
+            order: VarHeap::new(),
+            clause_inc: 1.0,
+            clause_decay: 0.999,
+            seen: Vec::new(),
+            analyze_stack: Vec::new(),
+            conflicts: 0,
         }
     }
 
-    pub fn fun(&mut self, name: impl Into<String>) -> FunId {
-        self.egraph.fun(name)
-    }
-
-    pub fn constant(&mut self, name: impl Into<String>) -> ENodeId {
-        self.egraph.constant(name)
-    }
-
-    pub fn app(&mut self, fun: FunId, args: &[ENodeId]) -> ENodeId {
-        self.egraph.app(fun, args)
-    }
-
-    pub fn app_named(&mut self, name: impl Into<String>, args: &[ENodeId]) -> ENodeId {
-        self.egraph.app_named(name, args)
-    }
-
-    pub fn new_bool(&mut self) -> Lit {
-        let var = self.sat.new_var();
-        self.var_eqs.push(None);
-        Lit::positive(var)
-    }
-
-    pub fn eq_lit(&mut self, lhs: ENodeId, rhs: ENodeId) -> Lit {
-        let key = EqKey::new(lhs, rhs);
-        if let Some(&var) = self.eq_vars.get(&key) {
-            return Lit::positive(var);
+    /// Creates a solver preallocated with `n` variables.
+    pub fn with_vars(n: usize) -> Self {
+        let mut s = Self::new();
+        for _ in 0..n {
+            s.new_var();
         }
-        let var = self.sat.new_var();
-        self.var_eqs.push(Some(key));
-        self.eq_vars.insert(key, var);
-        Lit::positive(var)
+        s
     }
 
-    pub fn add_clause(&mut self, lits: &[Lit]) {
-        self.sat.add_problem_clause(lits.to_vec());
+    /// Adds a fresh variable and returns its identifier.
+    pub fn new_var(&mut self) -> Var {
+        let v = Var(self.nvars as u32);
+        self.nvars += 1;
+        self.assigns.push(LBool::Undef);
+        self.level.push(0);
+        self.reason.push(Reason::None);
+        self.phase.push(true);
+        self.watches.push(Vec::new());
+        self.watches.push(Vec::new());
+        self.var_activity.push(0.0);
+        self.seen.push(false);
+        self.order.new_var();
+        self.order.insert(v, &self.var_activity);
+        v
     }
 
-    pub fn solve(&mut self) -> SolveResult {
-        loop {
-            if let Some(conflict) = self.propagate() {
-                if self.sat.decision_level() == 0 {
-                    return SolveResult::Unsat;
-                }
-                let (learnt, backtrack_level) = self.sat.analyze(conflict);
-                self.backtrack(backtrack_level);
-                let cid = self.sat.add_clause(learnt.clone(), true);
-                let asserting = learnt[0];
-                if !self.sat.enqueue(asserting, Some(Reason::Clause(cid))) {
-                    return SolveResult::Unsat;
-                }
-                continue;
-            }
-
-            if self.sat.all_assigned() {
-                return SolveResult::Sat;
-            }
-
-            let Some(decision) = self.sat.pick_branch_lit() else {
-                return SolveResult::Sat;
-            };
-            self.sat.new_decision_level();
-            self.egraph.push_level();
-            if !self.sat.enqueue(decision, None) {
-                return SolveResult::Unsat;
-            }
-        }
+    /// Returns the number of variables currently known to the solver.
+    pub fn num_vars(&self) -> usize {
+        self.nvars
     }
 
-    fn propagate(&mut self) -> Option<ClauseId> {
-        loop {
-            if let Some(conflict) = self.sat.propagate() {
-                return Some(conflict);
-            }
-
-            if let Some(conflict) = self.propagate_theory_assignments() {
-                return Some(conflict);
-            }
-
-            if let Some(conflict_or_progress) = self.propagate_theory_equalities() {
-                match conflict_or_progress {
-                    TheoryStep::Conflict(cid) => return Some(cid),
-                    TheoryStep::Progress => continue,
-                }
-            }
-
-            return None;
-        }
+    /// Returns the current decision level.
+    pub fn decision_level(&self) -> usize {
+        self.trail_lim.len()
     }
 
-    fn propagate_theory_assignments(&mut self) -> Option<ClauseId> {
-        while self.theory_head < self.sat.trail.len() {
-            let lit = self.sat.trail[self.theory_head];
-            self.theory_head += 1;
-
-            let Some(key) = self.var_eqs[lit.var.index()] else {
-                continue;
-            };
-
-            let conflict_clause = if lit.neg {
-                self.egraph.assert_ne(key.a, key.b, lit)
-            } else {
-                self.egraph.assert_eq(key.a, key.b, lit)
-            };
-
-            if let Some(clause_lits) = conflict_clause {
-                let cid = self.sat.add_clause(clause_lits, true);
-                return Some(cid);
-            }
-        }
-        None
-    }
-
-    fn propagate_theory_equalities(&mut self) -> Option<TheoryStep> {
-        let atoms = self
-            .eq_vars
-            .iter()
-            .map(|(&key, &var)| (key, var))
-            .collect::<Vec<_>>();
-
-        for (key, var) in atoms {
-            if !self.egraph.are_equal(key.a, key.b) {
-                continue;
-            }
-
-            let lit = Lit::positive(var);
-            match self.sat.value_lit(lit) {
-                LBool::True => {}
-                LBool::False => {
-                    let assigned_diseq = lit.negated();
-                    let clause = self
-                        .egraph
-                        .explain_diseq_conflict(key.a, key.b, assigned_diseq);
-                    let cid = self.sat.add_clause(clause, true);
-                    return Some(TheoryStep::Conflict(cid));
-                }
-                LBool::Undef => {
-                    let clause = self
-                        .egraph
-                        .explain_eq_clause_for_propagation(key.a, key.b, lit);
-                    let cid = self.sat.add_clause(clause, true);
-                    if !self.sat.enqueue(lit, Some(Reason::Clause(cid))) {
-                        return Some(TheoryStep::Conflict(cid));
-                    }
-                    return Some(TheoryStep::Progress);
-                }
-            }
-        }
-
-        None
-    }
-
-    fn backtrack(&mut self, target_level: usize) {
-        self.sat.cancel_until(target_level);
-        self.theory_head = self.theory_head.min(self.sat.trail.len());
-        self.egraph.pop_to_level(target_level);
-    }
-
-    pub fn value(&self, lit: Lit) -> Option<bool> {
-        match self.sat.value_lit(lit) {
+    /// Returns the current truth value of `lit`, if assigned.
+    ///
+    /// The return value is `Some(true)` when `lit` is satisfied, `Some(false)` when
+    /// `lit` is falsified, and `None` when its variable is unassigned.
+    pub fn value_lit_public(&self, lit: Lit) -> Option<bool> {
+        match self.value_lit(lit) {
             LBool::True => Some(true),
             LBool::False => Some(false),
             LBool::Undef => None,
         }
     }
 
-    pub fn are_equal(&self, lhs: ENodeId, rhs: ENodeId) -> bool {
-        self.egraph.are_equal(lhs, rhs)
+    /// Returns a complete model when the solver currently holds one.
+    ///
+    /// The model is indexed by variable and contains the underlying variable value,
+    /// not literal satisfaction.
+    pub fn model(&self) -> Option<Vec<bool>> {
+        if !self.ok || self.assigned_count != self.nvars {
+            return None;
+        }
+        Some(self.assigns.iter().map(|v| *v == LBool::True).collect())
     }
 
-    pub fn format_term(&self, node: ENodeId) -> String {
-        self.egraph.format_term(node)
+    /// Adds a CNF clause to the database.
+    ///
+    /// The method returns `false` when the clause makes the formula immediately
+    /// inconsistent; otherwise it returns `true`. Tautological and already-satisfied
+    /// clauses are ignored.
+    pub fn add_clause(&mut self, lits: &[Lit]) -> bool {
+        if !self.ok {
+            return false;
+        }
+        let Some(mut ps) = self.prepare_clause(lits) else {
+            return true;
+        };
+        match ps.len() {
+            0 => {
+                self.ok = false;
+                false
+            }
+            1 => {
+                if !self.enqueue(ps[0], Reason::None) {
+                    self.ok = false;
+                    return false;
+                }
+                true
+            }
+            2 => {
+                self.attach_binary(ps[0], ps[1]);
+                true
+            }
+            _ => {
+                self.attach_long(mem::take(&mut ps), false);
+                true
+            }
+        }
     }
 
-    pub fn learnt_clause_count(&self) -> usize {
-        self.sat.clauses.iter().filter(|c| c.learnt).count()
+    /// Searches for a satisfying assignment for the current formula.
+    pub fn solve(&mut self) -> SatResult {
+        if !self.ok {
+            return SatResult::Unsat;
+        }
+
+        let mut restart_conflicts = 0usize;
+        let mut restart_limit = 100usize;
+        let mut next_reduce = 2_000usize;
+
+        loop {
+            if let Some(conflict) = self.propagate() {
+                self.conflicts += 1;
+                restart_conflicts += 1;
+
+                if self.decision_level() == 0 {
+                    self.ok = false;
+                    return SatResult::Unsat;
+                }
+
+                let (learnt, backtrack_level) = self.analyze(conflict);
+                self.cancel_until(backtrack_level);
+                self.add_learnt_clause(learnt);
+                self.var_decay_activity();
+                self.clause_decay_activity();
+
+                if self.conflicts >= next_reduce {
+                    self.reduce_db();
+                    next_reduce += 2_000;
+                }
+
+                continue;
+            }
+
+            if self.assigned_count == self.nvars {
+                return SatResult::Sat;
+            }
+
+            if restart_conflicts >= restart_limit {
+                self.cancel_until(0);
+                restart_conflicts = 0;
+                restart_limit = ((restart_limit as f64) * 1.5) as usize + 1;
+                continue;
+            }
+
+            let Some(next) = self.pick_branch_lit() else {
+                return SatResult::Sat;
+            };
+            self.new_decision_level();
+            let _ = self.enqueue(next, Reason::None);
+        }
+    }
+
+    /// Normalizes a clause under the current assignment.
+    ///
+    /// Satisfied clauses return `None`. Otherwise the result is sorted, duplicate-free,
+    /// and stripped of literals already known to be false. Tautologies also return
+    /// `None`.
+    fn prepare_clause(&self, lits: &[Lit]) -> Option<Vec<Lit>> {
+        let mut ps = Vec::with_capacity(lits.len());
+        for &lit in lits {
+            match self.value_lit(lit) {
+                LBool::True => return None,
+                LBool::False => {}
+                LBool::Undef => ps.push(lit),
+            }
+        }
+
+        ps.sort_unstable_by_key(|lit| lit.index());
+
+        let mut out = Vec::with_capacity(ps.len());
+        let mut prev: Option<Lit> = None;
+        for lit in ps {
+            if prev == Some(lit) {
+                continue;
+            }
+            if let Some(p) = prev
+                && p.var() == lit.var()
+                && p.is_negated() != lit.is_negated()
+            {
+                return None;
+            }
+            out.push(lit);
+            prev = Some(lit);
+        }
+        Some(out)
+    }
+
+    /// Attaches a binary clause to both of its watch lists.
+    fn attach_binary(&mut self, a: Lit, b: Lit) {
+        self.watches[a.index()].push(Watcher::Binary { other: b });
+        self.watches[b.index()].push(Watcher::Binary { other: a });
+    }
+
+    /// Stores and watches a long clause, optionally marking it as learned.
+    fn attach_long(&mut self, lits: Vec<Lit>, learnt: bool) -> ClauseId {
+        debug_assert!(lits.len() >= 3);
+        let cid = ClauseId(self.clauses.len());
+        let w0 = lits[0];
+        let w1 = lits[1];
+        self.clauses.push(Clause {
+            lits,
+            learnt,
+            activity: 0.0,
+            deleted: false,
+        });
+        self.watches[w0.index()].push(Watcher::Long {
+            clause: cid,
+            blocker: w1,
+        });
+        self.watches[w1.index()].push(Watcher::Long {
+            clause: cid,
+            blocker: w0,
+        });
+        if learnt {
+            self.learnts.push(cid);
+            self.clauses[cid.0].activity = self.clause_inc;
+        }
+        cid
+    }
+
+    /// Inserts a learned clause and enqueues its asserting literal.
+    fn add_learnt_clause(&mut self, mut lits: Vec<Lit>) {
+        debug_assert!(!lits.is_empty());
+        if lits.len() > 1 {
+            let mut max_i = 1;
+            for i in 2..lits.len() {
+                if self.level[lits[i].var().index()] > self.level[lits[max_i].var().index()] {
+                    max_i = i;
+                }
+            }
+            lits.swap(1, max_i);
+        }
+
+        match lits.len() {
+            1 => {
+                let _ = self.enqueue(lits[0], Reason::None);
+            }
+            2 => {
+                self.attach_binary(lits[0], lits[1]);
+                let _ = self.enqueue(lits[0], Reason::Binary(lits[0], lits[1]));
+            }
+            _ => {
+                let cid = self.attach_long(lits, true);
+                let lit = self.clauses[cid.0].lits[0];
+                let _ = self.enqueue(lit, Reason::Clause(cid));
+            }
+        }
+    }
+
+    /// Assigns `lit` if it is undefined and checks for immediate contradiction.
+    fn enqueue(&mut self, lit: Lit, reason: Reason) -> bool {
+        match self.value_lit(lit) {
+            LBool::True => true,
+            LBool::False => false,
+            LBool::Undef => {
+                let v = lit.var().index();
+                self.assigns[v] = if lit.is_negated() {
+                    LBool::False
+                } else {
+                    LBool::True
+                };
+                self.level[v] = self.decision_level();
+                self.reason[v] = reason;
+                self.phase[v] = !lit.is_negated();
+                self.trail.push(lit);
+                self.assigned_count += 1;
+                true
+            }
+        }
+    }
+
+    /// Evaluates the current truth value of `lit`.
+    fn value_lit(&self, lit: Lit) -> LBool {
+        Self::value_lit_in(&self.assigns, lit)
+    }
+
+    /// Evaluates `lit` against an arbitrary assignment slice.
+    fn value_lit_in(assigns: &[LBool], lit: Lit) -> LBool {
+        match assigns[lit.var().index()] {
+            LBool::Undef => LBool::Undef,
+            LBool::True => {
+                if lit.is_negated() {
+                    LBool::False
+                } else {
+                    LBool::True
+                }
+            }
+            LBool::False => {
+                if lit.is_negated() {
+                    LBool::True
+                } else {
+                    LBool::False
+                }
+            }
+        }
+    }
+
+    /// Propagates all pending assignments until fixpoint or conflict.
+    fn propagate(&mut self) -> Option<Conflict> {
+        while self.qhead < self.trail.len() {
+            let lit = self.trail[self.qhead];
+            self.qhead += 1;
+            let false_lit = !lit;
+            let watch_idx = false_lit.index();
+
+            let mut ws = mem::take(&mut self.watches[watch_idx]);
+            let mut out = 0usize;
+            let mut i = 0usize;
+
+            while i < ws.len() {
+                let watcher = ws[i];
+                let mut keep: Option<Watcher> = None;
+                let mut conflict: Option<Conflict> = None;
+
+                match watcher {
+                    Watcher::Binary { other } => match self.value_lit(other) {
+                        LBool::True => {
+                            keep = Some(watcher);
+                        }
+                        LBool::Undef => {
+                            keep = Some(watcher);
+                            if !self.enqueue(other, Reason::Binary(false_lit, other)) {
+                                conflict = Some(Conflict::Binary(false_lit, other));
+                            }
+                        }
+                        LBool::False => {
+                            keep = Some(watcher);
+                            conflict = Some(Conflict::Binary(false_lit, other));
+                        }
+                    },
+                    Watcher::Long { clause, blocker } => {
+                        if self.value_lit(blocker) == LBool::True {
+                            keep = Some(watcher);
+                        } else {
+                            match self.process_long_watch(clause, false_lit) {
+                                LongAction::Drop => {}
+                                LongAction::Keep { blocker } => {
+                                    keep = Some(Watcher::Long { clause, blocker });
+                                }
+                                LongAction::Move { new_watch, blocker } => {
+                                    self.watches[new_watch.index()]
+                                        .push(Watcher::Long { clause, blocker });
+                                }
+                                LongAction::Unit { lit } => {
+                                    keep = Some(Watcher::Long {
+                                        clause,
+                                        blocker: lit,
+                                    });
+                                    if !self.enqueue(lit, Reason::Clause(clause)) {
+                                        conflict = Some(Conflict::Clause(clause));
+                                    }
+                                }
+                                LongAction::Conflict => {
+                                    keep = Some(Watcher::Long {
+                                        clause,
+                                        blocker: false_lit,
+                                    });
+                                    conflict = Some(Conflict::Clause(clause));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(w) = keep {
+                    ws[out] = w;
+                    out += 1;
+                }
+
+                if let Some(c) = conflict {
+                    i += 1;
+                    while i < ws.len() {
+                        ws[out] = ws[i];
+                        out += 1;
+                        i += 1;
+                    }
+                    ws.truncate(out);
+                    self.watches[watch_idx] = ws;
+                    return Some(c);
+                }
+
+                i += 1;
+            }
+
+            ws.truncate(out);
+            self.watches[watch_idx] = ws;
+        }
+        None
+    }
+
+    /// Reprocesses a watched long clause whose second watcher became false.
+    fn process_long_watch(&mut self, cid: ClauseId, false_lit: Lit) -> LongAction {
+        let assigns = &self.assigns;
+        let c = &mut self.clauses[cid.0];
+
+        if c.deleted {
+            return LongAction::Drop;
+        }
+
+        if c.lits[0] == false_lit {
+            c.lits.swap(0, 1);
+        }
+        debug_assert_eq!(c.lits[1], false_lit);
+
+        let other = c.lits[0];
+        if Self::value_lit_in(assigns, other) == LBool::True {
+            return LongAction::Keep { blocker: other };
+        }
+
+        for k in 2..c.lits.len() {
+            if Self::value_lit_in(assigns, c.lits[k]) != LBool::False {
+                c.lits.swap(1, k);
+                let new_watch = c.lits[1];
+                return LongAction::Move {
+                    new_watch,
+                    blocker: other,
+                };
+            }
+        }
+
+        match Self::value_lit_in(assigns, other) {
+            LBool::Undef => LongAction::Unit { lit: other },
+            LBool::False => LongAction::Conflict,
+            LBool::True => LongAction::Keep { blocker: other },
+        }
+    }
+
+    /// Starts a new decision level at the current trail position.
+    fn new_decision_level(&mut self) {
+        self.trail_lim.push(self.trail.len());
+    }
+
+    /// Backtracks to `level`, undoing assignments above it.
+    fn cancel_until(&mut self, level: usize) {
+        if self.decision_level() <= level {
+            return;
+        }
+        let keep = self.trail_lim[level];
+        for i in (keep..self.trail.len()).rev() {
+            let lit = self.trail[i];
+            let v = lit.var();
+            let vi = v.index();
+            self.assigns[vi] = LBool::Undef;
+            self.reason[vi] = Reason::None;
+            self.level[vi] = 0;
+            self.assigned_count -= 1;
+            self.order.insert(v, &self.var_activity);
+        }
+        self.trail.truncate(keep);
+        self.trail_lim.truncate(level);
+        self.qhead = self.trail.len();
+    }
+
+    /// Picks the next unassigned branching literal according to activity and phase.
+    fn pick_branch_lit(&mut self) -> Option<Lit> {
+        while let Some(v) = self.order.pop_max(&self.var_activity) {
+            if self.assigns[v.index()] == LBool::Undef {
+                return Some(Lit::new(v, !self.phase[v.index()]));
+            }
+        }
+        None
+    }
+
+    /// Performs first-UIP conflict analysis and returns the learned clause.
+    ///
+    /// The tuple contains the learned clause and the backtrack level for its second
+    /// highest decision level literal.
+    fn analyze(&mut self, conflict: Conflict) -> (Vec<Lit>, usize) {
+        let current_level = self.decision_level();
+        let mut learnt = Vec::with_capacity(16);
+        learnt.push(Lit(0));
+
+        let mut path_count = 0usize;
+        let mut trail_idx = self.trail.len();
+        let mut source = self.conflict_source(conflict);
+        let mut resolved: Option<Var> = None;
+
+        loop {
+            if let AnalyzeSource::Clause(cid) = source {
+                self.bump_clause_activity(cid);
+            }
+
+            self.visit_source_lits(source, |this, q| {
+                let v = q.var();
+                if resolved == Some(v) {
+                    return;
+                }
+                let vi = v.index();
+                if !this.seen[vi] && this.level[vi] > 0 {
+                    this.seen[vi] = true;
+                    this.analyze_stack.push(v);
+                    this.bump_var_activity(v);
+                    if this.level[vi] == current_level {
+                        path_count += 1;
+                    } else {
+                        learnt.push(q);
+                    }
+                }
+            });
+
+            let p = loop {
+                trail_idx -= 1;
+                let p = self.trail[trail_idx];
+                if self.seen[p.var().index()] {
+                    break p;
+                }
+            };
+
+            let pv = p.var();
+            self.seen[pv.index()] = false;
+            path_count -= 1;
+
+            if path_count == 0 {
+                learnt[0] = !p;
+                break;
+            }
+
+            resolved = Some(pv);
+            source = match self.reason[pv.index()] {
+                Reason::Binary(a, b) => AnalyzeSource::Binary(a, b),
+                Reason::Clause(cid) => AnalyzeSource::Clause(cid),
+                Reason::None => {
+                    learnt[0] = !p;
+                    break;
+                }
+            };
+        }
+
+        for v in self.analyze_stack.drain(..) {
+            self.seen[v.index()] = false;
+        }
+
+        let mut backtrack_level = 0usize;
+        if learnt.len() > 1 {
+            let mut max_i = 1;
+            for i in 2..learnt.len() {
+                if self.level[learnt[i].var().index()] > self.level[learnt[max_i].var().index()] {
+                    max_i = i;
+                }
+            }
+            learnt.swap(1, max_i);
+            backtrack_level = self.level[learnt[1].var().index()];
+        }
+
+        (learnt, backtrack_level)
+    }
+
+    /// Converts a propagated conflict into a clause-like analysis source.
+    fn conflict_source(&self, conflict: Conflict) -> AnalyzeSource {
+        match conflict {
+            Conflict::Binary(a, b) => AnalyzeSource::Binary(a, b),
+            Conflict::Clause(cid) => AnalyzeSource::Clause(cid),
+        }
+    }
+
+    /// Visits the literals that participate in an analysis source without
+    /// allocating a temporary buffer.
+    fn visit_source_lits(&mut self, source: AnalyzeSource, mut visit: impl FnMut(&mut Self, Lit)) {
+        match source {
+            AnalyzeSource::Binary(a, b) => {
+                visit(self, a);
+                visit(self, b);
+            }
+            AnalyzeSource::Clause(cid) => {
+                let len = self.clauses[cid.0].lits.len();
+                for idx in 0..len {
+                    let lit = self.clauses[cid.0].lits[idx];
+                    visit(self, lit);
+                }
+            }
+        }
+    }
+
+    /// Increases the activity score of `v` and updates heap order.
+    fn bump_var_activity(&mut self, v: Var) {
+        let vi = v.index();
+        self.var_activity[vi] += self.var_inc;
+        if self.var_activity[vi] > 1e100 {
+            for a in &mut self.var_activity {
+                *a *= 1e-100;
+            }
+            self.var_inc *= 1e-100;
+        }
+        self.order.increase(v, &self.var_activity);
+    }
+
+    /// Applies variable activity decay for future bumps.
+    fn var_decay_activity(&mut self) {
+        self.var_inc *= 1.0 / self.var_decay;
+    }
+
+    /// Increases the activity score of a learned clause.
+    fn bump_clause_activity(&mut self, cid: ClauseId) {
+        if !self.clauses[cid.0].learnt || self.clauses[cid.0].deleted {
+            return;
+        }
+        self.clauses[cid.0].activity += self.clause_inc;
+        if self.clauses[cid.0].activity > 1e20 {
+            for c in &mut self.clauses {
+                c.activity *= 1e-20;
+            }
+            self.clause_inc *= 1e-20;
+        }
+    }
+
+    /// Applies clause activity decay for future bumps.
+    fn clause_decay_activity(&mut self) {
+        self.clause_inc *= 1.0 / self.clause_decay;
+    }
+
+    /// Deletes the least useful half of removable learned clauses.
+    fn reduce_db(&mut self) {
+        if self.learnts.len() < 128 {
+            return;
+        }
+
+        let mut locked = vec![false; self.clauses.len()];
+        for &reason in &self.reason {
+            if let Reason::Clause(cid) = reason {
+                locked[cid.0] = true;
+            }
+        }
+
+        let mut candidates: Vec<ClauseId> = self
+            .learnts
+            .iter()
+            .copied()
+            .filter(|cid| {
+                let c = &self.clauses[cid.0];
+                !c.deleted && c.lits.len() > 2 && !locked[cid.0]
+            })
+            .collect();
+
+        candidates.sort_by(|a, b| {
+            self.clauses[a.0]
+                .activity
+                .partial_cmp(&self.clauses[b.0].activity)
+                .unwrap_or(Ordering::Equal)
+        });
+
+        let remove = candidates.len() / 2;
+        for cid in candidates.into_iter().take(remove) {
+            self.clauses[cid.0].deleted = true;
+        }
+
+        self.learnts.retain(|cid| !self.clauses[cid.0].deleted);
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TheoryStep {
-    Conflict(ClauseId),
-    Progress,
+/// Parses a DIMACS CNF document into a [`Solver`].
+///
+/// The returned solver already contains the declared variables and clauses but does
+/// not run search automatically.
+pub fn parse_dimacs(input: &str) -> Result<Solver, String> {
+    let mut declared_vars: Option<usize> = None;
+    let mut declared_clauses: Option<usize> = None;
+    let mut clauses: Vec<Vec<Lit>> = Vec::new();
+    let mut current: Vec<Lit> = Vec::new();
+
+    for line in input.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('c') {
+            continue;
+        }
+        if line.starts_with('p') {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() != 4 || parts[1] != "cnf" {
+                return Err(format!("bad problem line: {line}"));
+            }
+            declared_vars = Some(
+                parts[2]
+                    .parse()
+                    .map_err(|_| format!("bad var count: {}", parts[2]))?,
+            );
+            declared_clauses = Some(
+                parts[3]
+                    .parse()
+                    .map_err(|_| format!("bad clause count: {}", parts[3]))?,
+            );
+            continue;
+        }
+
+        for tok in line.split_whitespace() {
+            let x: i32 = tok
+                .parse()
+                .map_err(|_| format!("bad integer token: {tok}"))?;
+            if x == 0 {
+                clauses.push(mem::take(&mut current));
+            } else {
+                current.push(Lit::from_dimacs(x));
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        return Err("last clause is missing trailing 0".to_string());
+    }
+
+    let nvars = declared_vars.ok_or_else(|| "missing p cnf line".to_string())?;
+    if let Some(nclauses) = declared_clauses
+        && nclauses != clauses.len()
+    {
+        return Err(format!(
+            "declared {nclauses} clauses, parsed {}",
+            clauses.len()
+        ));
+    }
+
+    let mut solver = Solver::with_vars(nvars);
+    for clause in clauses {
+        for lit in &clause {
+            if lit.var().index() >= nvars {
+                return Err(format!(
+                    "literal uses variable {} beyond declared {nvars}",
+                    lit.var().index() + 1
+                ));
+            }
+        }
+        solver.add_clause(&clause);
+    }
+    Ok(solver)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn lit(v: Var) -> Lit {
+        Lit::new(v, false)
+    }
 
-    #[test]
-    fn signature_log_removes_merge_created_lookup_on_pop() {
-        let mut e = EGraph::new();
-        let f = e.fun("f");
-        let a = e.constant("a");
-        let b = e.constant("b");
-        let _fa = e.app(f, &[a]);
-
-        let base_log_len = e.signature_log.len();
-        let stale_after_merge = AppSignature {
-            fun: f,
-            arg_roots: vec![b],
-        };
-        assert!(!e.signatures.contains_key(&stale_after_merge));
-
-        e.push_level();
-        e.assert_eq(a, b, Lit::positive(BoolVar(0)));
-
-        assert!(e.signatures.contains_key(&stale_after_merge));
-        assert!(e.signature_log.len() > base_log_len);
-
-        e.pop_to_level(0);
-
-        assert_eq!(e.signature_log.len(), base_log_len);
-        assert!(!e.signatures.contains_key(&stale_after_merge));
-        assert!(!e.are_equal(a, b));
+    fn nlit(v: Var) -> Lit {
+        Lit::new(v, true)
     }
 
     #[test]
-    fn pure_sat_unsat() {
+    fn unit_sat() {
         let mut s = Solver::new();
-        let p = s.new_bool();
-        s.add_clause(&[p]);
-        s.add_clause(&[p.negated()]);
-        assert_eq!(s.solve(), SolveResult::Unsat);
+        let x = s.new_var();
+        assert!(s.add_clause(&[lit(x)]));
+        assert_eq!(s.solve(), SatResult::Sat);
+        assert_eq!(s.value_lit_public(lit(x)), Some(true));
     }
 
     #[test]
-    fn pure_sat_sat() {
+    fn direct_unsat() {
         let mut s = Solver::new();
-        let p = s.new_bool();
-        let q = s.new_bool();
-        s.add_clause(&[p, q]);
-        s.add_clause(&[p.negated(), q]);
-        assert_eq!(s.solve(), SolveResult::Sat);
-        assert_eq!(s.value(q), Some(true));
+        let x = s.new_var();
+        assert!(s.add_clause(&[lit(x)]));
+        assert!(!s.add_clause(&[nlit(x)]));
+        assert_eq!(s.solve(), SatResult::Unsat);
     }
 
     #[test]
-    fn direct_euf_conflict() {
+    fn xor_unsat() {
         let mut s = Solver::new();
-        let f = s.fun("f");
-        let a = s.constant("a");
-        let b = s.constant("b");
-        let fa = s.app(f, &[a]);
-        let fb = s.app(f, &[b]);
-
-        let ab = s.eq_lit(a, b);
-        let fafb = s.eq_lit(fa, fb);
-
-        s.add_clause(&[ab]);
-        s.add_clause(&[fafb.negated()]);
-
-        assert_eq!(s.solve(), SolveResult::Unsat);
-        assert!(s.learnt_clause_count() > 0);
+        let a = s.new_var();
+        let b = s.new_var();
+        assert!(s.add_clause(&[lit(a), lit(b)]));
+        assert!(s.add_clause(&[nlit(a), lit(b)]));
+        assert!(s.add_clause(&[lit(a), nlit(b)]));
+        assert!(s.add_clause(&[nlit(a), nlit(b)]));
+        assert_eq!(s.solve(), SatResult::Unsat);
     }
 
     #[test]
-    fn transitive_euf_conflict() {
-        let mut s = Solver::new();
-        let f = s.fun("f");
-        let a = s.constant("a");
-        let b = s.constant("b");
-        let c = s.constant("c");
-        let fa = s.app(f, &[a]);
-        let fc = s.app(f, &[c]);
-
-        let ab = s.eq_lit(a, b);
-        let bc = s.eq_lit(b, c);
-        let fafc = s.eq_lit(fa, fc);
-
-        s.add_clause(&[ab]);
-        s.add_clause(&[bc]);
-        s.add_clause(&[fafc.negated()]);
-
-        assert_eq!(s.solve(), SolveResult::Unsat);
-    }
-
-    #[test]
-    fn cdcl_learns_from_theory_conflict() {
-        let mut s = Solver::new();
-        let f = s.fun("f");
-        let a = s.constant("a");
-        let b = s.constant("b");
-        let fa = s.app(f, &[a]);
-        let fb = s.app(f, &[b]);
-
-        let p = s.new_bool();
-        let ab = s.eq_lit(a, b);
-        let fafb = s.eq_lit(fa, fb);
-
-        s.add_clause(&[p, ab]);
-        s.add_clause(&[p.negated(), ab]);
-        s.add_clause(&[fafb.negated()]);
-
-        assert_eq!(s.solve(), SolveResult::Unsat);
-        assert!(s.learnt_clause_count() > 0);
-    }
-
-    #[test]
-    fn sat_with_unconstrained_uf_terms() {
-        let mut s = Solver::new();
-        let f = s.fun("f");
-        let a = s.constant("a");
-        let b = s.constant("b");
-        let fa = s.app(f, &[a]);
-        let fb = s.app(f, &[b]);
-
-        let ab = s.eq_lit(a, b);
-        let fafb = s.eq_lit(fa, fb);
-
-        s.add_clause(&[ab.negated()]);
-        s.add_clause(&[fafb.negated()]);
-
-        assert_eq!(s.solve(), SolveResult::Sat);
-    }
-
-    #[test]
-    fn theory_propagates_positive_equality() {
-        let mut s = Solver::new();
-        let f = s.fun("f");
-        let a = s.constant("a");
-        let b = s.constant("b");
-        let fa = s.app(f, &[a]);
-        let fb = s.app(f, &[b]);
-
-        let ab = s.eq_lit(a, b);
-        let fafb = s.eq_lit(fa, fb);
-
-        s.add_clause(&[ab]);
-        assert_eq!(s.solve(), SolveResult::Sat);
-        assert_eq!(s.value(fafb), Some(true));
-    }
-
-    #[test]
-    fn nested_congruence_explanation() {
-        let mut s = Solver::new();
-        let f = s.fun("f");
-        let g = s.fun("g");
-        let a = s.constant("a");
-        let b = s.constant("b");
-        let ga = s.app(g, &[a]);
-        let gb = s.app(g, &[b]);
-        let fga = s.app(f, &[ga]);
-        let fgb = s.app(f, &[gb]);
-
-        let ab = s.eq_lit(a, b);
-        let fg = s.eq_lit(fga, fgb);
-
-        s.add_clause(&[ab]);
-        s.add_clause(&[fg.negated()]);
-
-        assert_eq!(s.solve(), SolveResult::Unsat);
+    fn dimacs_sat() {
+        let input = "p cnf 3 2\n1 -2 0\n2 3 0\n";
+        let mut s = parse_dimacs(input).unwrap();
+        assert_eq!(s.solve(), SatResult::Sat);
     }
 }
