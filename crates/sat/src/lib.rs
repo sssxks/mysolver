@@ -161,14 +161,6 @@ impl Clause {
         Lit(self.words[ClauseArena::HEADER_WORDS + idx])
     }
 
-    /// Iterates over all literals in stored order.
-    fn lits(&self) -> impl Iterator<Item = Lit> + '_ {
-        self.words[ClauseArena::HEADER_WORDS..]
-            .iter()
-            .copied()
-            .map(Lit)
-    }
-
     /// Returns the packed metadata word.
     fn meta(&self) -> u32 {
         self.words[0]
@@ -510,9 +502,6 @@ pub struct Solver {
     seen: Vec<bool>,
     /// Variables marked during conflict analysis for later cleanup.
     analyze_stack: Vec<Var>,
-    /// Reusable literal buffer for clause-based conflict analysis.
-    analyze_lits: Vec<Lit>,
-
     /// Number of conflicts seen during the current search.
     conflicts: usize,
 }
@@ -548,7 +537,6 @@ impl Solver {
             clause_decay: 0.999,
             seen: Vec::new(),
             analyze_stack: Vec::new(),
-            analyze_lits: Vec::new(),
             conflicts: 0,
         }
     }
@@ -1024,23 +1012,19 @@ impl Solver {
                 self.bump_clause_activity(cid);
             }
 
-            self.visit_source_lits(source, |this, q| {
-                let v = q.var();
-                if resolved == Some(v) {
-                    return;
+            match source {
+                AnalyzeSource::Binary(a, b) => {
+                    self.analyze_lit(a, resolved, current_level, &mut path_count, &mut learnt);
+                    self.analyze_lit(b, resolved, current_level, &mut path_count, &mut learnt);
                 }
-                let vi = v.index();
-                if !this.seen[vi] && this.level[vi] > 0 {
-                    this.seen[vi] = true;
-                    this.analyze_stack.push(v);
-                    this.bump_var_activity(v);
-                    if this.level[vi] == current_level {
-                        path_count += 1;
-                    } else {
-                        learnt.push(q);
+                AnalyzeSource::Clause(cid) => {
+                    let len = self.clauses[cid].len();
+                    for i in 0..len {
+                        let q = self.clauses[cid].lit(i);
+                        self.analyze_lit(q, resolved, current_level, &mut path_count, &mut learnt);
                     }
                 }
-            });
+            }
 
             let p = loop {
                 trail_idx -= 1;
@@ -1097,21 +1081,28 @@ impl Solver {
         }
     }
 
-    /// Visits the literals that participate in an analysis source.
-    fn visit_source_lits(&mut self, source: AnalyzeSource, mut visit: impl FnMut(&mut Self, Lit)) {
-        match source {
-            AnalyzeSource::Binary(a, b) => {
-                visit(self, a);
-                visit(self, b);
-            }
-            AnalyzeSource::Clause(cid) => {
-                let mut lits = mem::take(&mut self.analyze_lits);
-                lits.clear();
-                lits.extend(self.clauses[cid].lits());
-                for lit in lits.iter().copied() {
-                    visit(self, lit);
-                }
-                self.analyze_lits = lits;
+    /// Marks one analysis literal and records its contribution to the learned clause.
+    fn analyze_lit(
+        &mut self,
+        q: Lit,
+        resolved: Option<Var>,
+        current_level: usize,
+        path_count: &mut usize,
+        learnt: &mut Vec<Lit>,
+    ) {
+        let v = q.var();
+        if resolved == Some(v) {
+            return;
+        }
+        let vi = v.index();
+        if !self.seen[vi] && self.level[vi] > 0 {
+            self.seen[vi] = true;
+            self.analyze_stack.push(v);
+            self.bump_var_activity(v);
+            if self.level[vi] == current_level {
+                *path_count += 1;
+            } else {
+                learnt.push(q);
             }
         }
     }
