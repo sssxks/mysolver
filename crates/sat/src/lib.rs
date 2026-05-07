@@ -120,6 +120,119 @@ struct ClauseArena {
     offsets: Vec<usize>,
 }
 
+/// An immutable view over one packed clause header and its trailing literals.
+#[derive(Copy, Clone, Debug)]
+struct ClauseRef<'a> {
+    /// Packed header and literal words for one clause.
+    words: &'a [u32],
+}
+
+impl ClauseRef<'_> {
+    /// Returns the number of literals stored in this clause.
+    fn len(self) -> usize {
+        (self.meta() & ClauseArena::LEN_MASK) as usize
+    }
+
+    /// Returns whether this clause was learned during search.
+    fn is_learnt(self) -> bool {
+        (self.meta() & ClauseArena::LEARNT_BIT) != 0
+    }
+
+    /// Returns whether this clause has been lazily deleted.
+    fn is_deleted(self) -> bool {
+        (self.meta() & ClauseArena::DELETED_BIT) != 0
+    }
+
+    /// Returns the stored clause activity score.
+    fn activity(self) -> f64 {
+        let lo = self.words[1] as u64;
+        let hi = self.words[2] as u64;
+        f64::from_bits(lo | (hi << 32))
+    }
+
+    /// Returns literal `idx` from the trailing literal payload.
+    fn lit(self, idx: usize) -> Lit {
+        debug_assert!(idx < self.len());
+        Lit(self.words[ClauseArena::HEADER_WORDS + idx])
+    }
+
+    /// Iterates over all literals in stored order.
+    fn lits(&self) -> impl Iterator<Item = Lit> + '_ {
+        self.words[ClauseArena::HEADER_WORDS..]
+            .iter()
+            .copied()
+            .map(Lit)
+    }
+
+    /// Returns the packed metadata word.
+    fn meta(self) -> u32 {
+        self.words[0]
+    }
+}
+
+/// A mutable view over one packed clause header and its trailing literals.
+#[derive(Debug)]
+struct ClauseMut<'a> {
+    /// Packed header and literal words for one clause.
+    words: &'a mut [u32],
+}
+
+impl ClauseMut<'_> {
+    /// Returns an immutable view over the same clause.
+    fn as_ref(&self) -> ClauseRef<'_> {
+        ClauseRef { words: self.words }
+    }
+
+    /// Returns the number of literals stored in this clause.
+    fn len(&self) -> usize {
+        self.as_ref().len()
+    }
+
+    /// Returns whether this clause was learned during search.
+    fn is_learnt(&self) -> bool {
+        self.as_ref().is_learnt()
+    }
+
+    /// Returns whether this clause has been lazily deleted.
+    fn is_deleted(&self) -> bool {
+        self.as_ref().is_deleted()
+    }
+
+    /// Returns the stored clause activity score.
+    fn activity(&self) -> f64 {
+        self.as_ref().activity()
+    }
+
+    /// Returns literal `idx` from the trailing literal payload.
+    fn lit(&self, idx: usize) -> Lit {
+        self.as_ref().lit(idx)
+    }
+
+    /// Marks this clause as deleted or active.
+    fn set_deleted(&mut self, deleted: bool) {
+        if deleted {
+            self.words[0] |= ClauseArena::DELETED_BIT;
+        } else {
+            self.words[0] &= !ClauseArena::DELETED_BIT;
+        }
+    }
+
+    /// Overwrites the stored clause activity score.
+    fn set_activity(&mut self, activity: f64) {
+        let bits = activity.to_bits();
+        self.words[1] = bits as u32;
+        self.words[2] = (bits >> 32) as u32;
+    }
+
+    /// Swaps two trailing literals in place.
+    fn swap_lits(&mut self, a: usize, b: usize) {
+        debug_assert!(a < self.len());
+        debug_assert!(b < self.len());
+        let lits_start = ClauseArena::HEADER_WORDS;
+        self.words.swap(lits_start + a, lits_start + b);
+    }
+}
+
 impl ClauseArena {
     /// Number of `u32` words stored in each clause header.
     const HEADER_WORDS: usize = 3;
@@ -152,78 +265,30 @@ impl ClauseArena {
         self.offsets.len()
     }
 
-    /// Returns the number of literals stored in `cid`.
-    fn lit_len(&self, cid: ClauseId) -> usize {
-        (self.meta(cid) & Self::LEN_MASK) as usize
-    }
-
-    /// Returns whether `cid` is a learned clause.
-    fn is_learnt(&self, cid: ClauseId) -> bool {
-        (self.meta(cid) & Self::LEARNT_BIT) != 0
-    }
-
-    /// Returns whether `cid` has been lazily deleted.
-    fn is_deleted(&self, cid: ClauseId) -> bool {
-        (self.meta(cid) & Self::DELETED_BIT) != 0
-    }
-
-    /// Marks `cid` as deleted or active without changing its other metadata.
-    fn set_deleted(&mut self, cid: ClauseId, deleted: bool) {
+    /// Returns an immutable view over `cid`.
+    fn clause(&self, cid: ClauseId) -> ClauseRef<'_> {
         let start = self.offsets[cid.0];
-        let mut meta = self.words[start];
-        if deleted {
-            meta |= Self::DELETED_BIT;
-        } else {
-            meta &= !Self::DELETED_BIT;
+        let end = start + Self::HEADER_WORDS + Self::payload_len(self.words[start]);
+        ClauseRef {
+            words: &self.words[start..end],
         }
-        self.words[start] = meta;
     }
 
-    /// Returns the clause activity currently stored in `cid`.
-    fn activity(&self, cid: ClauseId) -> f64 {
-        let start = self.offsets[cid.0] + 1;
-        let lo = self.words[start] as u64;
-        let hi = self.words[start + 1] as u64;
-        f64::from_bits(lo | (hi << 32))
-    }
-
-    /// Overwrites the activity score stored in `cid`.
-    fn set_activity(&mut self, cid: ClauseId, activity: f64) {
-        let start = self.offsets[cid.0] + 1;
-        let bits = activity.to_bits();
-        self.words[start] = bits as u32;
-        self.words[start + 1] = (bits >> 32) as u32;
+    /// Returns a mutable view over `cid`.
+    fn clause_mut(&mut self, cid: ClauseId) -> ClauseMut<'_> {
+        let start = self.offsets[cid.0];
+        let end = start + Self::HEADER_WORDS + Self::payload_len(self.words[start]);
+        ClauseMut {
+            words: &mut self.words[start..end],
+        }
     }
 
     /// Multiplies every clause activity by `factor`.
     fn scale_activities(&mut self, factor: f64) {
         for raw in 0..self.len() {
-            let cid = ClauseId(raw);
-            self.set_activity(cid, self.activity(cid) * factor);
-        }
-    }
-
-    /// Returns literal `idx` from `cid`.
-    fn lit(&self, cid: ClauseId, idx: usize) -> Lit {
-        debug_assert!(idx < self.lit_len(cid));
-        let start = self.lits_start(cid);
-        Lit(self.words[start + idx])
-    }
-
-    /// Swaps two literals inside `cid`.
-    fn swap_lits(&mut self, cid: ClauseId, a: usize, b: usize) {
-        debug_assert!(a < self.lit_len(cid));
-        debug_assert!(b < self.lit_len(cid));
-        let start = self.lits_start(cid);
-        self.words.swap(start + a, start + b);
-    }
-
-    /// Visits each literal in `cid` in stored order.
-    fn visit_lits(&self, cid: ClauseId, mut visit: impl FnMut(Lit)) {
-        let start = self.lits_start(cid);
-        let end = start + self.lit_len(cid);
-        for &raw in &self.words[start..end] {
-            visit(Lit(raw));
+            let mut clause = self.clause_mut(ClauseId(raw));
+            let activity = clause.activity() * factor;
+            clause.set_activity(activity);
         }
     }
 
@@ -239,14 +304,9 @@ impl ClauseArena {
         meta
     }
 
-    /// Returns the metadata word stored for `cid`.
-    fn meta(&self, cid: ClauseId) -> u32 {
-        self.words[self.offsets[cid.0]]
-    }
-
-    /// Returns the starting word index of `cid`'s literal payload.
-    fn lits_start(&self, cid: ClauseId) -> usize {
-        self.offsets[cid.0] + Self::HEADER_WORDS
+    /// Returns the trailing literal count encoded in one metadata word.
+    fn payload_len(meta: u32) -> usize {
+        (meta & Self::LEN_MASK) as usize
     }
 
     /// Appends the two packed `u32` words for an activity value.
@@ -716,7 +776,7 @@ impl Solver {
         });
         if learnt {
             self.learnts.push(cid);
-            self.clauses.set_activity(cid, self.clause_inc);
+            self.clauses.clause_mut(cid).set_activity(self.clause_inc);
         }
         cid
     }
@@ -744,7 +804,7 @@ impl Solver {
             }
             _ => {
                 let cid = self.attach_long(lits, true);
-                let lit = self.clauses.lit(cid, 0);
+                let lit = self.clauses.clause(cid).lit(0);
                 let _ = self.enqueue(lit, Reason::Clause(cid));
             }
         }
@@ -894,25 +954,26 @@ impl Solver {
     /// Reprocesses a watched long clause whose second watcher became false.
     fn process_long_watch(&mut self, cid: ClauseId, false_lit: Lit) -> LongAction {
         let assigns = &self.assigns;
-        if self.clauses.is_deleted(cid) {
+        let mut clause = self.clauses.clause_mut(cid);
+        if clause.is_deleted() {
             return LongAction::Drop;
         }
 
-        if self.clauses.lit(cid, 0) == false_lit {
-            self.clauses.swap_lits(cid, 0, 1);
+        if clause.lit(0) == false_lit {
+            clause.swap_lits(0, 1);
         }
-        debug_assert_eq!(self.clauses.lit(cid, 1), false_lit);
+        debug_assert_eq!(clause.lit(1), false_lit);
 
-        let other = self.clauses.lit(cid, 0);
+        let other = clause.lit(0);
         if Self::value_lit_in(assigns, other) == LBool::True {
             return LongAction::Keep { blocker: other };
         }
 
-        for k in 2..self.clauses.lit_len(cid) {
-            let candidate = self.clauses.lit(cid, k);
+        for k in 2..clause.len() {
+            let candidate = clause.lit(k);
             if Self::value_lit_in(assigns, candidate) != LBool::False {
-                self.clauses.swap_lits(cid, 1, k);
-                let new_watch = self.clauses.lit(cid, 1);
+                clause.swap_lits(1, k);
+                let new_watch = clause.lit(1);
                 return LongAction::Move {
                     new_watch,
                     blocker: other,
@@ -1065,7 +1126,7 @@ impl Solver {
             AnalyzeSource::Clause(cid) => {
                 let mut lits = mem::take(&mut self.analyze_lits);
                 lits.clear();
-                self.clauses.visit_lits(cid, |lit| lits.push(lit));
+                lits.extend(self.clauses.clause(cid).lits());
                 for lit in lits.iter().copied() {
                     visit(self, lit);
                 }
@@ -1094,11 +1155,15 @@ impl Solver {
 
     /// Increases the activity score of a learned clause.
     fn bump_clause_activity(&mut self, cid: ClauseId) {
-        if !self.clauses.is_learnt(cid) || self.clauses.is_deleted(cid) {
-            return;
-        }
-        let new_activity = self.clauses.activity(cid) + self.clause_inc;
-        self.clauses.set_activity(cid, new_activity);
+        let new_activity = {
+            let mut clause = self.clauses.clause_mut(cid);
+            if !clause.is_learnt() || clause.is_deleted() {
+                return;
+            }
+            let new_activity = clause.activity() + self.clause_inc;
+            clause.set_activity(new_activity);
+            new_activity
+        };
         if new_activity > 1e20 {
             self.clauses.scale_activities(1e-20);
             self.clause_inc *= 1e-20;
@@ -1128,23 +1193,26 @@ impl Solver {
             .iter()
             .copied()
             .filter(|&cid| {
-                !self.clauses.is_deleted(cid) && self.clauses.lit_len(cid) > 2 && !locked[cid.0]
+                let clause = self.clauses.clause(cid);
+                !clause.is_deleted() && clause.len() > 2 && !locked[cid.0]
             })
             .collect();
 
         candidates.sort_by(|&a, &b| {
             self.clauses
-                .activity(a)
-                .partial_cmp(&self.clauses.activity(b))
+                .clause(a)
+                .activity()
+                .partial_cmp(&self.clauses.clause(b).activity())
                 .unwrap_or(Ordering::Equal)
         });
 
         let remove = candidates.len() / 2;
         for cid in candidates.into_iter().take(remove) {
-            self.clauses.set_deleted(cid, true);
+            self.clauses.clause_mut(cid).set_deleted(true);
         }
 
-        self.learnts.retain(|&cid| !self.clauses.is_deleted(cid));
+        self.learnts
+            .retain(|&cid| !self.clauses.clause(cid).is_deleted());
     }
 }
 
