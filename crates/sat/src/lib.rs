@@ -5,7 +5,7 @@
 
 use std::cmp::Ordering;
 use std::mem;
-use std::ops::Not;
+use std::ops::{Index, IndexMut, Not};
 
 /// A zero-based propositional variable identifier.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -110,48 +110,53 @@ enum Watcher {
     },
 }
 
-/// A packed arena storing MiniSAT-style clause headers followed by trailing
-/// literal words.
-#[derive(Debug, Default)]
-struct ClauseArena {
-    /// Packed `u32` words containing clause headers and literals.
-    words: Vec<u32>,
-    /// Header start offsets for each allocated clause id.
-    offsets: Vec<usize>,
-}
-
-/// An immutable view over one packed clause header and its trailing literals.
-#[derive(Copy, Clone, Debug)]
-struct ClauseRef<'a> {
+/// One packed clause header together with its trailing literal words.
+#[repr(transparent)]
+#[derive(Debug)]
+struct Clause {
     /// Packed header and literal words for one clause.
-    words: &'a [u32],
+    words: [u32],
 }
 
-impl ClauseRef<'_> {
+impl Clause {
+    /// Reinterprets one packed clause slice as a clause DST.
+    fn from_words(words: &[u32]) -> &Self {
+        // SAFETY: `Clause` is `#[repr(transparent)]` over `[u32]`, so references to
+        // `[u32]` and `Clause` have the same layout and metadata.
+        unsafe { &*(words as *const [u32] as *const Self) }
+    }
+
+    /// Reinterprets one mutable packed clause slice as a clause DST.
+    fn from_words_mut(words: &mut [u32]) -> &mut Self {
+        // SAFETY: `Clause` is `#[repr(transparent)]` over `[u32]`, so references to
+        // `[u32]` and `Clause` have the same layout and metadata.
+        unsafe { &mut *(words as *mut [u32] as *mut Self) }
+    }
+
     /// Returns the number of literals stored in this clause.
-    fn len(self) -> usize {
+    fn len(&self) -> usize {
         (self.meta() & ClauseArena::LEN_MASK) as usize
     }
 
     /// Returns whether this clause was learned during search.
-    fn is_learnt(self) -> bool {
+    fn is_learnt(&self) -> bool {
         (self.meta() & ClauseArena::LEARNT_BIT) != 0
     }
 
     /// Returns whether this clause has been lazily deleted.
-    fn is_deleted(self) -> bool {
+    fn is_deleted(&self) -> bool {
         (self.meta() & ClauseArena::DELETED_BIT) != 0
     }
 
     /// Returns the stored clause activity score.
-    fn activity(self) -> f64 {
+    fn activity(&self) -> f64 {
         let lo = self.words[1] as u64;
         let hi = self.words[2] as u64;
         f64::from_bits(lo | (hi << 32))
     }
 
     /// Returns literal `idx` from the trailing literal payload.
-    fn lit(self, idx: usize) -> Lit {
+    fn lit(&self, idx: usize) -> Lit {
         debug_assert!(idx < self.len());
         Lit(self.words[ClauseArena::HEADER_WORDS + idx])
     }
@@ -165,47 +170,8 @@ impl ClauseRef<'_> {
     }
 
     /// Returns the packed metadata word.
-    fn meta(self) -> u32 {
+    fn meta(&self) -> u32 {
         self.words[0]
-    }
-}
-
-/// A mutable view over one packed clause header and its trailing literals.
-#[derive(Debug)]
-struct ClauseMut<'a> {
-    /// Packed header and literal words for one clause.
-    words: &'a mut [u32],
-}
-
-impl ClauseMut<'_> {
-    /// Returns an immutable view over the same clause.
-    fn as_ref(&self) -> ClauseRef<'_> {
-        ClauseRef { words: self.words }
-    }
-
-    /// Returns the number of literals stored in this clause.
-    fn len(&self) -> usize {
-        self.as_ref().len()
-    }
-
-    /// Returns whether this clause was learned during search.
-    fn is_learnt(&self) -> bool {
-        self.as_ref().is_learnt()
-    }
-
-    /// Returns whether this clause has been lazily deleted.
-    fn is_deleted(&self) -> bool {
-        self.as_ref().is_deleted()
-    }
-
-    /// Returns the stored clause activity score.
-    fn activity(&self) -> f64 {
-        self.as_ref().activity()
-    }
-
-    /// Returns literal `idx` from the trailing literal payload.
-    fn lit(&self, idx: usize) -> Lit {
-        self.as_ref().lit(idx)
     }
 
     /// Marks this clause as deleted or active.
@@ -231,6 +197,16 @@ impl ClauseMut<'_> {
         let lits_start = ClauseArena::HEADER_WORDS;
         self.words.swap(lits_start + a, lits_start + b);
     }
+}
+
+/// A packed arena storing MiniSAT-style clause headers followed by trailing
+/// literal words.
+#[derive(Debug, Default)]
+struct ClauseArena {
+    /// Packed `u32` words containing clause headers and literals.
+    words: Vec<u32>,
+    /// Header start offsets for each allocated clause id.
+    offsets: Vec<usize>,
 }
 
 impl ClauseArena {
@@ -265,28 +241,17 @@ impl ClauseArena {
         self.offsets.len()
     }
 
-    /// Returns an immutable view over `cid`.
-    fn clause(&self, cid: ClauseId) -> ClauseRef<'_> {
+    /// Returns the packed word bounds for `cid`.
+    fn clause_bounds(&self, cid: ClauseId) -> (usize, usize) {
         let start = self.offsets[cid.0];
         let end = start + Self::HEADER_WORDS + Self::payload_len(self.words[start]);
-        ClauseRef {
-            words: &self.words[start..end],
-        }
-    }
-
-    /// Returns a mutable view over `cid`.
-    fn clause_mut(&mut self, cid: ClauseId) -> ClauseMut<'_> {
-        let start = self.offsets[cid.0];
-        let end = start + Self::HEADER_WORDS + Self::payload_len(self.words[start]);
-        ClauseMut {
-            words: &mut self.words[start..end],
-        }
+        (start, end)
     }
 
     /// Multiplies every clause activity by `factor`.
     fn scale_activities(&mut self, factor: f64) {
         for raw in 0..self.len() {
-            let mut clause = self.clause_mut(ClauseId(raw));
+            let clause = &mut self[ClauseId(raw)];
             let activity = clause.activity() * factor;
             clause.set_activity(activity);
         }
@@ -314,6 +279,22 @@ impl ClauseArena {
         let bits = activity.to_bits();
         self.words.push(bits as u32);
         self.words.push((bits >> 32) as u32);
+    }
+}
+
+impl Index<ClauseId> for ClauseArena {
+    type Output = Clause;
+
+    fn index(&self, cid: ClauseId) -> &Self::Output {
+        let (start, end) = self.clause_bounds(cid);
+        Clause::from_words(&self.words[start..end])
+    }
+}
+
+impl IndexMut<ClauseId> for ClauseArena {
+    fn index_mut(&mut self, cid: ClauseId) -> &mut Self::Output {
+        let (start, end) = self.clause_bounds(cid);
+        Clause::from_words_mut(&mut self.words[start..end])
     }
 }
 
@@ -776,7 +757,7 @@ impl Solver {
         });
         if learnt {
             self.learnts.push(cid);
-            self.clauses.clause_mut(cid).set_activity(self.clause_inc);
+            self.clauses[cid].set_activity(self.clause_inc);
         }
         cid
     }
@@ -804,7 +785,7 @@ impl Solver {
             }
             _ => {
                 let cid = self.attach_long(lits, true);
-                let lit = self.clauses.clause(cid).lit(0);
+                let lit = self.clauses[cid].lit(0);
                 let _ = self.enqueue(lit, Reason::Clause(cid));
             }
         }
@@ -954,7 +935,7 @@ impl Solver {
     /// Reprocesses a watched long clause whose second watcher became false.
     fn process_long_watch(&mut self, cid: ClauseId, false_lit: Lit) -> LongAction {
         let assigns = &self.assigns;
-        let mut clause = self.clauses.clause_mut(cid);
+        let clause = &mut self.clauses[cid];
         if clause.is_deleted() {
             return LongAction::Drop;
         }
@@ -1126,7 +1107,7 @@ impl Solver {
             AnalyzeSource::Clause(cid) => {
                 let mut lits = mem::take(&mut self.analyze_lits);
                 lits.clear();
-                lits.extend(self.clauses.clause(cid).lits());
+                lits.extend(self.clauses[cid].lits());
                 for lit in lits.iter().copied() {
                     visit(self, lit);
                 }
@@ -1156,7 +1137,7 @@ impl Solver {
     /// Increases the activity score of a learned clause.
     fn bump_clause_activity(&mut self, cid: ClauseId) {
         let new_activity = {
-            let mut clause = self.clauses.clause_mut(cid);
+            let clause = &mut self.clauses[cid];
             if !clause.is_learnt() || clause.is_deleted() {
                 return;
             }
@@ -1164,6 +1145,7 @@ impl Solver {
             clause.set_activity(new_activity);
             new_activity
         };
+
         if new_activity > 1e20 {
             self.clauses.scale_activities(1e-20);
             self.clause_inc *= 1e-20;
@@ -1193,26 +1175,24 @@ impl Solver {
             .iter()
             .copied()
             .filter(|&cid| {
-                let clause = self.clauses.clause(cid);
+                let clause = &self.clauses[cid];
                 !clause.is_deleted() && clause.len() > 2 && !locked[cid.0]
             })
             .collect();
 
         candidates.sort_by(|&a, &b| {
-            self.clauses
-                .clause(a)
+            self.clauses[a]
                 .activity()
-                .partial_cmp(&self.clauses.clause(b).activity())
+                .partial_cmp(&self.clauses[b].activity())
                 .unwrap_or(Ordering::Equal)
         });
 
         let remove = candidates.len() / 2;
         for cid in candidates.into_iter().take(remove) {
-            self.clauses.clause_mut(cid).set_deleted(true);
+            self.clauses[cid].set_deleted(true);
         }
 
-        self.learnts
-            .retain(|&cid| !self.clauses.clause(cid).is_deleted());
+        self.learnts.retain(|&cid| !self.clauses[cid].is_deleted());
     }
 }
 
