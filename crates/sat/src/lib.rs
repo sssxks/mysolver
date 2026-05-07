@@ -1008,16 +1008,13 @@ impl Solver {
         let mut resolved: Option<Var> = None;
 
         loop {
-            if let AnalyzeSource::Clause(cid) = source {
-                self.bump_clause_activity(cid);
-            }
-
             match source {
                 AnalyzeSource::Binary(a, b) => {
                     self.analyze_lit(a, resolved, current_level, &mut path_count, &mut learnt);
                     self.analyze_lit(b, resolved, current_level, &mut path_count, &mut learnt);
                 }
                 AnalyzeSource::Clause(cid) => {
+                    self.bump_clause_activity(cid);
                     let len = self.clauses[cid].len();
                     for i in 0..len {
                         let q = self.clauses[cid].lit(i);
