@@ -110,17 +110,151 @@ enum Watcher {
     },
 }
 
-/// A clause stored in the solver's arena.
-#[derive(Clone, Debug)]
-struct Clause {
-    /// The clause literals, with the first two entries used as watched literals.
-    lits: Vec<Lit>,
-    /// Whether this clause was learned during conflict analysis.
-    learnt: bool,
-    /// VSIDS-style activity score for database reduction.
-    activity: f64,
-    /// Whether the clause has been lazily deleted from the database.
-    deleted: bool,
+/// A packed arena storing MiniSAT-style clause headers followed by trailing
+/// literal words.
+#[derive(Debug, Default)]
+struct ClauseArena {
+    /// Packed `u32` words containing clause headers and literals.
+    words: Vec<u32>,
+    /// Header start offsets for each allocated clause id.
+    offsets: Vec<usize>,
+}
+
+impl ClauseArena {
+    /// Number of `u32` words stored in each clause header.
+    const HEADER_WORDS: usize = 3;
+    /// Bit flag stored in the metadata word for learned clauses.
+    const LEARNT_BIT: u32 = 1 << 31;
+    /// Bit flag stored in the metadata word for lazily deleted clauses.
+    const DELETED_BIT: u32 = 1 << 30;
+    /// Mask selecting the literal count stored in the metadata word.
+    const LEN_MASK: u32 = !(Self::LEARNT_BIT | Self::DELETED_BIT);
+
+    /// Creates an empty packed clause arena.
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Allocates one packed clause and returns its dense arena handle.
+    fn alloc(&mut self, lits: &[Lit], learnt: bool, activity: f64) -> ClauseId {
+        debug_assert!(lits.len() <= Self::LEN_MASK as usize);
+        let cid = ClauseId(self.offsets.len());
+        let start = self.words.len();
+        self.offsets.push(start);
+        self.words.push(Self::pack_meta(lits.len(), learnt, false));
+        self.write_activity_words(activity);
+        self.words.extend(lits.iter().map(|lit| lit.0));
+        cid
+    }
+
+    /// Returns the number of allocated clauses, including deleted ones.
+    fn len(&self) -> usize {
+        self.offsets.len()
+    }
+
+    /// Returns the number of literals stored in `cid`.
+    fn lit_len(&self, cid: ClauseId) -> usize {
+        (self.meta(cid) & Self::LEN_MASK) as usize
+    }
+
+    /// Returns whether `cid` is a learned clause.
+    fn is_learnt(&self, cid: ClauseId) -> bool {
+        (self.meta(cid) & Self::LEARNT_BIT) != 0
+    }
+
+    /// Returns whether `cid` has been lazily deleted.
+    fn is_deleted(&self, cid: ClauseId) -> bool {
+        (self.meta(cid) & Self::DELETED_BIT) != 0
+    }
+
+    /// Marks `cid` as deleted or active without changing its other metadata.
+    fn set_deleted(&mut self, cid: ClauseId, deleted: bool) {
+        let start = self.offsets[cid.0];
+        let mut meta = self.words[start];
+        if deleted {
+            meta |= Self::DELETED_BIT;
+        } else {
+            meta &= !Self::DELETED_BIT;
+        }
+        self.words[start] = meta;
+    }
+
+    /// Returns the clause activity currently stored in `cid`.
+    fn activity(&self, cid: ClauseId) -> f64 {
+        let start = self.offsets[cid.0] + 1;
+        let lo = self.words[start] as u64;
+        let hi = self.words[start + 1] as u64;
+        f64::from_bits(lo | (hi << 32))
+    }
+
+    /// Overwrites the activity score stored in `cid`.
+    fn set_activity(&mut self, cid: ClauseId, activity: f64) {
+        let start = self.offsets[cid.0] + 1;
+        let bits = activity.to_bits();
+        self.words[start] = bits as u32;
+        self.words[start + 1] = (bits >> 32) as u32;
+    }
+
+    /// Multiplies every clause activity by `factor`.
+    fn scale_activities(&mut self, factor: f64) {
+        for raw in 0..self.len() {
+            let cid = ClauseId(raw);
+            self.set_activity(cid, self.activity(cid) * factor);
+        }
+    }
+
+    /// Returns literal `idx` from `cid`.
+    fn lit(&self, cid: ClauseId, idx: usize) -> Lit {
+        debug_assert!(idx < self.lit_len(cid));
+        let start = self.lits_start(cid);
+        Lit(self.words[start + idx])
+    }
+
+    /// Swaps two literals inside `cid`.
+    fn swap_lits(&mut self, cid: ClauseId, a: usize, b: usize) {
+        debug_assert!(a < self.lit_len(cid));
+        debug_assert!(b < self.lit_len(cid));
+        let start = self.lits_start(cid);
+        self.words.swap(start + a, start + b);
+    }
+
+    /// Visits each literal in `cid` in stored order.
+    fn visit_lits(&self, cid: ClauseId, mut visit: impl FnMut(Lit)) {
+        let start = self.lits_start(cid);
+        let end = start + self.lit_len(cid);
+        for &raw in &self.words[start..end] {
+            visit(Lit(raw));
+        }
+    }
+
+    /// Packs the header metadata word.
+    fn pack_meta(len: usize, learnt: bool, deleted: bool) -> u32 {
+        let mut meta = len as u32;
+        if learnt {
+            meta |= Self::LEARNT_BIT;
+        }
+        if deleted {
+            meta |= Self::DELETED_BIT;
+        }
+        meta
+    }
+
+    /// Returns the metadata word stored for `cid`.
+    fn meta(&self, cid: ClauseId) -> u32 {
+        self.words[self.offsets[cid.0]]
+    }
+
+    /// Returns the starting word index of `cid`'s literal payload.
+    fn lits_start(&self, cid: ClauseId) -> usize {
+        self.offsets[cid.0] + Self::HEADER_WORDS
+    }
+
+    /// Appends the two packed `u32` words for an activity value.
+    fn write_activity_words(&mut self, activity: f64) {
+        let bits = activity.to_bits();
+        self.words.push(bits as u32);
+        self.words.push((bits >> 32) as u32);
+    }
 }
 
 /// A conflict discovered during propagation.
@@ -313,7 +447,7 @@ pub struct Solver {
     /// Watch lists indexed by packed literal.
     watches: Vec<Vec<Watcher>>,
     /// Arena storing all long clauses.
-    clauses: Vec<Clause>,
+    clauses: ClauseArena,
     /// Active learned clauses eligible for reduction.
     learnts: Vec<ClauseId>,
 
@@ -335,6 +469,8 @@ pub struct Solver {
     seen: Vec<bool>,
     /// Variables marked during conflict analysis for later cleanup.
     analyze_stack: Vec<Var>,
+    /// Reusable literal buffer for clause-based conflict analysis.
+    analyze_lits: Vec<Lit>,
 
     /// Number of conflicts seen during the current search.
     conflicts: usize,
@@ -361,7 +497,7 @@ impl Solver {
             trail_lim: Vec::new(),
             qhead: 0,
             watches: Vec::new(),
-            clauses: Vec::new(),
+            clauses: ClauseArena::new(),
             learnts: Vec::new(),
             var_activity: Vec::new(),
             var_inc: 1.0,
@@ -371,6 +507,7 @@ impl Solver {
             clause_decay: 0.999,
             seen: Vec::new(),
             analyze_stack: Vec::new(),
+            analyze_lits: Vec::new(),
             conflicts: 0,
         }
     }
@@ -566,15 +703,9 @@ impl Solver {
     /// Stores and watches a long clause, optionally marking it as learned.
     fn attach_long(&mut self, lits: Vec<Lit>, learnt: bool) -> ClauseId {
         debug_assert!(lits.len() >= 3);
-        let cid = ClauseId(self.clauses.len());
         let w0 = lits[0];
         let w1 = lits[1];
-        self.clauses.push(Clause {
-            lits,
-            learnt,
-            activity: 0.0,
-            deleted: false,
-        });
+        let cid = self.clauses.alloc(&lits, learnt, 0.0);
         self.watches[w0.index()].push(Watcher::Long {
             clause: cid,
             blocker: w1,
@@ -585,7 +716,7 @@ impl Solver {
         });
         if learnt {
             self.learnts.push(cid);
-            self.clauses[cid.0].activity = self.clause_inc;
+            self.clauses.set_activity(cid, self.clause_inc);
         }
         cid
     }
@@ -613,7 +744,7 @@ impl Solver {
             }
             _ => {
                 let cid = self.attach_long(lits, true);
-                let lit = self.clauses[cid.0].lits[0];
+                let lit = self.clauses.lit(cid, 0);
                 let _ = self.enqueue(lit, Reason::Clause(cid));
             }
         }
@@ -763,26 +894,25 @@ impl Solver {
     /// Reprocesses a watched long clause whose second watcher became false.
     fn process_long_watch(&mut self, cid: ClauseId, false_lit: Lit) -> LongAction {
         let assigns = &self.assigns;
-        let c = &mut self.clauses[cid.0];
-
-        if c.deleted {
+        if self.clauses.is_deleted(cid) {
             return LongAction::Drop;
         }
 
-        if c.lits[0] == false_lit {
-            c.lits.swap(0, 1);
+        if self.clauses.lit(cid, 0) == false_lit {
+            self.clauses.swap_lits(cid, 0, 1);
         }
-        debug_assert_eq!(c.lits[1], false_lit);
+        debug_assert_eq!(self.clauses.lit(cid, 1), false_lit);
 
-        let other = c.lits[0];
+        let other = self.clauses.lit(cid, 0);
         if Self::value_lit_in(assigns, other) == LBool::True {
             return LongAction::Keep { blocker: other };
         }
 
-        for k in 2..c.lits.len() {
-            if Self::value_lit_in(assigns, c.lits[k]) != LBool::False {
-                c.lits.swap(1, k);
-                let new_watch = c.lits[1];
+        for k in 2..self.clauses.lit_len(cid) {
+            let candidate = self.clauses.lit(cid, k);
+            if Self::value_lit_in(assigns, candidate) != LBool::False {
+                self.clauses.swap_lits(cid, 1, k);
+                let new_watch = self.clauses.lit(cid, 1);
                 return LongAction::Move {
                     new_watch,
                     blocker: other,
@@ -925,8 +1055,7 @@ impl Solver {
         }
     }
 
-    /// Visits the literals that participate in an analysis source without
-    /// allocating a temporary buffer.
+    /// Visits the literals that participate in an analysis source.
     fn visit_source_lits(&mut self, source: AnalyzeSource, mut visit: impl FnMut(&mut Self, Lit)) {
         match source {
             AnalyzeSource::Binary(a, b) => {
@@ -934,11 +1063,13 @@ impl Solver {
                 visit(self, b);
             }
             AnalyzeSource::Clause(cid) => {
-                let len = self.clauses[cid.0].lits.len();
-                for idx in 0..len {
-                    let lit = self.clauses[cid.0].lits[idx];
+                let mut lits = mem::take(&mut self.analyze_lits);
+                lits.clear();
+                self.clauses.visit_lits(cid, |lit| lits.push(lit));
+                for lit in lits.iter().copied() {
                     visit(self, lit);
                 }
+                self.analyze_lits = lits;
             }
         }
     }
@@ -963,14 +1094,13 @@ impl Solver {
 
     /// Increases the activity score of a learned clause.
     fn bump_clause_activity(&mut self, cid: ClauseId) {
-        if !self.clauses[cid.0].learnt || self.clauses[cid.0].deleted {
+        if !self.clauses.is_learnt(cid) || self.clauses.is_deleted(cid) {
             return;
         }
-        self.clauses[cid.0].activity += self.clause_inc;
-        if self.clauses[cid.0].activity > 1e20 {
-            for c in &mut self.clauses {
-                c.activity *= 1e-20;
-            }
+        let new_activity = self.clauses.activity(cid) + self.clause_inc;
+        self.clauses.set_activity(cid, new_activity);
+        if new_activity > 1e20 {
+            self.clauses.scale_activities(1e-20);
             self.clause_inc *= 1e-20;
         }
     }
@@ -997,25 +1127,24 @@ impl Solver {
             .learnts
             .iter()
             .copied()
-            .filter(|cid| {
-                let c = &self.clauses[cid.0];
-                !c.deleted && c.lits.len() > 2 && !locked[cid.0]
+            .filter(|&cid| {
+                !self.clauses.is_deleted(cid) && self.clauses.lit_len(cid) > 2 && !locked[cid.0]
             })
             .collect();
 
-        candidates.sort_by(|a, b| {
-            self.clauses[a.0]
-                .activity
-                .partial_cmp(&self.clauses[b.0].activity)
+        candidates.sort_by(|&a, &b| {
+            self.clauses
+                .activity(a)
+                .partial_cmp(&self.clauses.activity(b))
                 .unwrap_or(Ordering::Equal)
         });
 
         let remove = candidates.len() / 2;
         for cid in candidates.into_iter().take(remove) {
-            self.clauses[cid.0].deleted = true;
+            self.clauses.set_deleted(cid, true);
         }
 
-        self.learnts.retain(|cid| !self.clauses[cid.0].deleted);
+        self.learnts.retain(|&cid| !self.clauses.is_deleted(cid));
     }
 }
 
