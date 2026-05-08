@@ -312,11 +312,6 @@ impl ClauseArena {
         }
     }
 
-    /// Returns literal `idx` from `cid` without opening a mutable payload view.
-    fn lit(&self, cid: ClauseId, idx: usize) -> Lit {
-        self.clause(cid).lit(idx)
-    }
-
     /// Multiplies every clause activity by `factor`.
     fn scale_activities(&mut self, factor: f64) {
         for header in &mut self.headers {
@@ -815,7 +810,7 @@ impl Solver {
             }
             _ => {
                 let cid = self.attach_long(lits, true);
-                let lit = self.clauses.lit(cid, 0);
+                let lit = self.clauses.clause(cid).lit(0);
                 let _ = self.enqueue(lit, Reason::Clause(cid));
             }
         }
@@ -1060,7 +1055,7 @@ impl Solver {
                     self.bump_clause_activity(cid);
                     let len = self.clauses.header(cid).len();
                     for i in 0..len {
-                        let q = self.clauses.lit(cid, i);
+                        let q = self.clauses.clause(cid).lit(i);
                         self.analyze_lit(q, resolved, current_level, &mut path_count, &mut learnt);
                     }
                 }
