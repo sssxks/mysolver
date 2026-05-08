@@ -2,17 +2,17 @@ use crate::Lit;
 
 /// An index into the solver's clause arena.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub(crate) struct ClauseId(usize);
+pub(crate) struct ClauseId(u32);
 
 impl ClauseId {
     /// Creates one stable clause identifier from an arena slot.
-    pub(crate) fn new(index: usize) -> Self {
+    pub(crate) fn new(index: u32) -> Self {
         Self(index)
     }
 
     /// Returns the zero-based index of this clause id inside the arena header table.
     pub(crate) fn index(self) -> usize {
-        self.0
+        self.0 as usize
     }
 }
 
@@ -36,19 +36,21 @@ impl ClauseHeader {
     pub(crate) const LEN_MASK: u32 = !(Self::LEARNT_BIT | Self::DELETED_BIT);
 
     /// Creates one active clause header for a payload beginning at `offset`.
-    pub(crate) fn new(offset: usize, len: usize, learnt: bool, activity: f64) -> Self {
-        debug_assert!(u32::try_from(offset).is_ok());
-        debug_assert!(len <= Self::LEN_MASK as usize);
+    pub(crate) fn new(offset: u32, len: usize, learnt: bool, activity: f64) -> Self {
+        assert!(
+            len <= Self::LEN_MASK as usize,
+            "clause length exceeds ClauseHeader::LEN_MASK",
+        );
         Self {
-            offset: offset as u32,
-            meta: Self::pack_meta(len, learnt, false),
+            offset,
+            meta: Self::pack_meta(len as u32, learnt, false),
             activity,
         }
     }
 
     /// Packs the metadata word from the clause length and flag bits.
-    pub(crate) fn pack_meta(len: usize, learnt: bool, deleted: bool) -> u32 {
-        let mut meta = len as u32;
+    pub(crate) fn pack_meta(len: u32, learnt: bool, deleted: bool) -> u32 {
+        let mut meta = len;
         if learnt {
             meta |= Self::LEARNT_BIT;
         }
@@ -104,6 +106,8 @@ pub(crate) struct ClauseRef<'a> {
     /// Clause metadata stored in the header table.
     header: &'a ClauseHeader,
     /// Trailing clause literals stored in the payload arena.
+    /// 
+    /// Technically, length in this fat pointer is obsolete, but rust DSTs are so inflexible to write manually
     lits: &'a [Lit],
 }
 
@@ -126,6 +130,8 @@ pub(crate) struct ClauseMut<'a> {
     /// Clause metadata stored in the header table.
     header: &'a mut ClauseHeader,
     /// Trailing clause literals stored in the payload arena.
+    /// 
+    /// Technically, length in this fat pointer is obsolete, but rust DSTs are so inflexible to write manually
     lits: &'a mut [Lit],
 }
 
@@ -166,11 +172,12 @@ impl ClauseArena {
 
     /// Allocates one clause header and appends its literal payload.
     pub(crate) fn alloc(&mut self, lits: &[Lit], learnt: bool, activity: f64) -> ClauseId {
-        debug_assert!(lits.len() <= ClauseHeader::LEN_MASK as usize);
-        let cid = ClauseId::new(self.headers.len());
-        let offset = self.words.len();
+        let next_id = u32::try_from(self.headers.len()).expect("clause arena exhausted u32 ids");
+        let offset = u32::try_from(self.words.len()).expect("clause arena exhausted u32 offsets");
+        let len = lits.len();
+        let cid = ClauseId::new(next_id);
         self.headers
-            .push(ClauseHeader::new(offset, lits.len(), learnt, activity));
+            .push(ClauseHeader::new(offset, len, learnt, activity));
         self.words.extend_from_slice(lits);
         cid
     }
