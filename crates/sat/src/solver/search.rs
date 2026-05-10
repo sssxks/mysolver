@@ -64,7 +64,7 @@ impl Solver {
     pub(crate) fn bump_clause_activity(&mut self, cid: ClauseId) {
         let new_activity = {
             let header = self.clauses.header_mut(cid);
-            if !header.is_learnt() || header.is_deleted() {
+            if header.is_free() || !header.is_learnt() {
                 return;
             }
             let new_activity = header.activity() + self.clause_inc;
@@ -81,6 +81,26 @@ impl Solver {
     /// Applies clause activity decay for future bumps.
     pub(crate) fn clause_decay_activity(&mut self) {
         self.clause_inc *= 1.0 / self.clause_decay;
+    }
+
+    /// Removes one long clause from watch lists and recycles its database slot.
+    fn delete_clause(&mut self, cid: ClauseId) {
+        if self.clauses.header(cid).is_free() {
+            return;
+        }
+
+        let (watch_a, watch_b) = {
+            let clause = self.clauses.clause(cid);
+            debug_assert!(clause.len() >= 2);
+            (clause.lit(0), clause.lit(1))
+        };
+
+        self.watches[watch_a.index()]
+            .retain(|watcher| !matches!(watcher, super::propagate::Watcher::Long { clause, .. } if *clause == cid));
+        self.watches[watch_b.index()]
+            .retain(|watcher| !matches!(watcher, super::propagate::Watcher::Long { clause, .. } if *clause == cid));
+
+        self.clauses.delete(cid);
     }
 
     /// Deletes the least useful half of removable learned clauses.
@@ -102,7 +122,7 @@ impl Solver {
             .copied()
             .filter(|&cid| {
                 let header = self.clauses.header(cid);
-                !header.is_deleted() && header.len() > 2 && !locked[cid.index()]
+                !header.is_free() && header.len() > 2 && !locked[cid.index()]
             })
             .collect();
 
@@ -116,10 +136,10 @@ impl Solver {
 
         let remove = candidates.len() / 2;
         for cid in candidates.into_iter().take(remove) {
-            self.clauses.header_mut(cid).set_deleted(true);
+            self.delete_clause(cid);
         }
 
         self.learnts
-            .retain(|&cid| !self.clauses.header(cid).is_deleted());
+            .retain(|&cid| !self.clauses.header(cid).is_free());
     }
 }

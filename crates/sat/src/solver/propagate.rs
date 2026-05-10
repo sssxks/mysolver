@@ -201,7 +201,7 @@ impl Solver {
 
     /// Reprocesses a watched long clause whose second watcher became false.
     fn process_long_watch(&mut self, cid: ClauseId, false_lit: Lit) -> LongAction {
-        if self.clauses.header(cid).is_deleted() {
+        if self.clauses.header(cid).is_free() {
             return LongAction::Drop;
         }
 
