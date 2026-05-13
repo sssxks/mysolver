@@ -22,8 +22,8 @@ impl ClauseId {
 }
 
 /// One logical clause header stored in the stable clause-id table.
-/// 
-/// Conceptually, this is `enum ClauseHeader { Occupied { offset: u32, len: u32, learnt: bool, activity: f64 }, Free { next_free: Option<ClauseId> } }`,
+///
+/// Conceptually, this is `enum ClauseHeader { Occupied { offset: u32, len: u32, learnt: bool, activity: f32 }, Free { next_free: Option<ClauseId> } }`,
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct ClauseHeader {
     /// Offset of the first literal word for occupied clauses, or the next free slot.
@@ -31,7 +31,7 @@ pub(crate) struct ClauseHeader {
     /// Packed literal count and clause flags.
     meta: u32,
     /// Clause activity used by learned-clause reduction.
-    activity: f64,
+    activity: f32,
 }
 
 impl ClauseHeader {
@@ -45,7 +45,7 @@ impl ClauseHeader {
     const FREE_LIST_END: u32 = u32::MAX;
 
     /// Creates one occupied clause header for a payload beginning at `offset`.
-    pub(crate) fn new(offset: u32, len: usize, learnt: bool, activity: f64) -> Self {
+    pub(crate) fn new(offset: u32, len: usize, learnt: bool, activity: f32) -> Self {
         assert!(
             len <= Self::LEN_MASK as usize,
             "clause length exceeds ClauseHeader::LEN_MASK",
@@ -102,7 +102,7 @@ impl ClauseHeader {
     }
 
     /// Returns the stored clause activity score.
-    pub(crate) fn activity(self) -> f64 {
+    pub(crate) fn activity(self) -> f32 {
         debug_assert!(!self.is_free());
         self.activity
     }
@@ -114,7 +114,7 @@ impl ClauseHeader {
     }
 
     /// Overwrites the stored clause activity score.
-    pub(crate) fn set_activity(&mut self, activity: f64) {
+    pub(crate) fn set_activity(&mut self, activity: f32) {
         debug_assert!(!self.is_free());
         self.activity = activity;
     }
@@ -203,7 +203,7 @@ impl ClauseArena {
     }
 
     /// Allocates one clause header and appends its literal payload.
-    pub(crate) fn alloc(&mut self, lits: &[Lit], learnt: bool, activity: f64) -> ClauseId {
+    pub(crate) fn alloc(&mut self, lits: &[Lit], learnt: bool, activity: f32) -> ClauseId {
         assert!(
             self.headers.len() < ClauseHeader::FREE_LIST_END as usize,
             "clause arena exhausted u32 ids",
@@ -278,7 +278,7 @@ impl ClauseArena {
     }
 
     /// Multiplies every live clause activity by `factor`.
-    pub(crate) fn scale_activities(&mut self, factor: f64) {
+    pub(crate) fn scale_activities(&mut self, factor: f32) {
         for header in &mut self.headers {
             if header.is_free() {
                 continue;

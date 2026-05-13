@@ -7,7 +7,7 @@ mod propagate;
 /// Branching heuristics, backtracking, and database reduction.
 mod search;
 
-use crate::clause_db::ClauseArena;
+use crate::clause_db::{ClauseArena, ClauseId};
 use crate::heap::VarHeap;
 use crate::{Lit, Var};
 
@@ -32,7 +32,7 @@ pub(crate) enum Reason {
     /// The assignment came from a binary clause represented by its two literals.
     Binary(Lit, Lit),
     /// The assignment came from a long clause stored in the clause arena.
-    Clause(crate::clause_db::ClauseId),
+    Clause(ClauseId),
 }
 
 /// The outcome of a SAT solve attempt.
@@ -75,7 +75,7 @@ pub struct Solver {
     /// Arena storing all long clauses.
     clauses: ClauseArena,
     /// Active learned clauses eligible for reduction.
-    learnts: Vec<crate::clause_db::ClauseId>,
+    learnts: Vec<ClauseId>,
 
     /// VSIDS activity per variable.
     var_activity: Vec<f64>,
@@ -87,9 +87,9 @@ pub struct Solver {
     order: VarHeap,
 
     /// Current increment added when bumping clause activity.
-    clause_inc: f64,
+    clause_inc: f32,
     /// Multiplicative decay factor for clause activity.
-    clause_decay: f64,
+    clause_decay: f32,
 
     /// Temporary marks used during conflict analysis.
     seen: Vec<bool>,
