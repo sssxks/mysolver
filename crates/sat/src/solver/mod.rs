@@ -202,6 +202,7 @@ impl Solver {
         let mut restart_conflicts = 0usize;
         let mut restart_limit = 100usize;
         let mut next_reduce = 2_000usize;
+        let mut learnt = Vec::with_capacity(16);
 
         loop {
             if let Some(conflict) = self.propagate() {
@@ -213,9 +214,9 @@ impl Solver {
                     return SatResult::Unsat;
                 }
 
-                let (learnt, backtrack_level) = self.analyze(conflict);
+                let backtrack_level = self.analyze(conflict, &mut learnt);
                 self.cancel_until(backtrack_level);
-                self.add_learnt_clause(learnt);
+                self.add_learnt_clause(&learnt);
                 self.var_decay_activity();
                 self.clause_decay_activity();
 

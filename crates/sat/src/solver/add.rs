@@ -1,5 +1,3 @@
-use std::mem;
-
 use crate::Lit;
 use crate::clause_db::ClauseId;
 
@@ -16,7 +14,7 @@ impl Solver {
         if !self.ok {
             return false;
         }
-        let Some(mut ps) = self.prepare_clause(lits) else {
+        let Some(ps) = self.prepare_clause(lits) else {
             return true;
         };
         match ps.len() {
@@ -36,7 +34,7 @@ impl Solver {
                 true
             }
             _ => {
-                self.attach_long(mem::take(&mut ps), false);
+                self.attach_long(&ps, false);
                 true
             }
         }
@@ -84,12 +82,12 @@ impl Solver {
     }
 
     /// Stores and watches a long clause, optionally marking it as learned.
-    pub(crate) fn attach_long(&mut self, lits: Vec<Lit>, learnt: bool) -> ClauseId {
+    pub(crate) fn attach_long(&mut self, lits: &[Lit], learnt: bool) -> ClauseId {
         debug_assert!(lits.len() >= 3);
         let w0 = lits[0];
         let w1 = lits[1];
         let activity = if learnt { self.clause_inc } else { 0.0 };
-        let cid = self.clauses.alloc(&lits, learnt, activity);
+        let cid = self.clauses.alloc(lits, learnt, activity);
         self.watches[w0.index()].push(Watcher::Long {
             clause: cid,
             blocker: w1,
@@ -105,17 +103,12 @@ impl Solver {
     }
 
     /// Inserts a learned clause and enqueues its asserting literal.
-    pub(crate) fn add_learnt_clause(&mut self, mut lits: Vec<Lit>) {
+    ///
+    /// The caller must provide `lits` in asserting order as produced by
+    /// [`Self::analyze`]: `lits[0]` is the asserting literal and, when `lits.len() > 1`,
+    /// `lits[1]` is the literal with the highest remaining decision level.
+    pub(crate) fn add_learnt_clause(&mut self, lits: &[Lit]) {
         debug_assert!(!lits.is_empty());
-        if lits.len() > 1 {
-            let mut max_i = 1;
-            for i in 2..lits.len() {
-                if self.level[lits[i].var().index()] > self.level[lits[max_i].var().index()] {
-                    max_i = i;
-                }
-            }
-            lits.swap(1, max_i);
-        }
 
         match lits.len() {
             1 => {
@@ -127,8 +120,7 @@ impl Solver {
             }
             _ => {
                 let cid = self.attach_long(lits, true);
-                let lit = self.clauses.expect_live_clause(cid).lit(0);
-                let _ = self.enqueue(lit, Reason::Clause(cid));
+                let _ = self.enqueue(lits[0], Reason::Clause(cid));
             }
         }
     }

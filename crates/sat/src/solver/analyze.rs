@@ -15,13 +15,15 @@ enum AnalyzeSource {
 }
 
 impl Solver {
-    /// Performs first-UIP conflict analysis and returns the learned clause.
+    /// Performs first-UIP conflict analysis into a reusable learned-clause buffer.
     ///
-    /// The tuple contains the learned clause and the backtrack level for its second
-    /// highest decision level literal.
-    pub(crate) fn analyze(&mut self, conflict: Conflict) -> (Vec<Lit>, usize) {
+    /// The caller-provided `learnt` buffer is cleared and then populated in asserting
+    /// order: slot 0 is the asserting literal, and slot 1, when present, is the
+    /// literal with the highest remaining decision level. The returned value is the
+    /// backtrack level induced by that second watched position.
+    pub(crate) fn analyze(&mut self, conflict: Conflict, learnt: &mut Vec<Lit>) -> usize {
         let current_level = self.decision_level();
-        let mut learnt = Vec::with_capacity(16);
+        learnt.clear();
         learnt.push(Lit::from_raw(0));
 
         let mut path_count = 0usize;
@@ -32,15 +34,15 @@ impl Solver {
         loop {
             match source {
                 AnalyzeSource::Binary(a, b) => {
-                    self.analyze_lit(a, resolved, current_level, &mut path_count, &mut learnt);
-                    self.analyze_lit(b, resolved, current_level, &mut path_count, &mut learnt);
+                    self.analyze_lit(a, resolved, current_level, &mut path_count, learnt);
+                    self.analyze_lit(b, resolved, current_level, &mut path_count, learnt);
                 }
                 AnalyzeSource::Clause(cid) => {
                     self.bump_clause_activity(cid);
                     let len = self.clauses.expect_live_header(cid).len();
                     for i in 0..len {
                         let q = self.clauses.expect_live_clause(cid).lit(i);
-                        self.analyze_lit(q, resolved, current_level, &mut path_count, &mut learnt);
+                        self.analyze_lit(q, resolved, current_level, &mut path_count, learnt);
                     }
                 }
             }
@@ -89,7 +91,7 @@ impl Solver {
             backtrack_level = self.level[learnt[1].var().index()];
         }
 
-        (learnt, backtrack_level)
+        backtrack_level
     }
 
     /// Converts a propagated conflict into a clause-like analysis source.

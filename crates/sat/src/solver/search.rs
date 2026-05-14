@@ -166,9 +166,9 @@ mod tests {
     #[test]
     fn delete_clause_leaves_stale_watchers_for_lazy_cleanup() {
         let mut solver = Solver::with_vars(5);
-        let dead = solver.attach_long(vec![lit(0), lit(1), lit(2)], true);
+        let dead = solver.attach_long(&[lit(0), lit(1), lit(2)], true);
         solver.delete_clause(dead);
-        let replacement = solver.attach_long(vec![lit(0), lit(3), lit(4)], true);
+        let replacement = solver.attach_long(&[lit(0), lit(3), lit(4)], true);
 
         assert_eq!(dead.slot(), replacement.slot());
         assert_ne!(dead, replacement);
