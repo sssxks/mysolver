@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 use crate::clause_db::ClauseId;
 use crate::{Lit, Var};
 
@@ -63,7 +61,7 @@ impl Solver {
     /// Increases the activity score of a learned clause.
     pub(crate) fn bump_clause_activity(&mut self, cid: ClauseId) {
         let new_activity = {
-            let header = self.clauses.expect_live_header_mut(cid);
+            let header = self.clauses.header_mut(cid);
             if !header.is_learnt() {
                 return;
             }
@@ -104,37 +102,41 @@ impl Solver {
         let mut locked = vec![false; self.clauses.slot_count()];
         for &reason in &self.reason {
             if let Reason::Clause(cid) = reason {
-                let slot = self.clauses.expect_live_slot(cid);
+                let slot = self.clauses.live_slot(cid);
                 locked[slot] = true;
             }
         }
 
-        let mut candidates: Vec<ClauseId> = self
-            .learnts
-            .iter()
-            .copied()
-            .filter(|&cid| {
-                let Some(header) = self.clauses.try_header(cid) else {
-                    return false;
-                };
-                header.len() > 2 && !locked[self.clauses.expect_live_slot(cid)]
-            })
-            .collect();
-
-        candidates.sort_by(|&a, &b| {
-            self.clauses
-                .expect_live_header(a)
-                .activity()
-                .partial_cmp(&self.clauses.expect_live_header(b).activity())
-                .unwrap_or(Ordering::Equal)
-        });
-
-        let remove = candidates.len() / 2;
-        for cid in candidates.into_iter().take(remove) {
-            self.delete_clause(cid);
+        let mut learnts = std::mem::take(&mut self.learnts);
+        let mut removable = 0;
+        let mut locked_start = learnts.len();
+        while removable < locked_start {
+            if locked[self.clauses.live_slot(learnts[removable])] {
+                locked_start -= 1;
+                learnts.swap(removable, locked_start);
+            } else {
+                removable += 1;
+            }
         }
 
-        self.learnts.retain(|&cid| self.clauses.is_live(cid));
+        let remove = removable / 2;
+        if remove >= 2 {
+            // `select_nth_unstable_by` requires a non-empty slice and does not help
+            // when there is only one removable clause because `remove` stays zero.
+            learnts[..removable].select_nth_unstable_by(remove, |&a, &b| {
+                self.clauses
+                    .header(a)
+                    .activity()
+                    .total_cmp(&self.clauses.header(b).activity())
+            });
+
+            for &cid in &learnts[..remove] {
+                self.delete_clause(cid);
+            }
+        }
+
+        learnts.retain(|&cid| self.clauses.is_live(cid));
+        self.learnts = learnts;
     }
 }
 

@@ -140,21 +140,16 @@ impl ClauseHeader {
         self.generation_state & Self::GENERATION_MASK
     }
 
-    /// Returns the payload offset measured in literal words.
-    pub(crate) fn offset(self) -> usize {
-        debug_assert!(self.is_live());
-        self.offset_or_next as usize
-    }
-
-    /// Returns the number of literals stored in this clause.
-    pub(crate) fn len(self) -> usize {
-        debug_assert!(self.is_live());
-        self.len as usize
+    /// Returns whether this header slot currently stores a live clause.
+    pub(crate) fn is_live(self) -> bool {
+        matches!(
+            self.generation_state & Self::STATE_MASK,
+            Self::LIVE_STATE | Self::LEARNT_STATE
+        )
     }
 
     /// Returns whether this clause was learned during search.
     pub(crate) fn is_learnt(self) -> bool {
-        debug_assert!(self.is_live());
         (self.generation_state & Self::STATE_MASK) == Self::LEARNT_STATE
     }
 
@@ -168,12 +163,22 @@ impl ClauseHeader {
         (self.generation_state & Self::STATE_MASK) == Self::RETIRED_STATE
     }
 
-    /// Returns whether this header slot currently stores a live clause.
-    pub(crate) fn is_live(self) -> bool {
-        matches!(
-            self.generation_state & Self::STATE_MASK,
-            Self::LIVE_STATE | Self::LEARNT_STATE
-        )
+    /// Returns the payload offset measured in literal words.
+    pub(crate) fn offset(self) -> usize {
+        debug_assert!(self.is_live());
+        self.offset_or_next as usize
+    }
+
+    /// Updates the payload offset after clause compaction.
+    pub(crate) fn set_offset(&mut self, offset: u32) {
+        debug_assert!(self.is_live());
+        self.offset_or_next = offset;
+    }
+
+    /// Returns the number of literals stored in this clause.
+    pub(crate) fn len(self) -> usize {
+        debug_assert!(self.is_live());
+        self.len as usize
     }
 
     /// Returns the stored clause activity score.
@@ -182,22 +187,16 @@ impl ClauseHeader {
         self.activity
     }
 
-    /// Returns the next free slot in the intrusive free list.
-    pub(crate) fn next_free_slot(self) -> Option<u32> {
-        debug_assert!(self.is_free());
-        (self.offset_or_next != Self::FREE_LIST_END).then_some(self.offset_or_next)
-    }
-
     /// Overwrites the stored clause activity score.
     pub(crate) fn set_activity(&mut self, activity: f32) {
         debug_assert!(self.is_live());
         self.activity = activity;
     }
 
-    /// Updates the payload offset after clause compaction.
-    pub(crate) fn set_offset(&mut self, offset: u32) {
-        debug_assert!(self.is_live());
-        self.offset_or_next = offset;
+    /// Returns the next free slot in the intrusive free list.
+    pub(crate) fn next_free_slot(self) -> Option<u32> {
+        debug_assert!(self.is_free());
+        (self.offset_or_next != Self::FREE_LIST_END).then_some(self.offset_or_next)
     }
 }
 
@@ -246,14 +245,11 @@ impl ClauseMut<'_> {
 
     /// Returns literal `idx` from the clause payload.
     pub(crate) fn lit(&self, idx: usize) -> Lit {
-        debug_assert!(idx < self.len());
         self.lits[idx]
     }
 
     /// Swaps two watched literals in place.
     pub(crate) fn swap_lits(&mut self, a: usize, b: usize) {
-        debug_assert!(a < self.len());
-        debug_assert!(b < self.len());
         self.lits.swap(a, b);
     }
 }
@@ -311,7 +307,7 @@ impl ClauseArena {
 
     /// Deletes one live clause and either recycles or retires its slot.
     pub(crate) fn delete(&mut self, cid: ClauseId) {
-        let slot = self.expect_live_slot(cid);
+        let slot = self.live_slot(cid);
         let header = self.headers[slot];
         self.wasted_words += header.len();
 
@@ -331,46 +327,51 @@ impl ClauseArena {
         self.headers.len()
     }
 
-    /// Returns whether `cid` still resolves to a live clause.
-    pub(crate) fn is_live(&self, cid: ClauseId) -> bool {
-        self.live_slot(cid).is_some()
+    /// Returns the live slot index named by `cid`, if any.
+    #[inline(always)]
+    fn try_live_slot(&self, cid: ClauseId) -> Option<usize> {
+        let header = self.headers.get(cid.slot_index()).unwrap();
+        // header is free or retired or header is already reused for another generation.
+        if header.is_free() || header.is_retired() || header.generation() != cid.generation() {
+            None
+        } else {
+            Some(cid.slot_index())
+        }
     }
 
-    /// Returns the live slot index named by `cid`, if any.
-    pub(crate) fn live_slot(&self, cid: ClauseId) -> Option<usize> {
-        let header = self.headers.get(cid.slot_index())?;
-        if header.is_free() || header.is_retired() || header.generation() != cid.generation() {
-            return None;
-        }
-        Some(cid.slot_index())
+    /// Returns whether `cid` still resolves to a live clause.
+    pub(crate) fn is_live(&self, cid: ClauseId) -> bool {
+        self.try_live_slot(cid).is_some()
     }
 
     /// Returns the live slot index named by `cid`, panicking if the id is stale.
-    pub(crate) fn expect_live_slot(&self, cid: ClauseId) -> usize {
-        self.live_slot(cid)
+    pub(crate) fn live_slot(&self, cid: ClauseId) -> usize {
+        self.try_live_slot(cid)
             .unwrap_or_else(|| panic!("stale clause id: {cid:?}"))
     }
 
     /// Returns the live header for `cid`, if the id is not stale.
-    pub(crate) fn try_header(&self, cid: ClauseId) -> Option<&ClauseHeader> {
-        let slot = self.live_slot(cid)?;
+    #[inline(always)]
+    fn try_header(&self, cid: ClauseId) -> Option<&ClauseHeader> {
+        let slot = self.try_live_slot(cid)?;
         Some(&self.headers[slot])
     }
 
     /// Returns the live header for `cid`, panicking if the id is stale.
-    pub(crate) fn expect_live_header(&self, cid: ClauseId) -> &ClauseHeader {
-        let slot = self.expect_live_slot(cid);
+    pub(crate) fn header(&self, cid: ClauseId) -> &ClauseHeader {
+        let slot = self.live_slot(cid);
         &self.headers[slot]
     }
 
     /// Returns the live header for `cid` mutably, panicking if the id is stale.
-    pub(crate) fn expect_live_header_mut(&mut self, cid: ClauseId) -> &mut ClauseHeader {
-        let slot = self.expect_live_slot(cid);
+    pub(crate) fn header_mut(&mut self, cid: ClauseId) -> &mut ClauseHeader {
+        let slot = self.live_slot(cid);
         &mut self.headers[slot]
     }
 
     /// Returns an immutable view over `cid`, if the id is not stale.
-    pub(crate) fn try_clause(&self, cid: ClauseId) -> Option<ClauseRef<'_>> {
+    #[inline(always)]
+    fn try_clause(&self, cid: ClauseId) -> Option<ClauseRef<'_>> {
         let header = self.try_header(cid)?;
         let range = Self::literal_range_from_header(header);
         Some(ClauseRef {
@@ -380,14 +381,14 @@ impl ClauseArena {
     }
 
     /// Returns an immutable view over `cid`, panicking if the id is stale.
-    pub(crate) fn expect_live_clause(&self, cid: ClauseId) -> ClauseRef<'_> {
+    pub(crate) fn clause(&self, cid: ClauseId) -> ClauseRef<'_> {
         self.try_clause(cid)
             .unwrap_or_else(|| panic!("stale clause id: {cid:?}"))
     }
 
     /// Returns a mutable view over `cid`, if the id is not stale.
     pub(crate) fn try_clause_mut(&mut self, cid: ClauseId) -> Option<ClauseMut<'_>> {
-        let slot = self.live_slot(cid)?;
+        let slot = self.try_live_slot(cid)?;
         let (headers, words) = (&mut self.headers, &mut self.words);
         let header = &mut headers[slot];
         let range = Self::literal_range_from_header(header);
@@ -408,7 +409,7 @@ impl ClauseArena {
     }
 
     /// Returns the literal range described by `header`.
-    pub(crate) fn literal_range_from_header(header: &ClauseHeader) -> std::ops::Range<usize> {
+    fn literal_range_from_header(header: &ClauseHeader) -> std::ops::Range<usize> {
         let start = header.offset();
         let end = start + header.len();
         start..end
@@ -433,6 +434,10 @@ impl ClauseArena {
             return;
         }
 
+        // compact with header-slot order, instead of old payload order,
+        // at the cost of reallocating a new buffer, since compact is infrequent.
+        // this should be more cache friendly as opposed to mut-inline-compaction,
+        // which trades non-sequential live payload for no reallocation.
         let mut words = Vec::with_capacity(self.words.len() - self.wasted_words);
         let old_words = &self.words;
 
@@ -475,10 +480,10 @@ mod tests {
         assert_ne!(c, a);
         assert_eq!(c.generation(), a.generation() + 1);
         assert!(!arena.is_live(a));
-        assert_eq!(arena.expect_live_clause(c).lit(0), lit(6));
-        assert_eq!(arena.expect_live_clause(c).lit(2), lit(8));
-        assert_eq!(arena.expect_live_clause(b).lit(1), lit(4));
-        assert!(arena.expect_live_header(c).is_learnt());
+        assert_eq!(arena.clause(c).lit(0), lit(6));
+        assert_eq!(arena.clause(c).lit(2), lit(8));
+        assert_eq!(arena.clause(b).lit(1), lit(4));
+        assert!(arena.header(c).is_learnt());
     }
 
     #[test]
@@ -499,11 +504,11 @@ mod tests {
         arena.delete(a);
         arena.delete(b);
 
-        assert_eq!(arena.expect_live_header(c).offset(), 0);
+        assert_eq!(arena.header(c).offset(), 0);
         assert_eq!(arena.words.len(), c_lits.len());
-        assert_eq!(arena.expect_live_clause(c).lit(0), c_lits[0]);
+        assert_eq!(arena.clause(c).lit(0), c_lits[0]);
         assert_eq!(
-            arena.expect_live_clause(c).lit(c_lits.len() - 1),
+            arena.clause(c).lit(c_lits.len() - 1),
             c_lits[c_lits.len() - 1]
         );
 

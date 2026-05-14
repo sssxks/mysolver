@@ -39,9 +39,9 @@ impl Solver {
                 }
                 AnalyzeSource::Clause(cid) => {
                     self.bump_clause_activity(cid);
-                    let len = self.clauses.expect_live_header(cid).len();
+                    let len = self.clauses.header(cid).len();
                     for i in 0..len {
-                        let q = self.clauses.expect_live_clause(cid).lit(i);
+                        let q = self.clauses.clause(cid).lit(i);
                         self.analyze_lit(q, resolved, current_level, &mut path_count, learnt);
                     }
                 }

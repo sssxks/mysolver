@@ -56,7 +56,7 @@ pub struct Solver {
     assigns: Vec<LBool>,
     /// Decision level at which each variable was assigned.
     level: Vec<usize>,
-    /// Antecedent reason for each assignment.
+    /// Antecedent reason for each assignment, eagerly maintained [`ClauseId`] liveness.
     reason: Vec<Reason>,
     /// Saved branching polarity for phase saving.
     phase: Vec<bool>,
@@ -70,12 +70,12 @@ pub struct Solver {
     /// Read cursor into `trail` for propagation.
     qhead: usize,
 
-    /// Watch lists indexed by packed literal.
+    /// Watch lists indexed by packed literal, may contain invalid [`ClauseId`]s.
     watches: Vec<Vec<Watcher>>,
+    /// Active learned clauses, eagerly maintained [`ClauseId`] liveness.
+    learnts: Vec<ClauseId>,
     /// Arena storing all long clauses.
     clauses: ClauseArena,
-    /// Active learned clauses eligible for reduction.
-    learnts: Vec<ClauseId>,
 
     /// VSIDS activity per variable.
     var_activity: Vec<f64>,
