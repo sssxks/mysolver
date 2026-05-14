@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/bitsum", "crates/sat"]
+members = ["crates/sat"]
 resolver = "3"
 
 [workspace.package]

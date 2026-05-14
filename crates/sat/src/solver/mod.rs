@@ -202,6 +202,7 @@ impl Solver {
         let mut restart_conflicts = 0usize;
         let mut restart_limit = 100usize;
         let mut next_reduce = 2_000usize;
+        // buffer across iterations to avoid repeated allocations during self.analyze()
         let mut learnt = Vec::with_capacity(16);
 
         loop {
