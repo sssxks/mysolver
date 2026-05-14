@@ -66,4 +66,11 @@ mod tests {
         let mut s = parse_dimacs(input).unwrap();
         assert_eq!(s.solve(), SatResult::Sat);
     }
+
+    #[test]
+    fn dimacs_accepts_satlib_end_marker() {
+        let input = "p cnf 1 1\n1 0\n%\n0\n";
+        let mut s = parse_dimacs(input).unwrap();
+        assert_eq!(s.solve(), SatResult::Sat);
+    }
 }

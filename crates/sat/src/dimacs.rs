@@ -17,6 +17,9 @@ pub fn parse_dimacs(input: &str) -> Result<Solver, String> {
         if line.is_empty() || line.starts_with('c') {
             continue;
         }
+        if line.starts_with('%') {
+            break;
+        }
         if line.starts_with('p') {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() != 4 || parts[1] != "cnf" {
