@@ -1,8 +1,8 @@
 //! Packed tagged-union generation for fixed-width integer representations.
 //!
 //! The [`bitsum`] attribute transforms an enum-like description into a compact
-//! wrapper type with constructors, field accessors, a tag enum, and a local
-//! pattern-matching macro.
+//! wrapper type with constructors, a tag enum, and local pattern-matching
+//! macros.
 
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
@@ -89,8 +89,6 @@ struct ParsedField {
     bit_width: u32,
     /// The bit offset within the encoded representation.
     offset: u32,
-    /// Documentation copied from the source field.
-    doc_attrs: Vec<Attribute>,
 }
 
 /// A parsed variant in the source enum.
@@ -100,8 +98,6 @@ struct ParsedVariant {
     ident: Ident,
     /// The constructor method name.
     constructor_ident: Ident,
-    /// The accessor prefix for the variant.
-    accessor_prefix: String,
     /// The numeric tag value assigned to the variant.
     tag_value: u32,
     /// The fields carried by the variant.
@@ -121,7 +117,13 @@ struct ParsedBitsum {
     /// The generated tag enum name.
     tag_ident: Ident,
     /// The generated match macro name.
-    macro_ident: Ident,
+    match_macro_ident: Ident,
+    /// The generated `if let`-style macro name.
+    if_let_macro_ident: Ident,
+    /// The generated `while let`-style macro name.
+    while_let_macro_ident: Ident,
+    /// The generated `matches!`-style macro name.
+    matches_macro_ident: Ident,
     /// The representation type.
     repr_ty: Type,
     /// The representation width in bits.
@@ -150,7 +152,11 @@ impl ParsedBitsum {
 
         let struct_ident = item.ident;
         let tag_ident = format_ident!("{struct_ident}Tag");
-        let macro_ident = format_ident!("match_{}", to_snake_case(&struct_ident.to_string()));
+        let struct_snake = to_snake_case(&struct_ident.to_string());
+        let match_macro_ident = format_ident!("match_{struct_snake}");
+        let if_let_macro_ident = format_ident!("if_let_{struct_snake}");
+        let while_let_macro_ident: Ident = format_ident!("while_let_{struct_snake}");
+        let matches_macro_ident = format_ident!("matches_{struct_snake}");
         let tag_width = ceil_log2(item.variants.len());
         if tag_width > repr_width {
             return Err(Error::new(
@@ -177,7 +183,10 @@ impl ParsedBitsum {
             vis,
             struct_ident,
             tag_ident,
-            macro_ident,
+            match_macro_ident,
+            if_let_macro_ident,
+            while_let_macro_ident,
+            matches_macro_ident,
             repr_ty,
             repr_width,
             tag_width,
@@ -191,7 +200,10 @@ impl ParsedBitsum {
     fn expand(&self) -> TokenStream2 {
         let struct_ident = &self.struct_ident;
         let tag_ident = &self.tag_ident;
-        let macro_ident = &self.macro_ident;
+        let match_macro_ident = &self.match_macro_ident;
+        let if_let_macro_ident = &self.if_let_macro_ident;
+        let while_let_macro_ident = &self.while_let_macro_ident;
+        let matches_macro_ident = &self.matches_macro_ident;
         let vis = &self.vis;
         let repr_ty = &self.repr_ty;
         let repr_width = lit_u32(self.repr_width);
@@ -263,40 +275,6 @@ impl ParsedBitsum {
             }
         });
 
-        let accessor_methods = self.variants.iter().flat_map(|variant| {
-            let accessor_prefix = &variant.accessor_prefix;
-            variant.fields.iter().map(move |field| {
-                let accessor_ident =
-                    format_ident!("{accessor_prefix}_{}", field.ident);
-                let field_ident = &field.ident;
-                let ty = &field.ty;
-                let offset = lit_u32(field.offset);
-                let mask = lit_u128(bits_mask(field.bit_width));
-                let doc_attrs = &field.doc_attrs;
-                let variant_ident = &variant.ident;
-
-                if field.kind.is_bool() {
-                    quote! {
-                        #(#doc_attrs)*
-                        #[doc = "Returns the decoded field value for this variant."]
-                        #[doc = concat!("This accessor reads the `", stringify!(#field_ident), "` field from `", stringify!(#variant_ident), "`.")]
-                        pub const fn #accessor_ident(self) -> #ty {
-                            ((self.0 >> #offset) & (#mask as #repr_ty)) != 0
-                        }
-                    }
-                } else {
-                    quote! {
-                        #(#doc_attrs)*
-                        #[doc = "Returns the decoded field value for this variant."]
-                        #[doc = concat!("This accessor reads the `", stringify!(#field_ident), "` field from `", stringify!(#variant_ident), "`.")]
-                        pub const fn #accessor_ident(self) -> #ty {
-                            ((self.0 >> #offset) & (#mask as #repr_ty)) as #ty
-                        }
-                    }
-                }
-            })
-        });
-
         let from_bits_match_arms = self.variants.iter().map(|variant| {
             let tag_value = lit_u32(variant.tag_value);
             let valid_mask = lit_u128(variant.valid_mask);
@@ -319,7 +297,7 @@ impl ParsedBitsum {
             }
         });
 
-        let macro_patterns = self.variants.iter().map(|variant| {
+        let match_macro_patterns = self.variants.iter().map(|variant| {
             let ident = &variant.ident;
             let body_ident = format_ident!(
                 "__bitsum_body_{}",
@@ -327,24 +305,25 @@ impl ParsedBitsum {
             );
             if variant.fields.is_empty() {
                 quote! {
-                    #ident => $#body_ident:block $(,)?
+                    #ident => $#body_ident:expr
                 }
             } else {
-                let bindings = variant.fields.iter().map(|field| {
-                    let binding_ident = format_ident!(
-                        "__bitsum_binding_{}_{}",
+                let field_patterns = variant.fields.iter().map(|field| {
+                    let field_ident = &field.ident;
+                    let pattern_ident = format_ident!(
+                        "__bitsum_pat_{}_{}",
                         to_snake_case(&variant.ident.to_string()),
                         field.ident
                     );
-                    quote!($#binding_ident:ident)
+                    quote!(#field_ident: $#pattern_ident:pat)
                 });
                 quote! {
-                    #ident { #(#bindings),* } => $#body_ident:block $(,)?
+                    #ident { #(#field_patterns),* $(,)? } => $#body_ident:expr
                 }
             }
         });
 
-        let macro_dispatch_arms = self.variants.iter().map(|variant| {
+        let match_macro_dispatch_arms = self.variants.iter().map(|variant| {
             let ident = &variant.ident;
             let body_ident = format_ident!(
                 "__bitsum_body_{}",
@@ -355,30 +334,232 @@ impl ParsedBitsum {
                     #tag_ident::#ident => $#body_ident
                 }
             } else {
-                let bindings = variant.fields.iter().map(|field| {
+                let pattern_idents = variant.fields.iter().map(|field| {
                     format_ident!(
-                        "__bitsum_binding_{}_{}",
+                        "__bitsum_pat_{}_{}",
                         to_snake_case(&variant.ident.to_string()),
                         field.ident
                     )
                 });
-                let extracts =
-                    variant
-                        .fields
-                        .iter()
-                        .zip(bindings.clone())
-                        .map(|(field, binding)| {
-                            let accessor_ident =
-                                format_ident!("{}_{}", variant.accessor_prefix, field.ident);
-                            quote! {
-                                let $#binding = __instr.#accessor_ident();
-                            }
-                        });
+                let decoded_exprs = variant.fields.iter().map(|field| {
+                    let offset = lit_u32(field.offset);
+                    let mask = lit_u128(bits_mask(field.bit_width));
+                    let ty = &field.ty;
+                    if field.kind.is_bool() {
+                        quote! {
+                            (((__bitsum_bits >> #offset) & (#mask as #repr_ty)) != 0)
+                        }
+                    } else {
+                        quote! {
+                            (((__bitsum_bits >> #offset) & (#mask as #repr_ty)) as #ty)
+                        }
+                    }
+                });
                 quote! {
                     #tag_ident::#ident => {
-                        #(#extracts)*
+                        let (#($#pattern_idents),*) = (#(#decoded_exprs),*);
                         $#body_ident
                     }
+                }
+            }
+        });
+
+        let if_let_rules = self.variants.iter().map(|variant| {
+            let ident = &variant.ident;
+            let tag_value = lit_u32(variant.tag_value);
+            if variant.fields.is_empty() {
+                quote! {
+                    (let #ident = $instr:expr => $then:block else $else:block) => {{
+                        let __bitsum_instr = $instr;
+                        let __bitsum_bits = __bitsum_instr.bits();
+                        if (__bitsum_bits & (#tag_mask as #repr_ty)) == (#tag_value as #repr_ty) {
+                            $then
+                        } else {
+                            $else
+                        }
+                    }};
+                    (let #ident = $instr:expr => $then:block) => {
+                        #if_let_macro_ident!(let #ident = $instr => $then else {})
+                    };
+                }
+            } else {
+                let field_patterns: Vec<_> = variant.fields.iter().map(|field| {
+                    let field_ident = &field.ident;
+                    let pattern_ident = format_ident!(
+                        "__bitsum_pat_if_let_{}_{}",
+                        to_snake_case(&variant.ident.to_string()),
+                        field.ident
+                    );
+                    quote!(#field_ident: $#pattern_ident:pat)
+                }).collect();
+                let pattern_idents: Vec<_> = variant.fields.iter().map(|field| {
+                    format_ident!(
+                        "__bitsum_pat_if_let_{}_{}",
+                        to_snake_case(&variant.ident.to_string()),
+                        field.ident
+                    )
+                }).collect();
+                let decoded_exprs: Vec<_> = variant.fields.iter().map(|field| {
+                    let offset = lit_u32(field.offset);
+                    let mask = lit_u128(bits_mask(field.bit_width));
+                    let ty = &field.ty;
+                    if field.kind.is_bool() {
+                        quote! {
+                            (((__bitsum_bits >> #offset) & (#mask as #repr_ty)) != 0)
+                        }
+                    } else {
+                        quote! {
+                            (((__bitsum_bits >> #offset) & (#mask as #repr_ty)) as #ty)
+                        }
+                    }
+                }).collect();
+                quote! {
+                    (let #ident { #(#field_patterns),* $(,)? } = $instr:expr => $then:block else $else:block) => {{
+                        let __bitsum_instr = $instr;
+                        let __bitsum_bits = __bitsum_instr.bits();
+                        if (__bitsum_bits & (#tag_mask as #repr_ty)) == (#tag_value as #repr_ty) {
+                            #[allow(irrefutable_let_patterns)]
+                            if let (#($#pattern_idents),*) = (#(#decoded_exprs),*) {
+                                $then
+                            } else {
+                                $else
+                            }
+                        } else {
+                            $else
+                        }
+                    }};
+                    (let #ident { #(#field_patterns),* $(,)? } = $instr:expr => $then:block) => {
+                        #if_let_macro_ident!(let #ident { #(#field_patterns),* } = $instr => $then else {})
+                    };
+                }
+            }
+        });
+
+        let while_let_rules = self.variants.iter().map(|variant| {
+            let ident = &variant.ident;
+            let tag_value = lit_u32(variant.tag_value);
+            if variant.fields.is_empty() {
+                quote! {
+                    (let #ident = $instr:expr => $body:block) => {{
+                        loop {
+                            let __bitsum_instr = $instr;
+                            let __bitsum_bits = __bitsum_instr.bits();
+                            if (__bitsum_bits & (#tag_mask as #repr_ty)) == (#tag_value as #repr_ty) {
+                                $body
+                            } else {
+                                break;
+                            }
+                        }
+                    }};
+                }
+            } else {
+                let field_patterns = variant.fields.iter().map(|field| {
+                    let field_ident = &field.ident;
+                    let pattern_ident = format_ident!(
+                        "__bitsum_pat_while_let_{}_{}",
+                        to_snake_case(&variant.ident.to_string()),
+                        field.ident
+                    );
+                    quote!(#field_ident: $#pattern_ident:pat)
+                });
+                let pattern_idents = variant.fields.iter().map(|field| {
+                    format_ident!(
+                        "__bitsum_pat_while_let_{}_{}",
+                        to_snake_case(&variant.ident.to_string()),
+                        field.ident
+                    )
+                });
+                let decoded_exprs = variant.fields.iter().map(|field| {
+                    let offset = lit_u32(field.offset);
+                    let mask = lit_u128(bits_mask(field.bit_width));
+                    let ty = &field.ty;
+                    if field.kind.is_bool() {
+                        quote! {
+                            (((__bitsum_bits >> #offset) & (#mask as #repr_ty)) != 0)
+                        }
+                    } else {
+                        quote! {
+                            (((__bitsum_bits >> #offset) & (#mask as #repr_ty)) as #ty)
+                        }
+                    }
+                });
+                quote! {
+                    (let #ident { #(#field_patterns),* $(,)? } = $instr:expr => $body:block) => {{
+                        loop {
+                            let __bitsum_instr = $instr;
+                            let __bitsum_bits = __bitsum_instr.bits();
+                            if (__bitsum_bits & (#tag_mask as #repr_ty)) == (#tag_value as #repr_ty) {
+                                #[allow(irrefutable_let_patterns)]
+                                if let (#($#pattern_idents),*) = (#(#decoded_exprs),*) {
+                                    $body
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }};
+                }
+            }
+        });
+
+        let matches_rules = self.variants.iter().map(|variant| {
+            let ident = &variant.ident;
+            let tag_value = lit_u32(variant.tag_value);
+            if variant.fields.is_empty() {
+                quote! {
+                    ($instr:expr, #ident $(if $guard:expr)? $(,)?) => {{
+                        let __bitsum_instr = $instr;
+                        let __bitsum_bits = __bitsum_instr.bits();
+                        if (__bitsum_bits & (#tag_mask as #repr_ty)) == (#tag_value as #repr_ty) {
+                            ::core::matches!((), () $(if $guard)?)
+                        } else {
+                            false
+                        }
+                    }};
+                }
+            } else {
+                let field_patterns = variant.fields.iter().map(|field| {
+                    let field_ident = &field.ident;
+                    let pattern_ident = format_ident!(
+                        "__bitsum_pat_matches_{}_{}",
+                        to_snake_case(&variant.ident.to_string()),
+                        field.ident
+                    );
+                    quote!(#field_ident: $#pattern_ident:pat)
+                });
+                let pattern_idents = variant.fields.iter().map(|field| {
+                    format_ident!(
+                        "__bitsum_pat_matches_{}_{}",
+                        to_snake_case(&variant.ident.to_string()),
+                        field.ident
+                    )
+                });
+                let decoded_exprs = variant.fields.iter().map(|field| {
+                    let offset = lit_u32(field.offset);
+                    let mask = lit_u128(bits_mask(field.bit_width));
+                    let ty = &field.ty;
+                    if field.kind.is_bool() {
+                        quote! {
+                            (((__bitsum_bits >> #offset) & (#mask as #repr_ty)) != 0)
+                        }
+                    } else {
+                        quote! {
+                            (((__bitsum_bits >> #offset) & (#mask as #repr_ty)) as #ty)
+                        }
+                    }
+                });
+                quote! {
+                    ($instr:expr, #ident { #(#field_patterns),* $(,)? } $(if $guard:expr)? $(,)?) => {{
+                        let __bitsum_instr = $instr;
+                        let __bitsum_bits = __bitsum_instr.bits();
+                        if (__bitsum_bits & (#tag_mask as #repr_ty)) == (#tag_value as #repr_ty) {
+                            ::core::matches!((#(#decoded_exprs),*), (#($#pattern_idents),*) $(if $guard)?)
+                        } else {
+                            false
+                        }
+                    }};
                 }
             }
         });
@@ -442,7 +623,6 @@ impl ParsedBitsum {
                 }
 
                 #(#constructor_methods)*
-                #(#accessor_methods)*
             }
 
             impl From<#struct_ident> for #repr_ty {
@@ -452,19 +632,41 @@ impl ParsedBitsum {
             }
 
             #[allow(unused_macros)]
-            #[doc = "Matches on the generated bitsum tag and binds decoded fields for payload variants."]
-            macro_rules! #macro_ident {
+            #[doc = "Matches on the generated bitsum tag and binds decoded fields for each variant."]
+            #[doc = "Named payload patterns use explicit field syntax such as `Variant { field: pat }`."]
+            macro_rules! #match_macro_ident {
                 (
                     $instr:expr,
                     {
-                        #(#macro_patterns)*
+                        #(#match_macro_patterns, )*
                     }
                 ) => {{
-                    let __instr = $instr;
-                    match __instr.tag() {
-                        #(#macro_dispatch_arms)*
+                    let __bitsum_instr = $instr;
+                    let __bitsum_bits = __bitsum_instr.bits();
+                    match __bitsum_instr.tag() {
+                        #(#match_macro_dispatch_arms,)*
                     }
                 }};
+            }
+
+            #[allow(unused_macros)]
+            #[doc = "Performs an `if let`-style match on one generated bitsum pattern."]
+            #[doc = "The scrutinee expression is evaluated once and must be followed by `=>`."]
+            macro_rules! #if_let_macro_ident {
+                #(#if_let_rules)*
+            }
+
+            #[allow(unused_macros)]
+            #[doc = "Performs a `while let`-style loop on one generated bitsum pattern."]
+            #[doc = "The scrutinee expression is re-evaluated on each iteration and must be followed by `=>`."]
+            macro_rules! #while_let_macro_ident {
+                #(#while_let_rules)*
+            }
+
+            #[allow(unused_macros)]
+            #[doc = "Returns whether a generated bitsum value matches one pattern, optionally with a guard."]
+            macro_rules! #matches_macro_ident {
+                #(#matches_rules)*
             }
         }
     }
@@ -484,7 +686,6 @@ fn parse_variant(
 ) -> Result<ParsedVariant> {
     let ident = variant.ident;
     let constructor_ident = format_ident!("{}", to_snake_case(&ident.to_string()));
-    let accessor_prefix = to_snake_case(&ident.to_string());
     let variant_doc_attrs = doc_attrs(&variant.attrs);
     let mut fields = Vec::new();
     let mut next_offset = tag_width;
@@ -529,7 +730,6 @@ fn parse_variant(
                     kind,
                     bit_width,
                     offset: next_offset,
-                    doc_attrs: doc_attrs(&field.attrs),
                 });
                 next_offset = end_offset;
             }
@@ -549,7 +749,6 @@ fn parse_variant(
     Ok(ParsedVariant {
         ident,
         constructor_ident,
-        accessor_prefix,
         tag_value,
         fields,
         valid_mask,
