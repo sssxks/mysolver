@@ -1,0 +1,5 @@
+error: duplicate `#[bits(...)]` attribute
+ --> tests/ui/fail/duplicate_bits_attr.rs:7:9
+  |
+7 |         #[bits(4)]
+  |         ^^^^^^^^^^

@@ -7,6 +7,8 @@
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 
+use std::collections::BTreeMap;
+
 use proc_macro::TokenStream;
 use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
@@ -96,6 +98,8 @@ struct ParsedField {
 struct ParsedVariant {
     /// The source variant identifier.
     ident: Ident,
+    /// The normalized helper name derived from the variant identifier.
+    generated_name: String,
     /// The constructor method name.
     constructor_ident: Ident,
     /// The numeric tag value assigned to the variant.
@@ -169,14 +173,22 @@ impl ParsedBitsum {
         let vis = item.vis;
         let doc_attrs = doc_attrs(&item.attrs);
         let mut variants = Vec::with_capacity(item.variants.len());
+        let mut generated_names = BTreeMap::<String, Ident>::new();
 
         for (tag_value, variant) in item.variants.into_iter().enumerate() {
-            variants.push(parse_variant(
-                repr_width,
-                tag_width,
-                tag_value as u32,
-                variant,
-            )?);
+            let variant = parse_variant(repr_width, tag_width, tag_value as u32, variant)?;
+            if let Some(previous_ident) =
+                generated_names.insert(variant.generated_name.clone(), variant.ident.clone())
+            {
+                return Err(Error::new_spanned(
+                    &variant.ident,
+                    format!(
+                        "variants `{previous_ident}` and `{}` both normalize to helper name `{}`; rename one variant to avoid generated API collisions",
+                        variant.ident, variant.generated_name
+                    ),
+                ));
+            }
+            variants.push(variant);
         }
 
         Ok(Self {
@@ -210,6 +222,19 @@ impl ParsedBitsum {
         let tag_mask = lit_u128(self.tag_mask);
         let tag_width = lit_u32(self.tag_width);
         let enum_doc_attrs = &self.doc_attrs;
+        let macro_reexport_vis = macro_reexport_vis(vis);
+        let macro_reexports = macro_reexport_vis.iter().map(|macro_vis| {
+            quote! {
+                #[doc(hidden)]
+                #macro_vis use #match_macro_ident;
+                #[doc(hidden)]
+                #macro_vis use #if_let_macro_ident;
+                #[doc(hidden)]
+                #macro_vis use #while_let_macro_ident;
+                #[doc(hidden)]
+                #macro_vis use #matches_macro_ident;
+            }
+        });
 
         let tag_variants = self.variants.iter().map(|variant| {
             let ident = &variant.ident;
@@ -299,10 +324,7 @@ impl ParsedBitsum {
 
         let match_macro_patterns = self.variants.iter().map(|variant| {
             let ident = &variant.ident;
-            let body_ident = format_ident!(
-                "__bitsum_body_{}",
-                to_snake_case(&variant.ident.to_string())
-            );
+            let body_ident = format_ident!("__bitsum_body_{}", variant.generated_name);
             if variant.fields.is_empty() {
                 quote! {
                     #ident => $#body_ident:expr
@@ -310,11 +332,8 @@ impl ParsedBitsum {
             } else {
                 let field_patterns = variant.fields.iter().map(|field| {
                     let field_ident = &field.ident;
-                    let pattern_ident = format_ident!(
-                        "__bitsum_pat_{}_{}",
-                        to_snake_case(&variant.ident.to_string()),
-                        field.ident
-                    );
+                    let pattern_ident =
+                        format_ident!("__bitsum_pat_{}_{}", variant.generated_name, field.ident);
                     quote!(#field_ident: $#pattern_ident:pat)
                 });
                 quote! {
@@ -324,22 +343,15 @@ impl ParsedBitsum {
         });
 
         let match_macro_dispatch_arms = self.variants.iter().map(|variant| {
-            let ident = &variant.ident;
-            let body_ident = format_ident!(
-                "__bitsum_body_{}",
-                to_snake_case(&variant.ident.to_string())
-            );
+            let tag_value = lit_u32(variant.tag_value);
+            let body_ident = format_ident!("__bitsum_body_{}", variant.generated_name);
             if variant.fields.is_empty() {
                 quote! {
-                    #tag_ident::#ident => $#body_ident
+                    #tag_value => $#body_ident
                 }
             } else {
                 let pattern_idents = variant.fields.iter().map(|field| {
-                    format_ident!(
-                        "__bitsum_pat_{}_{}",
-                        to_snake_case(&variant.ident.to_string()),
-                        field.ident
-                    )
+                    format_ident!("__bitsum_pat_{}_{}", variant.generated_name, field.ident)
                 });
                 let decoded_exprs = variant.fields.iter().map(|field| {
                     let offset = lit_u32(field.offset);
@@ -356,7 +368,7 @@ impl ParsedBitsum {
                     }
                 });
                 quote! {
-                    #tag_ident::#ident => {
+                    #tag_value => {
                         let (#($#pattern_idents),*) = (#(#decoded_exprs),*);
                         $#body_ident
                     }
@@ -387,7 +399,7 @@ impl ParsedBitsum {
                     let field_ident = &field.ident;
                     let pattern_ident = format_ident!(
                         "__bitsum_pat_if_let_{}_{}",
-                        to_snake_case(&variant.ident.to_string()),
+                        variant.generated_name,
                         field.ident
                     );
                     quote!(#field_ident: $#pattern_ident:pat)
@@ -395,7 +407,7 @@ impl ParsedBitsum {
                 let pattern_idents: Vec<_> = variant.fields.iter().map(|field| {
                     format_ident!(
                         "__bitsum_pat_if_let_{}_{}",
-                        to_snake_case(&variant.ident.to_string()),
+                        variant.generated_name,
                         field.ident
                     )
                 }).collect();
@@ -457,7 +469,7 @@ impl ParsedBitsum {
                     let field_ident = &field.ident;
                     let pattern_ident = format_ident!(
                         "__bitsum_pat_while_let_{}_{}",
-                        to_snake_case(&variant.ident.to_string()),
+                        variant.generated_name,
                         field.ident
                     );
                     quote!(#field_ident: $#pattern_ident:pat)
@@ -465,7 +477,7 @@ impl ParsedBitsum {
                 let pattern_idents = variant.fields.iter().map(|field| {
                     format_ident!(
                         "__bitsum_pat_while_let_{}_{}",
-                        to_snake_case(&variant.ident.to_string()),
+                        variant.generated_name,
                         field.ident
                     )
                 });
@@ -524,7 +536,7 @@ impl ParsedBitsum {
                     let field_ident = &field.ident;
                     let pattern_ident = format_ident!(
                         "__bitsum_pat_matches_{}_{}",
-                        to_snake_case(&variant.ident.to_string()),
+                        variant.generated_name,
                         field.ident
                     );
                     quote!(#field_ident: $#pattern_ident:pat)
@@ -532,7 +544,7 @@ impl ParsedBitsum {
                 let pattern_idents = variant.fields.iter().map(|field| {
                     format_ident!(
                         "__bitsum_pat_matches_{}_{}",
-                        to_snake_case(&variant.ident.to_string()),
+                        variant.generated_name,
                         field.ident
                     )
                 });
@@ -638,13 +650,18 @@ impl ParsedBitsum {
                 (
                     $instr:expr,
                     {
-                        #(#match_macro_patterns, )*
+                        #(#match_macro_patterns),* $(,)?
                     }
                 ) => {{
                     let __bitsum_instr = $instr;
                     let __bitsum_bits = __bitsum_instr.bits();
-                    match __bitsum_instr.tag() {
+                    match __bitsum_bits & (#tag_mask as #repr_ty) {
                         #(#match_macro_dispatch_arms,)*
+                        _ => {
+                            // SAFETY: generated constructors and `from_bits` only admit declared
+                            // tags, and the macro accepts the same invariant as `bits()`.
+                            unsafe { ::core::hint::unreachable_unchecked() }
+                        }
                     }
                 }};
             }
@@ -668,6 +685,8 @@ impl ParsedBitsum {
             macro_rules! #matches_macro_ident {
                 #(#matches_rules)*
             }
+
+            #(#macro_reexports)*
         }
     }
 }
@@ -685,7 +704,8 @@ fn parse_variant(
     variant: Variant,
 ) -> Result<ParsedVariant> {
     let ident = variant.ident;
-    let constructor_ident = format_ident!("{}", to_snake_case(&ident.to_string()));
+    let generated_name = to_snake_case(&ident.to_string());
+    let constructor_ident = format_ident!("{generated_name}");
     let variant_doc_attrs = doc_attrs(&variant.attrs);
     let mut fields = Vec::new();
     let mut next_offset = tag_width;
@@ -748,6 +768,7 @@ fn parse_variant(
 
     Ok(ParsedVariant {
         ident,
+        generated_name,
         constructor_ident,
         tag_value,
         fields,
@@ -758,10 +779,16 @@ fn parse_variant(
 
 /// Extracts the `#[bits(N)]` width from one field.
 fn parse_bits_attr(attrs: &[Attribute], ty: &Type) -> Result<u32> {
-    let attr = attrs
-        .iter()
-        .find(|attr| attr.path().is_ident("bits"))
+    let mut bits_attrs = attrs.iter().filter(|attr| attr.path().is_ident("bits"));
+    let attr = bits_attrs
+        .next()
         .ok_or_else(|| Error::new_spanned(ty, "missing `#[bits(...)]` attribute"))?;
+    if let Some(duplicate_attr) = bits_attrs.next() {
+        return Err(Error::new_spanned(
+            duplicate_attr,
+            "duplicate `#[bits(...)]` attribute",
+        ));
+    }
     let bits = attr.parse_args::<LitInt>()?.base10_parse::<u32>()?;
     if bits == 0 {
         return Err(Error::new_spanned(attr, "`#[bits(0)]` is not allowed"));
@@ -833,4 +860,13 @@ fn to_snake_case(name: &str) -> String {
         }
     }
     out
+}
+
+/// Returns the widest stable visibility that can be used to re-export a local macro.
+fn macro_reexport_vis(vis: &Visibility) -> Option<TokenStream2> {
+    match vis {
+        Visibility::Public(_) => Some(quote!(pub(crate))),
+        Visibility::Restricted(_) => Some(quote!(#vis)),
+        Visibility::Inherited => None,
+    }
 }

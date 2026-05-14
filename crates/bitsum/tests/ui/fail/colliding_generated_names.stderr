@@ -1,0 +1,5 @@
+error: variants `AB` and `A_B` both normalize to helper name `a_b`; rename one variant to avoid generated API collisions
+ --> tests/ui/fail/colliding_generated_names.rs:6:5
+  |
+6 |     A_B,
+  |     ^^^
