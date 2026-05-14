@@ -63,8 +63,8 @@ impl Solver {
     /// Increases the activity score of a learned clause.
     pub(crate) fn bump_clause_activity(&mut self, cid: ClauseId) {
         let new_activity = {
-            let header = self.clauses.header_mut(cid);
-            if header.is_free() || !header.is_learnt() {
+            let header = self.clauses.expect_live_header_mut(cid);
+            if !header.is_learnt() {
                 return;
             }
             let new_activity = header.activity() + self.clause_inc;
@@ -83,22 +83,14 @@ impl Solver {
         self.clause_inc *= 1.0 / self.clause_decay;
     }
 
-    /// Removes one long clause from watch lists and recycles its database slot.
+    /// Removes one long clause and recycles its database slot.
+    ///
+    /// Stale long-clause watchers are cleaned up lazily the next time their watched
+    /// literal becomes false.
     fn delete_clause(&mut self, cid: ClauseId) {
-        if self.clauses.header(cid).is_free() {
+        if !self.clauses.is_live(cid) {
             return;
         }
-
-        let (watch_a, watch_b) = {
-            let clause = self.clauses.clause(cid);
-            debug_assert!(clause.len() >= 2);
-            (clause.lit(0), clause.lit(1))
-        };
-
-        self.watches[watch_a.index()]
-            .retain(|watcher| !matches!(watcher, super::propagate::Watcher::Long { clause, .. } if *clause == cid));
-        self.watches[watch_b.index()]
-            .retain(|watcher| !matches!(watcher, super::propagate::Watcher::Long { clause, .. } if *clause == cid));
 
         self.clauses.delete(cid);
     }
@@ -109,10 +101,11 @@ impl Solver {
             return;
         }
 
-        let mut locked = vec![false; self.clauses.len()];
+        let mut locked = vec![false; self.clauses.slot_count()];
         for &reason in &self.reason {
             if let Reason::Clause(cid) = reason {
-                locked[cid.index()] = true;
+                let slot = self.clauses.expect_live_slot(cid);
+                locked[slot] = true;
             }
         }
 
@@ -121,16 +114,18 @@ impl Solver {
             .iter()
             .copied()
             .filter(|&cid| {
-                let header = self.clauses.header(cid);
-                !header.is_free() && header.len() > 2 && !locked[cid.index()]
+                let Some(header) = self.clauses.try_header(cid) else {
+                    return false;
+                };
+                header.len() > 2 && !locked[self.clauses.expect_live_slot(cid)]
             })
             .collect();
 
         candidates.sort_by(|&a, &b| {
             self.clauses
-                .header(a)
+                .expect_live_header(a)
                 .activity()
-                .partial_cmp(&self.clauses.header(b).activity())
+                .partial_cmp(&self.clauses.expect_live_header(b).activity())
                 .unwrap_or(Ordering::Equal)
         });
 
@@ -139,7 +134,53 @@ impl Solver {
             self.delete_clause(cid);
         }
 
-        self.learnts
-            .retain(|&cid| !self.clauses.header(cid).is_free());
+        self.learnts.retain(|&cid| self.clauses.is_live(cid));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Reason, Solver};
+    use crate::{Lit, Var};
+
+    fn lit(index: usize) -> Lit {
+        Lit::new(Var::from_index(index), false)
+    }
+
+    fn nlit(index: usize) -> Lit {
+        Lit::new(Var::from_index(index), true)
+    }
+
+    fn long_watch_count(solver: &Solver, watched: Lit, cid: crate::clause_db::ClauseId) -> usize {
+        solver.watches[watched.index()]
+            .iter()
+            .filter(|watcher| {
+                matches!(
+                    watcher,
+                    super::super::propagate::Watcher::Long { clause, .. } if *clause == cid
+                )
+            })
+            .count()
+    }
+
+    #[test]
+    fn delete_clause_leaves_stale_watchers_for_lazy_cleanup() {
+        let mut solver = Solver::with_vars(5);
+        let dead = solver.attach_long(vec![lit(0), lit(1), lit(2)], true);
+        solver.delete_clause(dead);
+        let replacement = solver.attach_long(vec![lit(0), lit(3), lit(4)], true);
+
+        assert_eq!(dead.slot(), replacement.slot());
+        assert_ne!(dead, replacement);
+        assert_eq!(long_watch_count(&solver, lit(0), dead), 1);
+        assert_eq!(long_watch_count(&solver, lit(1), dead), 1);
+        assert_eq!(long_watch_count(&solver, lit(0), replacement), 1);
+
+        assert!(solver.enqueue(nlit(0), Reason::None));
+        assert!(solver.propagate().is_none());
+
+        assert_eq!(long_watch_count(&solver, lit(0), dead), 0);
+        assert_eq!(long_watch_count(&solver, lit(1), dead), 1);
+        assert!(solver.clauses.is_live(replacement));
     }
 }

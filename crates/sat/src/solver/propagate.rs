@@ -201,12 +201,11 @@ impl Solver {
 
     /// Reprocesses a watched long clause whose second watcher became false.
     fn process_long_watch(&mut self, cid: ClauseId, false_lit: Lit) -> LongAction {
-        if self.clauses.header(cid).is_free() {
+        // This cid may be stale. If so, delete it from the watch list.
+        let Some(mut clause) = self.clauses.try_clause_mut(cid) else {
             return LongAction::Drop;
-        }
-
+        };
         let assigns = &self.assigns;
-        let mut clause = self.clauses.clause_mut(cid);
 
         if clause.lit(0) == false_lit {
             clause.swap_lits(0, 1);

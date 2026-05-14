@@ -127,7 +127,7 @@ impl Solver {
             }
             _ => {
                 let cid = self.attach_long(lits, true);
-                let lit = self.clauses.clause(cid).lit(0);
+                let lit = self.clauses.expect_live_clause(cid).lit(0);
                 let _ = self.enqueue(lit, Reason::Clause(cid));
             }
         }
