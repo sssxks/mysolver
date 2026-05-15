@@ -1,5 +1,6 @@
 use crate::Lit;
 use crate::clause_db::ClauseId;
+use crate::telemetry;
 
 use super::propagate::Watcher;
 use super::{Reason, Solver};
@@ -109,6 +110,7 @@ impl Solver {
     /// `lits[1]` is the literal with the highest remaining decision level.
     pub(crate) fn add_learnt_clause(&mut self, lits: &[Lit]) {
         debug_assert!(!lits.is_empty());
+        telemetry::record_learnt_clause();
 
         match lits.len() {
             1 => {

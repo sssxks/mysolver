@@ -327,6 +327,36 @@ impl ClauseArena {
         self.headers.len()
     }
 
+    /// Returns the number of live irredundant and learned long clauses.
+    pub(crate) fn live_clause_counts(&self) -> (usize, usize) {
+        let mut irredundant = 0usize;
+        let mut learnt = 0usize;
+
+        for header in &self.headers {
+            if !header.is_live() {
+                continue;
+            }
+
+            if header.is_learnt() {
+                learnt += 1;
+            } else {
+                irredundant += 1;
+            }
+        }
+
+        (irredundant, learnt)
+    }
+
+    /// Returns the number of literal words currently stored in the arena payload.
+    pub(crate) fn word_count(&self) -> usize {
+        self.words.len()
+    }
+
+    /// Returns the number of literal words stranded behind deleted clauses.
+    pub(crate) fn wasted_word_count(&self) -> usize {
+        self.wasted_words
+    }
+
     /// Returns the live slot index named by `cid`, if any.
     #[inline(always)]
     fn try_live_slot(&self, cid: ClauseId) -> Option<usize> {

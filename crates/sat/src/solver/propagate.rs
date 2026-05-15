@@ -2,6 +2,7 @@ use std::mem;
 
 use crate::Lit;
 use crate::clause_db::ClauseId;
+use crate::telemetry;
 
 use super::{LBool, Reason, Solver};
 
@@ -75,6 +76,9 @@ impl Solver {
                 self.phase[v] = !lit.is_negated();
                 self.trail.push(lit);
                 self.assigned_count += 1;
+                if !matches!(reason, Reason::None) {
+                    telemetry::record_propagation();
+                }
                 true
             }
         }

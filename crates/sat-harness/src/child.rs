@@ -6,6 +6,7 @@ use std::path::Path;
 
 use bzip2::read::BzDecoder;
 use flate2::read::MultiGzDecoder;
+use sat::telemetry::TelemetryRecorder;
 use sat::{SatResult as SolverSatResult, Solver, parse_dimacs};
 
 use crate::cli::InternalRunCaseArgs;
@@ -14,12 +15,27 @@ use crate::model::{ChildReport, ChildReportKind};
 /// Runs the hidden child process entrypoint and writes the structured report.
 pub(crate) fn run_child(args: InternalRunCaseArgs) -> Result<(), String> {
     let report = match load_case_and_solver(&args.case) {
-        Ok(mut solver) => ChildReport {
-            kind: match solver.solve() {
+        Ok(mut solver) => {
+            let recorder = TelemetryRecorder::start(&args.telemetry).map_err(|error| {
+                format!(
+                    "failed to start telemetry recorder {}: {error}",
+                    args.telemetry.display()
+                )
+            })?;
+            let kind = match solver.solve() {
                 SolverSatResult::Sat => ChildReportKind::Sat,
                 SolverSatResult::Unsat => ChildReportKind::Unsat,
-            },
-        },
+            };
+            recorder
+                .finish(solver.telemetry_gauges())
+                .map_err(|error| {
+                    format!(
+                        "failed to finalize telemetry file {}: {error}",
+                        args.telemetry.display()
+                    )
+                })?;
+            ChildReport { kind }
+        }
         Err(LoadCaseError::Input(error)) => ChildReport {
             kind: ChildReportKind::InputError(error),
         },

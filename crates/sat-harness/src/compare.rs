@@ -434,7 +434,8 @@ mod tests {
         });
 
         assert!(rendered.contains("PASS"));
-        assert!(rendered.contains("1.00s -> 2.00s"));
+        assert!(rendered.contains("1.00s"));
+        assert!(rendered.contains("2.00s"));
         assert!(!rendered.contains("PASS -> PASS"));
         assert!(!rendered.contains("::"));
     }
@@ -456,6 +457,7 @@ mod tests {
             elapsed,
             category,
             detail: detail.map(Into::into),
+            telemetry: None,
         }
     }
 

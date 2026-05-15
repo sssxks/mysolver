@@ -1,4 +1,5 @@
 use crate::clause_db::ClauseId;
+use crate::telemetry;
 use crate::{Lit, Var};
 
 use super::{LBool, Reason, Solver};
@@ -98,6 +99,7 @@ impl Solver {
         if self.learnts.len() < 128 {
             return;
         }
+        telemetry::record_reduction();
 
         let mut locked = vec![false; self.clauses.slot_count()];
         for &reason in &self.reason {
@@ -133,6 +135,7 @@ impl Solver {
             for &cid in &learnts[..remove] {
                 self.delete_clause(cid);
             }
+            telemetry::record_deleted_clauses(remove);
         }
 
         learnts.retain(|&cid| self.clauses.is_live(cid));

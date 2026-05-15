@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use console::style;
 use indicatif::{HumanCount, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use sat::telemetry::SolverTelemetrySummary;
 
 use crate::model::{CaseOutcome, OutcomeCategory, OutcomeStats};
 use crate::util::{format_compact_duration, truncate_display_path};
@@ -76,12 +77,35 @@ pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let elapsed = format_compact_duration(outcome.elapsed);
     let path = truncate_display_path(outcome.case.comparison_key());
 
-    let detail = outcome
-        .detail
-        .as_deref()
-        .map_or(String::new(), |detail| format!(" :: {detail}"));
+    let mut suffixes = Vec::new();
+    if let Some(detail) = outcome.detail.as_deref() {
+        suffixes.push(detail.to_owned());
+    }
+    if let Some(telemetry) = outcome.telemetry.as_ref() {
+        suffixes.push(format_telemetry_summary(&telemetry.summary));
+    }
+    let suffix = if suffixes.is_empty() {
+        String::new()
+    } else {
+        format!(" :: {}", suffixes.join(" :: "))
+    };
 
-    format!("    {label:<width$} {elapsed:>6} {path}{detail}")
+    format!("    {label:<width$} {elapsed:>6} {path}{suffix}")
+}
+
+/// Formats one compact telemetry summary for a per-case outcome line.
+fn format_telemetry_summary(summary: &SolverTelemetrySummary) -> String {
+    format!(
+        "tele conf {} prop {} dec {} rst {} red {} peak-lvl {} peak-assign {} final-learnt {}",
+        HumanCount(summary.total_conflicts),
+        HumanCount(summary.total_propagations),
+        HumanCount(summary.total_decisions),
+        HumanCount(summary.total_restarts),
+        HumanCount(summary.total_reductions),
+        HumanCount(summary.peak_decision_level),
+        HumanCount(summary.peak_assigned_vars),
+        HumanCount(summary.final_live_learnt_clauses),
+    )
 }
 /// Prints the final summary.
 pub(crate) fn print_summary(
@@ -138,7 +162,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{format_outcome, progress_message};
-    use crate::model::{CaseOutcome, CaseRecord, OutcomeCategory, OutcomeStats};
+    use crate::model::{CaseOutcome, CaseRecord, CaseTelemetry, OutcomeCategory, OutcomeStats};
+    use sat::telemetry::SolverTelemetrySummary;
 
     /// Ensures the live message exposes worker activity even before any case finishes.
     #[test]
@@ -178,6 +203,7 @@ mod tests {
             elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
             detail: None,
+            telemetry: None,
         };
 
         let rendered = format_outcome(&outcome);
@@ -198,9 +224,58 @@ mod tests {
             elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
             detail: None,
+            telemetry: None,
         };
 
         let rendered = format_outcome(&outcome);
         assert!(rendered.contains("cases/satl..ery-long-case-name.cnf.gz"));
+    }
+
+    /// Ensures rendered outcome lines append compact telemetry when available.
+    #[test]
+    fn format_outcome_renders_telemetry_summary() {
+        let outcome = CaseOutcome {
+            case: CaseRecord {
+                key: "fixture/example.cnf".into(),
+                bytes: 123,
+                expected: None,
+                source: None,
+            },
+            elapsed: Duration::from_secs(1),
+            category: OutcomeCategory::Pass,
+            detail: None,
+            telemetry: Some(CaseTelemetry {
+                summary: SolverTelemetrySummary {
+                    sample_count: 1,
+                    total_conflicts: 7,
+                    total_propagations: 42,
+                    total_decisions: 3,
+                    total_restarts: 1,
+                    total_reductions: 0,
+                    total_learnt_clauses: 0,
+                    total_deleted_clauses: 0,
+                    peak_decision_level: 5,
+                    peak_assigned_vars: 11,
+                    peak_trail_len: 0,
+                    peak_pending_propagations: 0,
+                    peak_live_irredundant_clauses: 0,
+                    peak_live_learnt_clauses: 0,
+                    peak_watcher_entries: 0,
+                    peak_clause_words: 0,
+                    peak_wasted_clause_words: 0,
+                    final_decision_level: 0,
+                    final_assigned_vars: 0,
+                    final_trail_len: 0,
+                    final_live_learnt_clauses: 9,
+                    final_live_irredundant_clauses: 0,
+                },
+                samples: Vec::new(),
+            }),
+        };
+
+        let rendered = format_outcome(&outcome);
+        assert!(rendered.contains("tele conf 7"));
+        assert!(rendered.contains("peak-lvl 5"));
+        assert!(rendered.contains("final-learnt 9"));
     }
 }

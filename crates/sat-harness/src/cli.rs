@@ -72,4 +72,7 @@ pub(crate) struct InternalRunCaseArgs {
     /// The JSON report written back to the parent process.
     #[arg(long)]
     pub(crate) report: PathBuf,
+    /// The JSONL telemetry file written back to the parent process.
+    #[arg(long)]
+    pub(crate) telemetry: PathBuf,
 }

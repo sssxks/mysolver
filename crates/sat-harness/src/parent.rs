@@ -12,13 +12,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use indicatif::{HumanCount, HumanDuration};
+use sat::telemetry::{SolverTelemetrySample, SolverTelemetrySummary};
 use tempfile::NamedTempFile;
 
 use crate::cli::RunArgs;
 use crate::discover::discover_cases;
 use crate::model::{
-    CaseOutcome, ChildReport, ChildReportKind, DiscoveredCase, ExpectedResult, OutcomeCategory,
-    OutcomeStats, RunSummary,
+    CaseOutcome, CaseTelemetry, ChildReport, ChildReportKind, DiscoveredCase, ExpectedResult,
+    OutcomeCategory, OutcomeStats, RunSummary,
 };
 use crate::render::{
     PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_outcome, print_summary,
@@ -57,14 +58,22 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
     let queue = Arc::new(Mutex::new(VecDeque::from(cases)));
     let (sender, receiver) = mpsc::channel();
     let mut handles = Vec::with_capacity(jobs);
+    let retain_telemetry_samples = save.is_some();
 
     for _ in 0..jobs {
         let worker_queue = Arc::clone(&queue);
         let worker_sender = sender.clone();
         let worker_exe = current_exe.clone();
         let worker_timeout = timeout;
+        let worker_retain_telemetry_samples = retain_telemetry_samples;
         handles.push(thread::spawn(move || {
-            worker_loop(worker_queue, worker_sender, worker_exe, worker_timeout);
+            worker_loop(
+                worker_queue,
+                worker_sender,
+                worker_exe,
+                worker_timeout,
+                worker_retain_telemetry_samples,
+            );
         }));
     }
     drop(sender);
@@ -160,6 +169,7 @@ fn worker_loop(
     sender: mpsc::Sender<CaseOutcome>,
     current_exe: PathBuf,
     timeout: Duration,
+    retain_telemetry_samples: bool,
 ) {
     loop {
         let next_case = match queue.lock() {
@@ -169,7 +179,7 @@ fn worker_loop(
         let Some(case) = next_case else {
             break;
         };
-        let outcome = run_case_subprocess(&current_exe, case, timeout);
+        let outcome = run_case_subprocess(&current_exe, case, timeout, retain_telemetry_samples);
         if sender.send(outcome).is_err() {
             break;
         }
@@ -177,7 +187,12 @@ fn worker_loop(
 }
 
 /// Executes one case in a fresh child process and classifies its outcome.
-fn run_case_subprocess(current_exe: &Path, case: DiscoveredCase, timeout: Duration) -> CaseOutcome {
+fn run_case_subprocess(
+    current_exe: &Path,
+    case: DiscoveredCase,
+    timeout: Duration,
+    retain_telemetry_samples: bool,
+) -> CaseOutcome {
     let started = Instant::now();
     let report_file = match NamedTempFile::new() {
         Ok(file) => file,
@@ -201,6 +216,12 @@ fn run_case_subprocess(current_exe: &Path, case: DiscoveredCase, timeout: Durati
             );
         }
     };
+    let telemetry_file = match NamedTempFile::new() {
+        Ok(file) => file,
+        Err(error) => {
+            return harness_error(case, started.elapsed(), format!("tempfile error: {error}"));
+        }
+    };
 
     let mut child = match Command::new(current_exe)
         .arg("__internal-run-case")
@@ -208,6 +229,8 @@ fn run_case_subprocess(current_exe: &Path, case: DiscoveredCase, timeout: Durati
         .arg(case.absolute_path())
         .arg("--report")
         .arg(report_file.path())
+        .arg("--telemetry")
+        .arg(telemetry_file.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(stderr_stdio)
@@ -253,12 +276,23 @@ fn run_case_subprocess(current_exe: &Path, case: DiscoveredCase, timeout: Durati
             elapsed,
             category: OutcomeCategory::Timeout,
             detail: None,
+            telemetry: load_case_telemetry(telemetry_file.path(), retain_telemetry_samples)
+                .ok()
+                .flatten(),
         };
     }
 
     let stderr = fs::read_to_string(stderr_file.path()).unwrap_or_default();
     let report_text = fs::read_to_string(report_file.path()).ok();
-    classify_child_completion(case, elapsed, status, report_text.as_deref(), &stderr)
+    let telemetry = load_case_telemetry(telemetry_file.path(), retain_telemetry_samples);
+    classify_child_completion(
+        case,
+        elapsed,
+        status,
+        report_text.as_deref(),
+        &stderr,
+        telemetry,
+    )
 }
 
 /// Classifies a completed child process into a stable harness outcome.
@@ -268,6 +302,7 @@ fn classify_child_completion(
     status: ExitStatus,
     report_text: Option<&str>,
     stderr: &str,
+    telemetry: Result<Option<CaseTelemetry>, String>,
 ) -> CaseOutcome {
     if status.success() {
         let Some(report_text) = report_text else {
@@ -279,17 +314,25 @@ fn classify_child_completion(
                 return harness_error(case, elapsed, format!("invalid child report: {error}"));
             }
         };
-        return classify_report(case, elapsed, report);
+        let telemetry = match telemetry {
+            Ok(telemetry) => telemetry,
+            Err(error) => {
+                return harness_error(case, elapsed, format!("invalid child telemetry: {error}"));
+            }
+        };
+        return classify_report(case, elapsed, report, telemetry);
     }
 
     let signal = exit_signal(status);
     let stderr = stderr.trim();
+    let telemetry = telemetry.ok().flatten();
     if stderr.contains("panicked at") {
         return CaseOutcome {
             case: case.into_record(),
             elapsed,
             category: OutcomeCategory::Panic,
             detail: Some(trim_detail(stderr).into()),
+            telemetry,
         };
     }
 
@@ -304,6 +347,7 @@ fn classify_child_completion(
             elapsed,
             category: OutcomeCategory::Killed,
             detail: Some(detail.into()),
+            telemetry,
         };
     }
 
@@ -320,11 +364,18 @@ fn classify_child_completion(
         }
         None => "child exited without status code".to_string(),
     };
-    harness_error(case, elapsed, detail)
+    let mut outcome = harness_error(case, elapsed, detail);
+    outcome.telemetry = telemetry;
+    outcome
 }
 
 /// Maps a structured child report onto the final parent outcome categories.
-fn classify_report(case: DiscoveredCase, elapsed: Duration, report: ChildReport) -> CaseOutcome {
+fn classify_report(
+    case: DiscoveredCase,
+    elapsed: Duration,
+    report: ChildReport,
+    telemetry: Option<CaseTelemetry>,
+) -> CaseOutcome {
     match report.kind {
         ChildReportKind::Sat | ChildReportKind::Unsat => {
             let actual = match report.kind {
@@ -339,6 +390,7 @@ fn classify_report(case: DiscoveredCase, elapsed: Duration, report: ChildReport)
                     elapsed,
                     category: OutcomeCategory::Pass,
                     detail: None,
+                    telemetry,
                 },
                 Some(expected) => CaseOutcome {
                     detail: Some(
@@ -353,12 +405,14 @@ fn classify_report(case: DiscoveredCase, elapsed: Duration, report: ChildReport)
                     case: case.into_record(),
                     elapsed,
                     category: OutcomeCategory::WrongAnswer,
+                    telemetry,
                 },
                 None => CaseOutcome {
                     case: case.into_record(),
                     elapsed,
                     category: OutcomeCategory::NoOracle,
                     detail: None,
+                    telemetry,
                 },
             }
         }
@@ -367,6 +421,7 @@ fn classify_report(case: DiscoveredCase, elapsed: Duration, report: ChildReport)
             elapsed,
             category: OutcomeCategory::ParseError,
             detail: Some(trim_detail(&error).into()),
+            telemetry,
         },
         ChildReportKind::InputError(error) => harness_error(case, elapsed, error),
     }
@@ -379,7 +434,46 @@ fn harness_error(case: DiscoveredCase, elapsed: Duration, detail: String) -> Cas
         elapsed,
         category: OutcomeCategory::HarnessError,
         detail: Some(detail.into()),
+        telemetry: None,
     }
+}
+
+/// Loads one child telemetry file and optionally retains raw samples for saving.
+fn load_case_telemetry(path: &Path, retain_samples: bool) -> Result<Option<CaseTelemetry>, String> {
+    let samples = load_telemetry_samples(path)?;
+    let Some(summary) = SolverTelemetrySummary::from_samples(&samples) else {
+        return Ok(None);
+    };
+
+    Ok(Some(CaseTelemetry {
+        summary,
+        samples: if retain_samples { samples } else { Vec::new() },
+    }))
+}
+
+/// Reads one JSONL telemetry file emitted by the child process.
+fn load_telemetry_samples(path: &Path) -> Result<Vec<SolverTelemetrySample>, String> {
+    let payload = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read telemetry file {}: {error}", path.display()))?;
+    let mut samples = Vec::new();
+
+    for (line_index, line) in payload.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let sample = serde_json::from_str::<SolverTelemetrySample>(line).map_err(|error| {
+            format!(
+                "failed to parse telemetry sample {} from {}: {error}",
+                line_index + 1,
+                path.display()
+            )
+        })?;
+        samples.push(sample);
+    }
+
+    Ok(samples)
 }
 
 /// Writes one complete run summary to the requested JSON output path.
@@ -435,6 +529,7 @@ mod tests {
                 elapsed: Duration::from_millis(5),
                 category: OutcomeCategory::Pass,
                 detail: None,
+                telemetry: None,
             }],
             stats: OutcomeStats {
                 done: 1,

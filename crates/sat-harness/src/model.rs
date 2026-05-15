@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use console::{StyledObject, style};
+use sat::telemetry::{SolverTelemetrySample, SolverTelemetrySummary};
 use serde::{Deserialize, Serialize};
 
 /// One expected solver answer loaded from an expectations manifest.
@@ -138,6 +139,19 @@ pub(crate) struct CaseOutcome {
     pub(crate) category: OutcomeCategory,
     /// An optional detail string for failures and summaries.
     pub(crate) detail: Option<Box<str>>,
+    /// Optional solver telemetry aggregated from periodic samples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) telemetry: Option<CaseTelemetry>,
+}
+
+/// Saved solver telemetry for one executed benchmark case.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct CaseTelemetry {
+    /// Aggregate metrics derived from the raw periodic samples.
+    pub(crate) summary: SolverTelemetrySummary,
+    /// The raw periodic samples, kept only when the user requested `--save`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) samples: Vec<SolverTelemetrySample>,
 }
 
 use strum::VariantArray as _;
@@ -290,7 +304,7 @@ pub(crate) struct RunSummary {
 
 impl RunSummary {
     /// The current on-disk file format version.
-    pub(crate) const FORMAT_VERSION: u32 = 1;
+    pub(crate) const FORMAT_VERSION: u32 = 2;
 
     /// Returns the current on-disk file format version.
     pub(crate) const fn format_version() -> u32 {

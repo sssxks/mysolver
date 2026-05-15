@@ -9,6 +9,7 @@ mod search;
 
 use crate::clause_db::{ClauseArena, ClauseId};
 use crate::heap::VarHeap;
+use crate::telemetry::{self, SolverTelemetryGauges};
 use crate::{Lit, Var};
 
 use self::propagate::Watcher;
@@ -193,6 +194,24 @@ impl Solver {
         Some(self.assigns.iter().map(|v| *v == LBool::True).collect())
     }
 
+    /// Captures the current solver gauges for one telemetry sample boundary.
+    pub fn telemetry_gauges(&self) -> SolverTelemetryGauges {
+        let (live_irredundant_clauses, live_learnt_clauses) = self.clauses.live_clause_counts();
+        let watcher_entries = self.watches.iter().map(Vec::len).sum::<usize>();
+
+        SolverTelemetryGauges {
+            decision_level: self.decision_level() as u64,
+            assigned_vars: self.assigned_count as u64,
+            trail_len: self.trail.len() as u64,
+            pending_propagations: self.trail.len().saturating_sub(self.qhead) as u64,
+            live_irredundant_clauses: live_irredundant_clauses as u64,
+            live_learnt_clauses: live_learnt_clauses as u64,
+            watcher_entries: watcher_entries as u64,
+            clause_words: self.clauses.word_count() as u64,
+            wasted_clause_words: self.clauses.wasted_word_count() as u64,
+        }
+    }
+
     /// Searches for a satisfying assignment for the current formula.
     pub fn solve(&mut self) -> SatResult {
         if !self.ok {
@@ -207,11 +226,13 @@ impl Solver {
 
         loop {
             if let Some(conflict) = self.propagate() {
+                telemetry::record_conflict();
                 self.conflicts += 1;
                 restart_conflicts += 1;
 
                 if self.decision_level() == 0 {
                     self.ok = false;
+                    self.maybe_emit_telemetry_sample();
                     return SatResult::Unsat;
                 }
 
@@ -226,25 +247,37 @@ impl Solver {
                     next_reduce += 2_000;
                 }
 
+                self.maybe_emit_telemetry_sample();
                 continue;
             }
 
             if self.assigned_count == self.nvars {
+                self.maybe_emit_telemetry_sample();
                 return SatResult::Sat;
             }
 
             if restart_conflicts >= restart_limit {
+                telemetry::record_restart();
                 self.cancel_until(0);
                 restart_conflicts = 0;
                 restart_limit = ((restart_limit as f64) * 1.5) as usize + 1;
+                self.maybe_emit_telemetry_sample();
                 continue;
             }
 
             let Some(next) = self.pick_branch_lit() else {
+                self.maybe_emit_telemetry_sample();
                 return SatResult::Sat;
             };
             self.new_decision_level();
+            telemetry::record_decision();
             let _ = self.enqueue(next, Reason::None);
+            self.maybe_emit_telemetry_sample();
         }
+    }
+
+    /// Emits one periodic telemetry sample when the timer thread requested it.
+    fn maybe_emit_telemetry_sample(&self) {
+        telemetry::maybe_emit_sample(self.telemetry_gauges());
     }
 }
