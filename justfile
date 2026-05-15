@@ -23,3 +23,6 @@ bench argument="hard" *extra:\
     } extra\
   )\
 
+# Compares harness results before and after the current local changes.
+compare argument="hard" *extra:
+    @./scripts/bench_compare_stash.py --preset {{ argument }} {{ extra }}
