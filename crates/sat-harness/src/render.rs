@@ -1,17 +1,17 @@
 //! Terminal rendering for progress updates and final summaries.
 
 use std::fmt::Write as _;
+use std::path::Path;
 use std::time::Duration;
 
 use console::style;
 use indicatif::{HumanCount, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use crate::model::{CaseOutcome, OutcomeCategory, OutcomeStats};
-use crate::util::format_compact_duration;
+use crate::util::{format_compact_duration, truncate_display_path};
 
 /// The interactive refresh cadence used while waiting for the next completed case.
 pub(crate) const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
-
 /// Builds the live progress bar used by the parent process.
 pub(crate) fn build_progress_bar(total: usize, interactive: bool) -> ProgressBar {
     let draw_target = if interactive {
@@ -71,30 +71,18 @@ pub(crate) fn progress_message(stats: &OutcomeStats, running: usize) -> String {
 
 /// Formats one case outcome line that can be printed immediately during the run.
 pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
-    let label = match outcome.category {
-        OutcomeCategory::WrongAnswer => style(outcome.category.label()).red().bold(),
-        OutcomeCategory::ParseError => style(outcome.category.label()).yellow().bold(),
-        OutcomeCategory::Timeout => style(outcome.category.label()).yellow().bold(),
-        OutcomeCategory::Panic => style(outcome.category.label()).magenta().bold(),
-        OutcomeCategory::Killed => style(outcome.category.label()).red().bold(),
-        OutcomeCategory::HarnessError => style(outcome.category.label()).red().bold(),
-        OutcomeCategory::Pass | OutcomeCategory::NoOracle => {
-            style(outcome.category.label()).green().bold()
-        }
-    };
-
+    let label = outcome.category.styled_label();
     let width = OutcomeCategory::LABEL_WIDTH;
     let elapsed = format_compact_duration(outcome.elapsed);
-    let path = outcome.case.display_path.as_ref();
+    let path = truncate_display_path(outcome.case.comparison_key());
 
     let detail = outcome
         .detail
         .as_deref()
         .map_or(String::new(), |detail| format!(" :: {detail}"));
 
-    format!("    {label:<width$} {elapsed:6} {path}{detail}")
+    format!("    {label:<width$} {elapsed:>6} {path}{detail}")
 }
-
 /// Prints the final summary.
 pub(crate) fn print_summary(
     outcomes: &[CaseOutcome],
@@ -140,13 +128,17 @@ pub(crate) fn print_summary(
     );
 }
 
+/// Prints the path of a saved run summary artifact.
+pub(crate) fn print_written_summary(path: &Path) {
+    eprintln!("{} {}", style("saved").cyan().bold(), path.display(),);
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::time::Duration;
 
     use super::{format_outcome, progress_message};
-    use crate::model::{CaseOutcome, CaseSpec, OutcomeCategory, OutcomeStats};
+    use crate::model::{CaseOutcome, CaseRecord, OutcomeCategory, OutcomeStats};
 
     /// Ensures the live message exposes worker activity even before any case finishes.
     #[test]
@@ -177,9 +169,8 @@ mod tests {
     #[test]
     fn format_outcome_renders_successful_cases() {
         let outcome = CaseOutcome {
-            case: CaseSpec {
-                absolute_path: PathBuf::from("/tmp/example.cnf"),
-                display_path: "fixture/example.cnf".into(),
+            case: CaseRecord {
+                key: "fixture/example.cnf".into(),
                 bytes: 123,
                 expected: None,
                 source: None,
@@ -192,5 +183,24 @@ mod tests {
         let rendered = format_outcome(&outcome);
         assert!(rendered.contains("PASS"));
         assert!(rendered.contains("fixture/example.cnf"));
+    }
+
+    /// Ensures rendered output truncates long paths instead of persisting a separate field.
+    #[test]
+    fn format_outcome_truncates_long_paths_when_rendering() {
+        let outcome = CaseOutcome {
+            case: CaseRecord {
+                key: "cases/satlib/instance-group/very-long-case-name.cnf.gz".into(),
+                bytes: 123,
+                expected: None,
+                source: None,
+            },
+            elapsed: Duration::from_millis(42),
+            category: OutcomeCategory::Pass,
+            detail: None,
+        };
+
+        let rendered = format_outcome(&outcome);
+        assert!(rendered.contains("cases/satl..ery-long-case-name.cnf.gz"));
     }
 }

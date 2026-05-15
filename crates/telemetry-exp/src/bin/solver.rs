@@ -1,12 +1,11 @@
-#![warn(missing_docs, clippy::missing_docs_in_private_items)]
 //! Demo solver that emits periodic JSON metrics on stderr.
 
-use telemetry_exp::StatsSample;
 use std::cell::Cell;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
+use telemetry_exp::StatsSample;
 
 /// Flag set by the timer thread to request a metrics flush from the hot loop.
 static TICK: AtomicBool = AtomicBool::new(false);

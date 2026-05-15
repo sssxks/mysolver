@@ -7,6 +7,7 @@
 
 mod child;
 mod cli;
+mod compare;
 mod discover;
 mod model;
 mod parent;
@@ -20,19 +21,13 @@ use console::style;
 
 use crate::child::run_child;
 use crate::cli::{Cli, HarnessCommand};
-use crate::model::{OutcomeStats, RunSummary};
+use crate::compare::compare_saved_runs;
 use crate::parent::run_parent;
 
 /// Runs the selected harness subcommand and maps the result onto an exit code.
 pub fn main() -> ExitCode {
     match run_command(Cli::parse()) {
-        Ok(summary) => {
-            if summary.stats.has_failures() {
-                ExitCode::from(1)
-            } else {
-                ExitCode::SUCCESS
-            }
-        }
+        Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("{} {error}", style("error").red().bold());
             ExitCode::from(2)
@@ -41,14 +36,13 @@ pub fn main() -> ExitCode {
 }
 
 /// Dispatches one parsed CLI command.
-fn run_command(cli: Cli) -> Result<RunSummary, String> {
+fn run_command(cli: Cli) -> Result<u8, String> {
     match cli.command {
-        HarnessCommand::Run(args) => run_parent(args),
+        HarnessCommand::Run(args) => Ok(u8::from(run_parent(args)?.stats.has_failures())),
+        HarnessCommand::Compare(args) => Ok(u8::from(!compare_saved_runs(args)?)),
         HarnessCommand::InternalRunCase(args) => {
             run_child(args)?;
-            Ok(RunSummary {
-                stats: OutcomeStats::default(),
-            })
+            Ok(0)
         }
     }
 }

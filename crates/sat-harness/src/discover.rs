@@ -8,17 +8,13 @@ use std::sync::Arc;
 
 use walkdir::WalkDir;
 
-use crate::model::{CaseSpec, ExpectationRule, ExpectedResult};
+use crate::model::{CaseRecord, DiscoveredCase, ExpectationRule, ExpectedResult};
 
 /// The hidden manifest file used to attach expected results to benchmark paths.
 const EXPECTATIONS_FILE: &str = "expectations.tsv";
-/// The number of leading characters kept in a truncated display path.
-const DISPLAY_PATH_HEAD_CHARS: usize = 10;
-/// The number of trailing characters kept in a truncated display path.
-const DISPLAY_PATH_TAIL_CHARS: usize = 25;
 
 /// Discovers all supported benchmark files under the provided roots.
-pub(crate) fn discover_cases(roots: &[PathBuf]) -> Result<Vec<CaseSpec>, String> {
+pub(crate) fn discover_cases(roots: &[PathBuf]) -> Result<Vec<DiscoveredCase>, String> {
     let mut manifest_cache = BTreeMap::<PathBuf, Arc<Vec<ExpectationRule>>>::new();
     let mut seen = HashSet::<PathBuf>::new();
     let mut cases = Vec::new();
@@ -40,14 +36,14 @@ pub(crate) fn discover_cases(roots: &[PathBuf]) -> Result<Vec<CaseSpec>, String>
         }
     }
 
-    cases.sort_by_key(|case| (Reverse(case.bytes), case.absolute_path.clone()));
+    cases.sort_by_key(|case| (Reverse(case.bytes()), case.absolute_path().to_path_buf()));
     Ok(cases)
 }
 
 /// Adds one supported case file to the discovery output if it was not seen yet.
 fn maybe_push_case(
     path: &Path,
-    cases: &mut Vec<CaseSpec>,
+    cases: &mut Vec<DiscoveredCase>,
     seen: &mut HashSet<PathBuf>,
     manifest_cache: &mut BTreeMap<PathBuf, Arc<Vec<ExpectationRule>>>,
 ) -> Result<(), String> {
@@ -83,13 +79,15 @@ fn maybe_push_case(
     let bytes = fs::metadata(&canonical)
         .map_err(|error| format!("failed to stat {}: {error}", canonical.display()))?
         .len();
-    cases.push(CaseSpec {
-        absolute_path: canonical,
-        display_path: truncate_display_path(&display_path).into_boxed_str(),
-        bytes,
-        expected,
-        source,
-    });
+    cases.push(DiscoveredCase::new(
+        canonical,
+        CaseRecord {
+            key: display_path.clone().into_boxed_str(),
+            bytes,
+            expected,
+            source,
+        },
+    ));
     Ok(())
 }
 
@@ -159,27 +157,4 @@ fn lookup_expectation(
         }
     }
     (None, None)
-}
-
-/// Truncates a display path by keeping the first 10 and last 30 characters.
-fn truncate_display_path(display_path: &str) -> String {
-    let total_chars = display_path.chars().count();
-    if total_chars <= DISPLAY_PATH_HEAD_CHARS + DISPLAY_PATH_TAIL_CHARS {
-        return display_path.to_owned();
-    }
-
-    let head_end = char_boundary_at(display_path, DISPLAY_PATH_HEAD_CHARS);
-    let tail_start = char_boundary_at(display_path, total_chars - DISPLAY_PATH_TAIL_CHARS);
-    format!(
-        "{}..{}",
-        &display_path[..head_end],
-        &display_path[tail_start..]
-    )
-}
-
-/// Returns the byte boundary at the requested character index.
-fn char_boundary_at(text: &str, char_index: usize) -> usize {
-    text.char_indices()
-        .nth(char_index)
-        .map_or(text.len(), |(index, _)| index)
 }

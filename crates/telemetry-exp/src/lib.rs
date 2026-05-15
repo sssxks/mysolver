@@ -1,4 +1,3 @@
-#![warn(missing_docs, clippy::missing_docs_in_private_items)]
 //! Shared types for the observability experiment crate.
 //!
 //! The package contains two binaries:

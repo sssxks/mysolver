@@ -17,12 +17,12 @@ use tempfile::NamedTempFile;
 use crate::cli::RunArgs;
 use crate::discover::discover_cases;
 use crate::model::{
-    CaseOutcome, CaseSpec, ChildReport, ChildReportKind, ExpectedResult, OutcomeCategory,
+    CaseOutcome, ChildReport, ChildReportKind, DiscoveredCase, ExpectedResult, OutcomeCategory,
     OutcomeStats, RunSummary,
 };
 use crate::render::{
     PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_outcome, print_summary,
-    progress_message,
+    print_written_summary, progress_message,
 };
 use crate::util::{default_jobs, exit_signal, trim_detail};
 
@@ -33,6 +33,7 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
         jobs,
         timeout,
         all: print_all_outcomes,
+        save,
     } = args;
 
     let requested_roots = if roots.is_empty() {
@@ -128,7 +129,24 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
     let elapsed = started.elapsed();
     progress_bar.finish_and_clear();
     print_summary(&outcomes, &stats, elapsed, jobs);
-    Ok(RunSummary { stats })
+    outcomes.sort_by(|left, right| left.case.comparison_key().cmp(right.case.comparison_key()));
+
+    let summary = RunSummary {
+        format_version: RunSummary::FORMAT_VERSION,
+        roots: requested_roots.into_boxed_slice(),
+        jobs,
+        timeout,
+        total_elapsed: elapsed,
+        cases: outcomes,
+        stats,
+    };
+
+    if let Some(path) = save {
+        write_summary_file(&path, &summary)?;
+        print_written_summary(&path);
+    }
+
+    Ok(summary)
 }
 
 /// Returns whether one completed case should be printed immediately.
@@ -138,7 +156,7 @@ fn should_print_outcome(print_all_outcomes: bool, category: OutcomeCategory) -> 
 
 /// Repeatedly executes cases from the shared queue until all work is exhausted.
 fn worker_loop(
-    queue: Arc<Mutex<VecDeque<CaseSpec>>>,
+    queue: Arc<Mutex<VecDeque<DiscoveredCase>>>,
     sender: mpsc::Sender<CaseOutcome>,
     current_exe: PathBuf,
     timeout: Duration,
@@ -159,7 +177,7 @@ fn worker_loop(
 }
 
 /// Executes one case in a fresh child process and classifies its outcome.
-fn run_case_subprocess(current_exe: &Path, case: CaseSpec, timeout: Duration) -> CaseOutcome {
+fn run_case_subprocess(current_exe: &Path, case: DiscoveredCase, timeout: Duration) -> CaseOutcome {
     let started = Instant::now();
     let report_file = match NamedTempFile::new() {
         Ok(file) => file,
@@ -187,7 +205,7 @@ fn run_case_subprocess(current_exe: &Path, case: CaseSpec, timeout: Duration) ->
     let mut child = match Command::new(current_exe)
         .arg("__internal-run-case")
         .arg("--case")
-        .arg(&case.absolute_path)
+        .arg(case.absolute_path())
         .arg("--report")
         .arg(report_file.path())
         .stdin(Stdio::null())
@@ -231,7 +249,7 @@ fn run_case_subprocess(current_exe: &Path, case: CaseSpec, timeout: Duration) ->
     let elapsed = started.elapsed();
     if timed_out {
         return CaseOutcome {
-            case,
+            case: case.into_record(),
             elapsed,
             category: OutcomeCategory::Timeout,
             detail: None,
@@ -245,7 +263,7 @@ fn run_case_subprocess(current_exe: &Path, case: CaseSpec, timeout: Duration) ->
 
 /// Classifies a completed child process into a stable harness outcome.
 fn classify_child_completion(
-    case: CaseSpec,
+    case: DiscoveredCase,
     elapsed: Duration,
     status: ExitStatus,
     report_text: Option<&str>,
@@ -268,7 +286,7 @@ fn classify_child_completion(
     let stderr = stderr.trim();
     if stderr.contains("panicked at") {
         return CaseOutcome {
-            case,
+            case: case.into_record(),
             elapsed,
             category: OutcomeCategory::Panic,
             detail: Some(trim_detail(stderr).into()),
@@ -282,7 +300,7 @@ fn classify_child_completion(
             format!("terminated by signal {signal}")
         };
         return CaseOutcome {
-            case,
+            case: case.into_record(),
             elapsed,
             category: OutcomeCategory::Killed,
             detail: Some(detail.into()),
@@ -306,7 +324,7 @@ fn classify_child_completion(
 }
 
 /// Maps a structured child report onto the final parent outcome categories.
-fn classify_report(case: CaseSpec, elapsed: Duration, report: ChildReport) -> CaseOutcome {
+fn classify_report(case: DiscoveredCase, elapsed: Duration, report: ChildReport) -> CaseOutcome {
     match report.kind {
         ChildReportKind::Sat | ChildReportKind::Unsat => {
             let actual = match report.kind {
@@ -314,9 +332,10 @@ fn classify_report(case: CaseSpec, elapsed: Duration, report: ChildReport) -> Ca
                 ChildReportKind::Unsat => ExpectedResult::Unsat,
                 ChildReportKind::ParseError(_) | ChildReportKind::InputError(_) => unreachable!(),
             };
-            match case.expected {
+            let record = case.record();
+            match record.expected {
                 Some(expected) if expected == actual => CaseOutcome {
-                    case,
+                    case: case.into_record(),
                     elapsed,
                     category: OutcomeCategory::Pass,
                     detail: None,
@@ -326,17 +345,17 @@ fn classify_report(case: CaseSpec, elapsed: Duration, report: ChildReport) -> Ca
                         format!(
                             "expected {} from {}, got {}",
                             expected.as_str(),
-                            case.source.as_deref().unwrap_or("manifest"),
+                            record.source.as_deref().unwrap_or("manifest"),
                             actual.as_str()
                         )
                         .into(),
                     ),
-                    case,
+                    case: case.into_record(),
                     elapsed,
                     category: OutcomeCategory::WrongAnswer,
                 },
                 None => CaseOutcome {
-                    case,
+                    case: case.into_record(),
                     elapsed,
                     category: OutcomeCategory::NoOracle,
                     detail: None,
@@ -344,7 +363,7 @@ fn classify_report(case: CaseSpec, elapsed: Duration, report: ChildReport) -> Ca
             }
         }
         ChildReportKind::ParseError(error) => CaseOutcome {
-            case,
+            case: case.into_record(),
             elapsed,
             category: OutcomeCategory::ParseError,
             detail: Some(trim_detail(&error).into()),
@@ -354,19 +373,32 @@ fn classify_report(case: CaseSpec, elapsed: Duration, report: ChildReport) -> Ca
 }
 
 /// Creates one infrastructure error outcome.
-fn harness_error(case: CaseSpec, elapsed: Duration, detail: String) -> CaseOutcome {
+fn harness_error(case: DiscoveredCase, elapsed: Duration, detail: String) -> CaseOutcome {
     CaseOutcome {
-        case,
+        case: case.into_record(),
         elapsed,
         category: OutcomeCategory::HarnessError,
         detail: Some(detail.into()),
     }
 }
 
+/// Writes one complete run summary to the requested JSON output path.
+fn write_summary_file(path: &Path, summary: &RunSummary) -> Result<(), String> {
+    let payload = serde_json::to_vec_pretty(summary)
+        .map_err(|error| format!("failed to serialize run summary: {error}"))?;
+    fs::write(path, payload)
+        .map_err(|error| format!("failed to write run summary {}: {error}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::should_print_outcome;
-    use crate::model::OutcomeCategory;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use super::{should_print_outcome, write_summary_file};
+    use crate::model::{
+        CaseOutcome, CaseRecord, ExpectedResult, OutcomeCategory, OutcomeStats, RunSummary,
+    };
 
     /// Ensures the default live stream remains failure-only.
     #[test]
@@ -380,5 +412,46 @@ mod tests {
     fn verbose_output_prints_every_outcome() {
         assert!(should_print_outcome(true, OutcomeCategory::Pass));
         assert!(should_print_outcome(true, OutcomeCategory::NoOracle));
+    }
+
+    /// Ensures saved summaries round-trip through the JSON artifact writer.
+    #[test]
+    fn write_summary_file_serializes_json() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let path = temp_dir.path().join("summary.json");
+        let summary = RunSummary {
+            format_version: RunSummary::FORMAT_VERSION,
+            roots: vec![PathBuf::from("test/fixture/sat")].into_boxed_slice(),
+            jobs: 2,
+            timeout: Duration::from_secs(30),
+            total_elapsed: Duration::from_millis(50),
+            cases: vec![CaseOutcome {
+                case: CaseRecord {
+                    key: "cases/example.cnf".into(),
+                    bytes: 12,
+                    expected: Some(ExpectedResult::Sat),
+                    source: Some("fixture".into()),
+                },
+                elapsed: Duration::from_millis(5),
+                category: OutcomeCategory::Pass,
+                detail: None,
+            }],
+            stats: OutcomeStats {
+                done: 1,
+                pass: 1,
+                ..OutcomeStats::default()
+            },
+        };
+
+        write_summary_file(&path, &summary).expect("write summary");
+        let round_trip: RunSummary =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("read summary"))
+                .expect("parse summary");
+        assert_eq!(round_trip.format_version, RunSummary::FORMAT_VERSION);
+        assert_eq!(round_trip.cases.len(), 1);
+        assert_eq!(
+            round_trip.cases[0].case.comparison_key(),
+            "cases/example.cnf"
+        );
     }
 }

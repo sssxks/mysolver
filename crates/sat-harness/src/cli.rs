@@ -26,6 +26,8 @@ pub(crate) struct Cli {
 pub(crate) enum HarnessCommand {
     /// Discover and execute benchmark cases.
     Run(RunArgs),
+    /// Compare two previously saved harness result files.
+    Compare(CompareArgs),
     /// Run one benchmark case in an isolated child process.
     #[command(hide = true, name = "__internal-run-case")]
     InternalRunCase(InternalRunCaseArgs),
@@ -47,6 +49,18 @@ pub(crate) struct RunArgs {
     /// Prints one outcome line for every completed case instead of failures only.
     #[arg(short, long)]
     pub(crate) all: bool,
+    /// Writes the complete run result to this JSON file.
+    #[arg(long)]
+    pub(crate) save: Option<PathBuf>,
+}
+
+/// Arguments for the user-facing `compare` command.
+#[derive(Debug, Args)]
+pub(crate) struct CompareArgs {
+    /// The first saved JSON result file.
+    pub(crate) left: PathBuf,
+    /// The second saved JSON result file.
+    pub(crate) right: PathBuf,
 }
 
 /// Arguments for the hidden child-process entrypoint.

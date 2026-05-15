@@ -1,7 +1,5 @@
-#![warn(missing_docs, clippy::missing_docs_in_private_items)]
 //! Harness that runs the demo solver and persists its emitted samples.
 
-use telemetry_exp::StatsSample;
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
@@ -10,6 +8,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
+use telemetry_exp::StatsSample;
 
 /// Convenient result alias for the harness binary.
 type AppResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
