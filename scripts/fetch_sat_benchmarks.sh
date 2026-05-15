@@ -3,9 +3,14 @@ set -euo pipefail
 
 profile="smoke"
 dest="test/fixture/sat"
+quiet=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --quiet)
+            quiet=1
+            shift
+            ;;
         --profile)
             profile="$2"
             shift 2
@@ -41,7 +46,9 @@ download_file() {
     local out="$2"
 
     if [[ -f "$out" ]]; then
-        printf 'cached  %s\n' "$out"
+        if [[ "$quiet" -eq 0 ]]; then
+            printf 'cached  %s\n' "$out"
+        fi
         return
     fi
 
@@ -54,7 +61,9 @@ extract_tarball() {
     local out_dir="$2"
 
     if [[ -d "$out_dir" ]] && find "$out_dir" -mindepth 1 -print -quit >/dev/null; then
-        printf 'ready   %s\n' "$out_dir"
+        if [[ "$quiet" -eq 0 ]]; then
+            printf 'ready   %s\n' "$out_dir"
+        fi
         return
     fi
 
@@ -133,4 +142,6 @@ fi
 
 write_manifest
 
-printf '\nbenchmarks ready under %s\n' "$dest"
+if [[ "$quiet" -eq 0 ]]; then
+    printf '\nbenchmarks ready under %s\n' "$dest"
+fi

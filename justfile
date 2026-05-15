@@ -1,7 +1,22 @@
-set no-exit-message
+# do not run `just --unstable --fmt --check`, which insists single line instead of backslash
+set no-exit-message := true
 
-bench argument="hard" *extra:
-    @if [ "{{argument}}" = "simple" ]; then cargo run -p sat-harness --release -q -- run {{extra}}; elif [ "{{argument}}" = "hard" ]; then cargo run -p sat-harness --release -q -- run {{extra}} test/fixture/sat/cases/satlib/engine_unsat_1.0; else echo "unknown bench preset: {{argument}}" >&2; exit 1; fi
+# Runs the SAT harness with shared flags.
+_sat-harness-run *args="":
+    @cargo run -p sat-harness --release -q -- run {{ args }}
 
-sat-bench-fetch:
-    @./scripts/fetch_sat_benchmarks.sh
+# Tests and benchmarks our SAT solver, default to hard subset.
+bench argument="hard" *extra:\
+  (sat-bench-fetch "--quiet") \
+  (_sat-harness-run extra \
+    if argument == "full" {\
+         "" \
+    } else if argument == "hard" {\
+        "test/fixture/sat/cases/satlib/engine_unsat_1.0" \
+    } else {\
+        error("unknown bench preset: " + argument) \
+    }\
+  )\
+
+sat-bench-fetch *args="":
+    @./scripts/fetch_sat_benchmarks.sh {{ args }}
