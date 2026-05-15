@@ -6,7 +6,7 @@ use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -20,7 +20,10 @@ use crate::model::{
     CaseOutcome, CaseSpec, ChildReport, ChildReportKind, ExpectedResult, OutcomeCategory,
     OutcomeStats, RunSummary,
 };
-use crate::render::{build_progress_bar, format_failure, print_summary, progress_message};
+use crate::render::{
+    PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_failure, print_summary,
+    progress_message,
+};
 use crate::util::{default_jobs, exit_signal, trim_detail};
 
 /// Executes the top-level parent harness flow.
@@ -73,20 +76,41 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
     let started = Instant::now();
     let mut outcomes = Vec::with_capacity(total);
     let mut stats = OutcomeStats::default();
+    progress_bar.set_message(progress_message(&stats, total.min(jobs)));
 
-    for outcome in receiver {
-        stats.record(outcome.category);
-        progress_bar.inc(1);
-        progress_bar.set_message(progress_message(&stats, jobs));
-        if outcome.category.is_failure() {
-            let rendered = format_failure(&outcome);
-            if interactive {
-                progress_bar.println(rendered);
-            } else {
-                eprintln!("{rendered}");
+    while outcomes.len() < total {
+        match receiver.recv_timeout(PROGRESS_HEARTBEAT_INTERVAL) {
+            Ok(outcome) => {
+                stats.record(outcome.category);
+                progress_bar.inc(1);
+                progress_bar.set_message(progress_message(
+                    &stats,
+                    total.saturating_sub(stats.done).min(jobs),
+                ));
+                if outcome.category.is_failure() {
+                    let rendered = format_failure(&outcome);
+                    if interactive {
+                        progress_bar.println(rendered);
+                    } else {
+                        eprintln!("{rendered}");
+                    }
+                }
+                outcomes.push(outcome);
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                progress_bar.set_message(progress_message(
+                    &stats,
+                    total.saturating_sub(stats.done).min(jobs),
+                ));
+                if !interactive {
+                    continue;
+                }
+                progress_bar.tick();
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                break;
             }
         }
-        outcomes.push(outcome);
     }
 
     for handle in handles {
@@ -97,7 +121,7 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
 
     let elapsed = started.elapsed();
     progress_bar.finish_and_clear();
-    print_summary(&outcomes, &stats, elapsed, jobs, args.slowest);
+    print_summary(&outcomes, &stats, elapsed, jobs);
     Ok(RunSummary { stats })
 }
 
@@ -199,9 +223,7 @@ fn run_case_subprocess(current_exe: &Path, case: CaseSpec, timeout: Duration) ->
             case,
             elapsed,
             category: OutcomeCategory::Timeout,
-            actual: None,
             detail: Some(format!("timed out after {}", humantime::format_duration(timeout)).into()),
-            variables: None,
         };
     }
 
@@ -238,9 +260,7 @@ fn classify_child_completion(
             case,
             elapsed,
             category: OutcomeCategory::Panic,
-            actual: None,
             detail: Some(trim_detail(stderr).into()),
-            variables: None,
         };
     }
 
@@ -254,9 +274,7 @@ fn classify_child_completion(
             case,
             elapsed,
             category: OutcomeCategory::Killed,
-            actual: None,
             detail: Some(detail.into()),
-            variables: None,
         };
     }
 
@@ -290,9 +308,7 @@ fn classify_report(case: CaseSpec, elapsed: Duration, report: ChildReport) -> Ca
                     case,
                     elapsed,
                     category: OutcomeCategory::Pass,
-                    actual: Some(actual),
                     detail: None,
-                    variables: Some(report.variables),
                 },
                 Some(expected) => CaseOutcome {
                     detail: Some(
@@ -307,16 +323,12 @@ fn classify_report(case: CaseSpec, elapsed: Duration, report: ChildReport) -> Ca
                     case,
                     elapsed,
                     category: OutcomeCategory::WrongAnswer,
-                    actual: Some(actual),
-                    variables: Some(report.variables),
                 },
                 None => CaseOutcome {
                     case,
                     elapsed,
                     category: OutcomeCategory::NoOracle,
-                    actual: Some(actual),
                     detail: None,
-                    variables: Some(report.variables),
                 },
             }
         }
@@ -324,9 +336,7 @@ fn classify_report(case: CaseSpec, elapsed: Duration, report: ChildReport) -> Ca
             case,
             elapsed,
             category: OutcomeCategory::ParseError,
-            actual: None,
             detail: Some(trim_detail(&error).into()),
-            variables: Some(report.variables),
         },
         ChildReportKind::InputError(error) => harness_error(case, elapsed, error),
     }
@@ -338,8 +348,6 @@ fn harness_error(case: CaseSpec, elapsed: Duration, detail: String) -> CaseOutco
         case,
         elapsed,
         category: OutcomeCategory::HarnessError,
-        actual: None,
         detail: Some(detail.into()),
-        variables: None,
     }
 }

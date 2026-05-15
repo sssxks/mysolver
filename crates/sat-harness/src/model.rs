@@ -50,7 +50,7 @@ pub(crate) struct ExpectationRule {
 pub(crate) struct CaseSpec {
     /// The canonical absolute file path passed to the child process.
     pub(crate) absolute_path: PathBuf,
-    /// The path displayed in progress output and summaries.
+    /// The path displayed in progress output and summaries, truncated when long.
     pub(crate) display_path: Box<str>,
     /// The file size in bytes used to sort long cases first.
     pub(crate) bytes: u64,
@@ -65,10 +65,6 @@ pub(crate) struct CaseSpec {
 pub(crate) struct ChildReport {
     /// The child-level outcome.
     pub(crate) kind: ChildReportKind,
-    /// The number of variables loaded from the DIMACS case.
-    pub(crate) variables: usize,
-    /// The total child runtime in milliseconds.
-    pub(crate) elapsed_millis: u64,
 }
 
 /// All structured outcomes that can be reported by the child process.
@@ -94,12 +90,8 @@ pub(crate) struct CaseOutcome {
     pub(crate) elapsed: Duration,
     /// The classified result category.
     pub(crate) category: OutcomeCategory,
-    /// An optional actual solver answer.
-    pub(crate) actual: Option<ExpectedResult>,
     /// An optional detail string for failures and summaries.
     pub(crate) detail: Option<Box<str>>,
-    /// The number of variables loaded by the child, if available.
-    pub(crate) variables: Option<usize>,
 }
 
 /// The top-level result category used in summaries and exit codes.

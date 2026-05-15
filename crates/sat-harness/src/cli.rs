@@ -44,9 +44,6 @@ pub(crate) struct RunArgs {
     /// The per-case timeout.
     #[arg(short, long, default_value = "30s", value_parser = parse_timeout)]
     pub(crate) timeout: Duration,
-    /// The number of slowest cases to print in the final summary.
-    #[arg(long, default_value_t = 10)]
-    pub(crate) slowest: usize,
 }
 
 /// Arguments for the hidden child-process entrypoint.

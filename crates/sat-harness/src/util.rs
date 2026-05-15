@@ -41,11 +41,6 @@ pub(crate) fn format_compact_duration(duration: Duration) -> String {
     }
 }
 
-/// Converts a duration into a saturating millisecond counter.
-pub(crate) fn saturating_millis(duration: Duration) -> u64 {
-    duration.as_millis().min(u128::from(u64::MAX)) as u64
-}
-
 /// Returns the terminating Unix signal for a child process, when available.
 pub(crate) fn exit_signal(status: ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;

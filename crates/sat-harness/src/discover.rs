@@ -12,6 +12,10 @@ use crate::model::{CaseSpec, ExpectationRule, ExpectedResult};
 
 /// The hidden manifest file used to attach expected results to benchmark paths.
 const EXPECTATIONS_FILE: &str = "expectations.tsv";
+/// The number of leading characters kept in a truncated display path.
+const DISPLAY_PATH_HEAD_CHARS: usize = 10;
+/// The number of trailing characters kept in a truncated display path.
+const DISPLAY_PATH_TAIL_CHARS: usize = 25;
 
 /// Discovers all supported benchmark files under the provided roots.
 pub(crate) fn discover_cases(roots: &[PathBuf]) -> Result<Vec<CaseSpec>, String> {
@@ -36,7 +40,7 @@ pub(crate) fn discover_cases(roots: &[PathBuf]) -> Result<Vec<CaseSpec>, String>
         }
     }
 
-    cases.sort_by_key(|case| (Reverse(case.bytes), case.display_path.clone()));
+    cases.sort_by_key(|case| (Reverse(case.bytes), case.absolute_path.clone()));
     Ok(cases)
 }
 
@@ -81,7 +85,7 @@ fn maybe_push_case(
         .len();
     cases.push(CaseSpec {
         absolute_path: canonical,
-        display_path: display_path.into_boxed_str(),
+        display_path: truncate_display_path(&display_path).into_boxed_str(),
         bytes,
         expected,
         source,
@@ -155,4 +159,23 @@ fn lookup_expectation(
         }
     }
     (None, None)
+}
+
+/// Truncates a display path by keeping the first 10 and last 30 characters.
+fn truncate_display_path(display_path: &str) -> String {
+    let total_chars = display_path.chars().count();
+    if total_chars <= DISPLAY_PATH_HEAD_CHARS + DISPLAY_PATH_TAIL_CHARS {
+        return display_path.to_owned();
+    }
+
+    let head_end = char_boundary_at(display_path, DISPLAY_PATH_HEAD_CHARS);
+    let tail_start = char_boundary_at(display_path, total_chars - DISPLAY_PATH_TAIL_CHARS);
+    format!("{}..{}", &display_path[..head_end], &display_path[tail_start..])
+}
+
+/// Returns the byte boundary at the requested character index.
+fn char_boundary_at(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map_or(text.len(), |(index, _)| index)
 }
