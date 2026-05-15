@@ -21,25 +21,31 @@ use crate::model::{
     OutcomeStats, RunSummary,
 };
 use crate::render::{
-    PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_failure, print_summary,
+    PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_outcome, print_summary,
     progress_message,
 };
 use crate::util::{default_jobs, exit_signal, trim_detail};
 
 /// Executes the top-level parent harness flow.
 pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
-    let requested_roots = if args.roots.is_empty() {
+    let RunArgs {
+        roots,
+        jobs,
+        timeout,
+        all: print_all_outcomes,
+    } = args;
+
+    let requested_roots = if roots.is_empty() {
         vec![PathBuf::from("test/fixture/sat")]
     } else {
-        args.roots
+        roots
     };
     let cases = discover_cases(&requested_roots)?;
     if cases.is_empty() {
         return Err("no supported benchmark cases were found".to_string());
     }
 
-    let jobs = args
-        .jobs
+    let jobs = jobs
         .unwrap_or_else(default_jobs)
         .get()
         .min(cases.len())
@@ -55,9 +61,9 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
         let worker_queue = Arc::clone(&queue);
         let worker_sender = sender.clone();
         let worker_exe = current_exe.clone();
-        let timeout = args.timeout;
+        let worker_timeout = timeout;
         handles.push(thread::spawn(move || {
-            worker_loop(worker_queue, worker_sender, worker_exe, timeout);
+            worker_loop(worker_queue, worker_sender, worker_exe, worker_timeout);
         }));
     }
     drop(sender);
@@ -69,7 +75,7 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
             "running {} cases with {} workers (timeout {})",
             HumanCount(total as u64),
             HumanCount(jobs as u64),
-            HumanDuration(args.timeout),
+            HumanDuration(timeout),
         );
     }
 
@@ -87,8 +93,8 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
                     &stats,
                     total.saturating_sub(stats.done).min(jobs),
                 ));
-                if outcome.category.is_failure() {
-                    let rendered = format_failure(&outcome);
+                if should_print_outcome(print_all_outcomes, outcome.category) {
+                    let rendered = format_outcome(&outcome);
                     if interactive {
                         progress_bar.println(rendered);
                     } else {
@@ -123,6 +129,11 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
     progress_bar.finish_and_clear();
     print_summary(&outcomes, &stats, elapsed, jobs);
     Ok(RunSummary { stats })
+}
+
+/// Returns whether one completed case should be printed immediately.
+fn should_print_outcome(print_all_outcomes: bool, category: OutcomeCategory) -> bool {
+    print_all_outcomes || category.is_failure()
 }
 
 /// Repeatedly executes cases from the shared queue until all work is exhausted.
@@ -223,7 +234,7 @@ fn run_case_subprocess(current_exe: &Path, case: CaseSpec, timeout: Duration) ->
             case,
             elapsed,
             category: OutcomeCategory::Timeout,
-            detail: Some(format!("timed out after {}", humantime::format_duration(timeout)).into()),
+            detail: None,
         };
     }
 
@@ -349,5 +360,25 @@ fn harness_error(case: CaseSpec, elapsed: Duration, detail: String) -> CaseOutco
         elapsed,
         category: OutcomeCategory::HarnessError,
         detail: Some(detail.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_print_outcome;
+    use crate::model::OutcomeCategory;
+
+    /// Ensures the default live stream remains failure-only.
+    #[test]
+    fn default_output_filters_successes() {
+        assert!(!should_print_outcome(false, OutcomeCategory::Pass));
+        assert!(should_print_outcome(false, OutcomeCategory::WrongAnswer));
+    }
+
+    /// Ensures the verbose mode prints every completed case outcome.
+    #[test]
+    fn verbose_output_prints_every_outcome() {
+        assert!(should_print_outcome(true, OutcomeCategory::Pass));
+        assert!(should_print_outcome(true, OutcomeCategory::NoOracle));
     }
 }

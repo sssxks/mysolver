@@ -94,8 +94,10 @@ pub(crate) struct CaseOutcome {
     pub(crate) detail: Option<Box<str>>,
 }
 
+use strum::VariantArray as _;
+
 /// The top-level result category used in summaries and exit codes.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, strum::VariantArray)]
 pub(crate) enum OutcomeCategory {
     /// The solver answer matched the oracle.
     Pass,
@@ -117,23 +119,42 @@ pub(crate) enum OutcomeCategory {
 
 impl OutcomeCategory {
     /// Returns `true` when the category should fail the overall run.
-    pub(crate) fn is_failure(self) -> bool {
+    pub(crate) const fn is_failure(self) -> bool {
         !matches!(self, Self::Pass | Self::NoOracle)
     }
 
     /// Returns the short uppercase label used in the terminal.
-    pub(crate) fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Pass => "PASS",
             Self::NoOracle => "DONE",
             Self::WrongAnswer => "WRONG",
             Self::ParseError => "PARSE",
-            Self::Timeout => "TIME",
+            Self::Timeout => "TIMEOUT",
             Self::Panic => "PANIC",
             Self::Killed => "KILLED",
             Self::HarnessError => "ERROR",
         }
     }
+
+    /// The maximum length of the uppercase labels.
+    pub(crate) const LABEL_WIDTH: usize = {
+        let variants = Self::VARIANTS;
+        let mut max = 0;
+        let mut i = 0;
+
+        while i < variants.len() {
+            let len = variants[i].label().len();
+
+            if len > max {
+                max = len;
+            }
+
+            i += 1;
+        }
+
+        max
+    };
 }
 
 /// Aggregate counters shown in the progress bar and final summary.

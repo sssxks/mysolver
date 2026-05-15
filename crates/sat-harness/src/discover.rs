@@ -170,7 +170,11 @@ fn truncate_display_path(display_path: &str) -> String {
 
     let head_end = char_boundary_at(display_path, DISPLAY_PATH_HEAD_CHARS);
     let tail_start = char_boundary_at(display_path, total_chars - DISPLAY_PATH_TAIL_CHARS);
-    format!("{}..{}", &display_path[..head_end], &display_path[tail_start..])
+    format!(
+        "{}..{}",
+        &display_path[..head_end],
+        &display_path[tail_start..]
+    )
 }
 
 /// Returns the byte boundary at the requested character index.

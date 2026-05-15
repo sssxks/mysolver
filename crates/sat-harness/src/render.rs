@@ -20,10 +20,9 @@ pub(crate) fn build_progress_bar(total: usize, interactive: bool) -> ProgressBar
         ProgressDrawTarget::hidden()
     };
     let progress_bar = ProgressBar::with_draw_target(Some(total as u64), draw_target);
-    let style =
-        ProgressStyle::with_template("{pos:>6}/{len:6} {wide_bar} {elapsed}/{duration} {msg}")
-            .expect("valid progress template")
-            .progress_chars("=>-");
+    let style = ProgressStyle::with_template("{pos}/{len} {wide_bar} {elapsed}/{duration} {msg}")
+        .expect("valid progress template")
+        .progress_chars("=>-");
     progress_bar.set_style(style);
     if interactive {
         progress_bar.enable_steady_tick(PROGRESS_HEARTBEAT_INTERVAL);
@@ -70,8 +69,8 @@ pub(crate) fn progress_message(stats: &OutcomeStats, running: usize) -> String {
     message
 }
 
-/// Formats a failure line that is printed immediately during the run.
-pub(crate) fn format_failure(outcome: &CaseOutcome) -> String {
+/// Formats one case outcome line that can be printed immediately during the run.
+pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let label = match outcome.category {
         OutcomeCategory::WrongAnswer => style(outcome.category.label()).red().bold(),
         OutcomeCategory::ParseError => style(outcome.category.label()).yellow().bold(),
@@ -83,16 +82,20 @@ pub(crate) fn format_failure(outcome: &CaseOutcome) -> String {
             style(outcome.category.label()).green().bold()
         }
     };
-    let detail = outcome.detail.as_deref().unwrap_or("no detail");
-    format!(
-        "{label} {:>10} {} :: {}",
-        format_compact_duration(outcome.elapsed),
-        outcome.case.display_path,
-        detail,
-    )
+
+    let width = OutcomeCategory::LABEL_WIDTH;
+    let elapsed = format_compact_duration(outcome.elapsed);
+    let path = outcome.case.display_path.as_ref();
+
+    let detail = outcome
+        .detail
+        .as_deref()
+        .map_or(String::new(), |detail| format!(" :: {detail}"));
+
+    format!("    {label:<width$} {elapsed:6} {path}{detail}")
 }
 
-/// Prints the final run summary.
+/// Prints the final summary.
 pub(crate) fn print_summary(
     outcomes: &[CaseOutcome],
     stats: &OutcomeStats,
@@ -106,8 +109,7 @@ pub(crate) fn print_summary(
         total as f64 / elapsed.as_secs_f64()
     };
 
-    let divider = "─".repeat(78);
-    eprintln!("{divider}");
+    eprintln!();
 
     eprintln!(
         "{} in {} with {} workers, throughput: {:.1} cases/s",
@@ -118,7 +120,7 @@ pub(crate) fn print_summary(
     );
 
     eprintln!(
-        "{}: total {} | pass {} | no-oracle {} | fail {}",
+        "{} total {} | pass {} | no-oracle {} | fail {}",
         style("cases").cyan().bold(),
         HumanCount(total as u64),
         HumanCount(stats.pass as u64),
@@ -127,7 +129,7 @@ pub(crate) fn print_summary(
     );
 
     eprintln!(
-        "{}: wrong {} | timeout {} | panic {} | parse {} | killed {} | harness {}",
+        "{} wrong {} | timeout {} | panic {} | parse {} | killed {} | harness {}",
         style("failures").cyan().bold(),
         HumanCount(stats.wrong as u64),
         HumanCount(stats.timeout as u64),
@@ -140,8 +142,11 @@ pub(crate) fn print_summary(
 
 #[cfg(test)]
 mod tests {
-    use super::progress_message;
-    use crate::model::OutcomeStats;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use super::{format_outcome, progress_message};
+    use crate::model::{CaseOutcome, CaseSpec, OutcomeCategory, OutcomeStats};
 
     /// Ensures the live message exposes worker activity even before any case finishes.
     #[test]
@@ -166,5 +171,26 @@ mod tests {
         assert!(message.contains("run 1"));
         assert!(message.contains("fail 6"));
         assert!(message.contains("[wrong 2 time 1 error 3]"));
+    }
+
+    /// Ensures successful outcomes can be rendered for the optional verbose stream.
+    #[test]
+    fn format_outcome_renders_successful_cases() {
+        let outcome = CaseOutcome {
+            case: CaseSpec {
+                absolute_path: PathBuf::from("/tmp/example.cnf"),
+                display_path: "fixture/example.cnf".into(),
+                bytes: 123,
+                expected: None,
+                source: None,
+            },
+            elapsed: Duration::from_millis(42),
+            category: OutcomeCategory::Pass,
+            detail: None,
+        };
+
+        let rendered = format_outcome(&outcome);
+        assert!(rendered.contains("PASS"));
+        assert!(rendered.contains("fixture/example.cnf"));
     }
 }

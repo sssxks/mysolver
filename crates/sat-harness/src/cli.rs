@@ -44,6 +44,9 @@ pub(crate) struct RunArgs {
     /// The per-case timeout.
     #[arg(short, long, default_value = "30s", value_parser = parse_timeout)]
     pub(crate) timeout: Duration,
+    /// Prints one outcome line for every completed case instead of failures only.
+    #[arg(short, long)]
+    pub(crate) all: bool,
 }
 
 /// Arguments for the hidden child-process entrypoint.
