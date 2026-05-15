@@ -469,6 +469,10 @@ dependencies = [
 [[package]]
 name = "sat"
 version = "0.1.0"
+
+[[package]]
+name = "sat-harness"
+version = "0.1.0"
 dependencies = [
  "bzip2",
  "clap",
@@ -476,6 +480,7 @@ dependencies = [
  "flate2",
  "humantime",
  "indicatif",
+ "sat",
  "serde",
  "serde_json",
  "tempfile",
