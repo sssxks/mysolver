@@ -1,5 +1,5 @@
 [package]
-name = "observability-exp"
+name = "telemetry-exp"
 version.workspace = true
 edition.workspace = true
 

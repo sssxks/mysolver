@@ -1,7 +1,7 @@
 #![warn(missing_docs, clippy::missing_docs_in_private_items)]
 //! Harness that runs the demo solver and persists its emitted samples.
 
-use observability_exp::StatsSample;
+use telemetry_exp::StatsSample;
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;

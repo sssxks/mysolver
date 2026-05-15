@@ -1,7 +1,7 @@
 #![warn(missing_docs, clippy::missing_docs_in_private_items)]
 //! Demo solver that emits periodic JSON metrics on stderr.
 
-use observability_exp::StatsSample;
+use telemetry_exp::StatsSample;
 use std::cell::Cell;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};

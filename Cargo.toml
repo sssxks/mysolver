@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/observability-exp", "crates/sat", "crates/sat-harness"]
+members = ["crates/telemetry-exp", "crates/sat", "crates/sat-harness"]
 resolver = "3"
 
 [workspace.package]
