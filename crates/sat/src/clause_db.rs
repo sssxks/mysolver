@@ -348,11 +348,13 @@ impl ClauseArena {
     }
 
     /// Returns the number of literal words currently stored in the arena payload.
+    #[cfg(feature = "telemetry")]
     pub(crate) fn word_count(&self) -> usize {
         self.words.len()
     }
 
     /// Returns the number of literal words stranded behind deleted clauses.
+    #[cfg(feature = "telemetry")]
     pub(crate) fn wasted_word_count(&self) -> usize {
         self.wasted_words
     }

@@ -12,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use indicatif::{HumanCount, HumanDuration};
+#[cfg(feature = "telemetry")]
 use sat::telemetry::{Sample, Summary};
 use tempfile::NamedTempFile;
 
@@ -217,21 +218,30 @@ fn run_case_subprocess(
             );
         }
     };
-    let telemetry_file = match NamedTempFile::new() {
+    let telemetry_file = match create_telemetry_file() {
         Ok(file) => file,
         Err(error) => {
             return harness_error(case, started.elapsed(), format!("tempfile error: {error}"));
         }
     };
 
-    let mut child = match Command::new(current_exe)
+    let mut command = Command::new(current_exe);
+    command
         .arg("__internal-run-case")
         .arg("--case")
         .arg(case.absolute_path())
         .arg("--report")
-        .arg(report_file.path())
-        .arg("--telemetry")
-        .arg(telemetry_file.path())
+        .arg(report_file.path());
+    #[cfg(feature = "telemetry")]
+    {
+        let telemetry_path = telemetry_file
+            .as_ref()
+            .expect("telemetry temp file exists when feature is enabled")
+            .path();
+        command.arg("--telemetry").arg(telemetry_path);
+    }
+
+    let mut child = match command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(stderr_stdio)
@@ -277,15 +287,21 @@ fn run_case_subprocess(
             elapsed,
             category: OutcomeCategory::Timeout,
             detail: None,
-            telemetry: load_case_telemetry(telemetry_file.path(), retain_telemetry_samples)
-                .ok()
-                .flatten(),
+            telemetry: load_case_telemetry(
+                telemetry_file.as_ref().map(NamedTempFile::path),
+                retain_telemetry_samples,
+            )
+            .ok()
+            .flatten(),
         };
     }
 
     let stderr = fs::read_to_string(stderr_file.path()).unwrap_or_default();
     let report_text = fs::read_to_string(report_file.path()).ok();
-    let telemetry = load_case_telemetry(telemetry_file.path(), retain_telemetry_samples);
+    let telemetry = load_case_telemetry(
+        telemetry_file.as_ref().map(NamedTempFile::path),
+        retain_telemetry_samples,
+    );
     classify_child_completion(
         case,
         elapsed,
@@ -294,6 +310,18 @@ fn run_case_subprocess(
         &stderr,
         telemetry,
     )
+}
+
+/// Creates the child telemetry file only when the feature is enabled.
+#[cfg(feature = "telemetry")]
+fn create_telemetry_file() -> Result<Option<NamedTempFile>, std::io::Error> {
+    NamedTempFile::new().map(Some)
+}
+
+/// Skips telemetry tempfile creation when the feature is disabled.
+#[cfg(not(feature = "telemetry"))]
+fn create_telemetry_file() -> Result<Option<NamedTempFile>, std::io::Error> {
+    Ok(None)
 }
 
 /// Classifies a completed child process into a stable harness outcome.
@@ -440,7 +468,14 @@ fn harness_error(case: DiscoveredCase, elapsed: Duration, detail: String) -> Cas
 }
 
 /// Loads one child telemetry file and optionally retains raw samples for saving.
-fn load_case_telemetry(path: &Path, retain_samples: bool) -> Result<Option<CaseTelemetry>, String> {
+#[cfg(feature = "telemetry")]
+fn load_case_telemetry(
+    path: Option<&Path>,
+    retain_samples: bool,
+) -> Result<Option<CaseTelemetry>, String> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
     let samples = load_telemetry_samples(path)?;
     let Some(summary) = Summary::from_samples(&samples) else {
         return Ok(None);
@@ -453,6 +488,7 @@ fn load_case_telemetry(path: &Path, retain_samples: bool) -> Result<Option<CaseT
 }
 
 /// Reads one JSONL telemetry file emitted by the child process.
+#[cfg(feature = "telemetry")]
 fn load_telemetry_samples(path: &Path) -> Result<Vec<Sample>, String> {
     let payload = fs::read_to_string(path)
         .map_err(|error| format!("failed to read telemetry file {}: {error}", path.display()))?;
@@ -475,6 +511,15 @@ fn load_telemetry_samples(path: &Path) -> Result<Vec<Sample>, String> {
     }
 
     Ok(samples)
+}
+
+/// Returns no telemetry when the feature is disabled for the harness build.
+#[cfg(not(feature = "telemetry"))]
+fn load_case_telemetry(
+    _path: Option<&Path>,
+    _retain_samples: bool,
+) -> Result<Option<CaseTelemetry>, String> {
+    Ok(None)
 }
 
 /// Writes one complete run summary to the requested JSON output path.

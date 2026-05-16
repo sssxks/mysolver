@@ -9,7 +9,9 @@ mod search;
 
 use crate::clause_db::{ClauseArena, ClauseId};
 use crate::heap::VarHeap;
-use crate::telemetry::{self, Gauges};
+use crate::telemetry;
+#[cfg(feature = "telemetry")]
+use crate::telemetry::Gauges;
 use crate::{Lit, Var};
 
 use self::propagate::Watcher;
@@ -195,6 +197,7 @@ impl Solver {
     }
 
     /// Captures the current solver gauges for one telemetry sample boundary.
+    #[cfg(feature = "telemetry")]
     pub fn telemetry_gauges(&self) -> Gauges {
         Gauges {
             decision_level: self.decision_level() as u64,
@@ -281,7 +284,12 @@ impl Solver {
     }
 
     /// Emits one periodic telemetry sample when the timer thread requested it.
+    #[cfg(feature = "telemetry")]
     fn maybe_emit_telemetry_sample(&self) {
         telemetry::maybe_emit_sample(|| self.telemetry_gauges());
     }
+
+    /// Compiles to a no-op when solver telemetry instrumentation is disabled.
+    #[cfg(not(feature = "telemetry"))]
+    fn maybe_emit_telemetry_sample(&self) {}
 }

@@ -145,18 +145,26 @@ impl Solver {
 
 #[cfg(test)]
 mod tests {
-    use super::{Reason, Solver};
+    #[cfg(feature = "telemetry")]
+    use super::Reason;
+    #[cfg(feature = "telemetry")]
+    use super::Solver;
+    #[cfg(feature = "telemetry")]
     use crate::telemetry;
+    #[cfg(feature = "telemetry")]
     use crate::{Lit, Var};
 
+    #[cfg(feature = "telemetry")]
     fn lit(index: usize) -> Lit {
         Lit::new(Var::from_index(index), false)
     }
 
+    #[cfg(feature = "telemetry")]
     fn nlit(index: usize) -> Lit {
         Lit::new(Var::from_index(index), true)
     }
 
+    #[cfg(feature = "telemetry")]
     fn long_watch_count(solver: &Solver, watched: Lit, cid: crate::clause_db::ClauseId) -> usize {
         solver.watches[watched.index()]
             .iter()
@@ -169,6 +177,7 @@ mod tests {
             .count()
     }
 
+    #[cfg(feature = "telemetry")]
     #[test]
     fn delete_clause_leaves_stale_watchers_for_lazy_cleanup() {
         let mut solver = Solver::with_vars(5);

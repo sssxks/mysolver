@@ -6,6 +6,7 @@ use std::path::Path;
 
 use bzip2::read::BzDecoder;
 use flate2::read::MultiGzDecoder;
+#[cfg(feature = "telemetry")]
 use sat::telemetry::TelemetryRecorder;
 use sat::{SatResult as SolverSatResult, Solver, parse_dimacs};
 
@@ -16,24 +17,7 @@ use crate::model::{ChildReport, ChildReportKind};
 pub(crate) fn run_child(args: InternalRunCaseArgs) -> Result<(), String> {
     let report = match load_case_and_solver(&args.case) {
         Ok(mut solver) => {
-            let recorder = TelemetryRecorder::start(&args.telemetry).map_err(|error| {
-                format!(
-                    "failed to start telemetry recorder {}: {error}",
-                    args.telemetry.display()
-                )
-            })?;
-            let kind = match solver.solve() {
-                SolverSatResult::Sat => ChildReportKind::Sat,
-                SolverSatResult::Unsat => ChildReportKind::Unsat,
-            };
-            recorder
-                .finish(solver.telemetry_gauges())
-                .map_err(|error| {
-                    format!(
-                        "failed to finalize telemetry file {}: {error}",
-                        args.telemetry.display()
-                    )
-                })?;
+            let kind = solve_case_with_optional_telemetry(&mut solver, &args)?;
             ChildReport { kind }
         }
         Err(LoadCaseError::Input(error)) => ChildReport {
@@ -51,6 +35,46 @@ pub(crate) fn run_child(args: InternalRunCaseArgs) -> Result<(), String> {
             args.report.display()
         )
     })
+}
+
+/// Solves one case and records telemetry only when the feature is enabled.
+#[cfg(feature = "telemetry")]
+fn solve_case_with_optional_telemetry(
+    solver: &mut Solver,
+    args: &InternalRunCaseArgs,
+) -> Result<ChildReportKind, String> {
+    let recorder = TelemetryRecorder::start(&args.telemetry).map_err(|error| {
+        format!(
+            "failed to start telemetry recorder {}: {error}",
+            args.telemetry.display()
+        )
+    })?;
+    let kind = match solver.solve() {
+        SolverSatResult::Sat => ChildReportKind::Sat,
+        SolverSatResult::Unsat => ChildReportKind::Unsat,
+    };
+    recorder
+        .finish(solver.telemetry_gauges())
+        .map_err(|error| {
+            format!(
+                "failed to finalize telemetry file {}: {error}",
+                args.telemetry.display()
+            )
+        })?;
+    Ok(kind)
+}
+
+/// Solves one case without compiling in telemetry instrumentation.
+#[cfg(not(feature = "telemetry"))]
+fn solve_case_with_optional_telemetry(
+    solver: &mut Solver,
+    _args: &InternalRunCaseArgs,
+) -> Result<ChildReportKind, String> {
+    let kind = match solver.solve() {
+        SolverSatResult::Sat => ChildReportKind::Sat,
+        SolverSatResult::Unsat => ChildReportKind::Unsat,
+    };
+    Ok(kind)
 }
 
 /// Loads one DIMACS case and builds a solver instance from it.

@@ -3,6 +3,10 @@ name = "sat-harness"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["telemetry"]
+telemetry = ["sat/telemetry"]
+
 [dependencies]
 bzip2 = "0.6.1"
 clap = { version = "4.5.51", features = ["derive"] }
@@ -10,7 +14,7 @@ console = "0.15.11"
 flate2 = "1.1.5"
 humantime = "2.3.0"
 indicatif = "0.18.2"
-sat = { path = "../sat" }
+sat = { path = "../sat", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 strum = { version = "0.28.0", features = ["derive"] }
