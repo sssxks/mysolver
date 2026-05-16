@@ -17,6 +17,7 @@ use tempfile::NamedTempFile;
 
 use crate::cli::RunArgs;
 use crate::discover::discover_cases;
+use crate::jobs::default_jobs;
 use crate::model::{
     CaseOutcome, CaseTelemetry, ChildReport, ChildReportKind, DiscoveredCase, ExpectedResult,
     OutcomeCategory, OutcomeStats, RunSummary,
@@ -25,7 +26,7 @@ use crate::render::{
     PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_outcome, print_summary,
     print_written_summary, progress_message,
 };
-use crate::util::{default_jobs, exit_signal, trim_detail};
+use crate::util::{exit_signal, trim_detail};
 
 /// Executes the top-level parent harness flow.
 pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {

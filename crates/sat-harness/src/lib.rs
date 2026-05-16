@@ -9,6 +9,7 @@ mod child;
 mod cli;
 mod compare;
 mod discover;
+mod jobs;
 mod model;
 mod parent;
 mod render;

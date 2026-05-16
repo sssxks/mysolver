@@ -1,17 +1,11 @@
 //! Small shared utility helpers for parsing, formatting, and process handling.
 
-use std::num::NonZeroUsize;
 use std::process::ExitStatus;
 use std::time::Duration;
 
 /// Parses a user-provided timeout string such as `30s` or `250ms`.
 pub(crate) fn parse_timeout(text: &str) -> Result<Duration, String> {
     humantime::parse_duration(text).map_err(|error| error.to_string())
-}
-
-/// Returns the default worker count based on the host CPU count.
-pub(crate) fn default_jobs() -> NonZeroUsize {
-    std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
 }
 
 /// Truncates long stderr and parser messages to a readable one-line detail.

@@ -41,6 +41,9 @@ pub(crate) struct RunArgs {
     /// When omitted, the harness scans `test/fixture/sat`.
     pub(crate) roots: Vec<PathBuf>,
     /// The number of child processes to run concurrently.
+    ///
+    /// When omitted, the harness defaults to the number of physical CPU cores
+    /// available to the current process.
     #[arg(short, long)]
     pub(crate) jobs: Option<NonZeroUsize>,
     /// The per-case timeout.
