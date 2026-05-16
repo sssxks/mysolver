@@ -360,8 +360,16 @@ impl ClauseArena {
     }
 
     /// Returns the live slot index named by `cid`, if any.
+    ///
+    /// Returns `None` when `cid` is stale, i.e. when the slot is currently free
+    /// or retired, or when the slot has been reused for another clause since
+    /// `cid`'s generation was recorded.
+    ///
+    /// # Panics
+    /// Panics if slot index is out of bounds.
     #[inline(always)]
     fn try_live_slot(&self, cid: ClauseId) -> Option<usize> {
+        // slots are never truncated; so out of bounds signals likely bugs, unlike stale ids, which is by design lazily updated.
         let header = self.headers.get(cid.slot_index()).unwrap();
         // header is free or retired or header is already reused for another generation.
         if header.is_free() || header.is_retired() || header.generation() != cid.generation() {

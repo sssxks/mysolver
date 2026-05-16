@@ -77,26 +77,38 @@ pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let elapsed = format_compact_duration(outcome.elapsed);
     let path = truncate_display_path(outcome.case.comparison_key());
 
-    let mut suffixes = Vec::new();
-    if let Some(detail) = outcome.detail.as_deref() {
-        suffixes.push(detail.to_owned());
-    }
-    if let Some(telemetry) = outcome.telemetry.as_ref() {
-        suffixes.push(format_telemetry_summary(&telemetry.summary));
-    }
-    let suffix = if suffixes.is_empty() {
-        String::new()
+    // let mut suffixes = Vec::new();
+    // if let Some(detail) = outcome.detail.as_deref() {
+    //     suffixes.push(detail.to_owned());
+    // }
+    // if let Some(telemetry) = outcome.telemetry.as_ref() {
+    //     suffixes.push(format_telemetry_summary(&telemetry.summary));
+    // }
+    // let suffix = if suffixes.is_empty() {
+
+    let detail = if let Some(detail) = outcome.detail.as_deref() {
+        format!(" :: {}", detail)
     } else {
-        format!(" :: {}", suffixes.join(" :: "))
+        String::new()
     };
 
-    format!("    {label:<width$} {elapsed:>6} {path}{suffix}")
+    let metrices = if let Some(telemetry) = outcome.telemetry.as_ref() {
+        format!(
+            "\n{}{}",
+            " ".repeat(4 + width + 1),
+            style(format_telemetry_summary(&telemetry.summary)).dim()
+        )
+    } else {
+        String::new()
+    };
+
+    format!("    {label:<width$} {elapsed:>6} {path}{detail}{metrices}")
 }
 
 /// Formats one compact telemetry summary for a per-case outcome line.
 fn format_telemetry_summary(summary: &Summary) -> String {
     format!(
-        "tele conf {} prop {} dec {} rst {} red {} peak-lvl {} peak-assign {} final-learnt {}",
+        "conf {} prop {} dec {} rst {} red {} peak-lvl {} peak-assign {} final-learnt {}",
         HumanCount(summary.total_conflicts),
         HumanCount(summary.total_propagations),
         HumanCount(summary.total_decisions),
@@ -107,6 +119,7 @@ fn format_telemetry_summary(summary: &Summary) -> String {
         HumanCount(summary.final_live_learnt_clauses),
     )
 }
+
 /// Prints the final summary.
 pub(crate) fn print_summary(
     outcomes: &[CaseOutcome],
