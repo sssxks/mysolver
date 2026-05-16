@@ -9,7 +9,7 @@ mod search;
 
 use crate::clause_db::{ClauseArena, ClauseId};
 use crate::heap::VarHeap;
-use crate::telemetry::{self, SolverTelemetryGauges};
+use crate::telemetry::{self, Gauges};
 use crate::{Lit, Var};
 
 use self::propagate::Watcher;
@@ -195,18 +195,18 @@ impl Solver {
     }
 
     /// Captures the current solver gauges for one telemetry sample boundary.
-    pub fn telemetry_gauges(&self) -> SolverTelemetryGauges {
-        let (live_irredundant_clauses, live_learnt_clauses) = self.clauses.live_clause_counts();
-        let watcher_entries = self.watches.iter().map(Vec::len).sum::<usize>();
-
-        SolverTelemetryGauges {
+    pub fn telemetry_gauges(&self) -> Gauges {
+        Gauges {
             decision_level: self.decision_level() as u64,
             assigned_vars: self.assigned_count as u64,
             trail_len: self.trail.len() as u64,
             pending_propagations: self.trail.len().saturating_sub(self.qhead) as u64,
-            live_irredundant_clauses: live_irredundant_clauses as u64,
-            live_learnt_clauses: live_learnt_clauses as u64,
-            watcher_entries: watcher_entries as u64,
+            // Irredundant long clauses are input-defined in this solver: they are
+            // added during parsing and never deleted during search.
+            live_irredundant_clauses: telemetry::live_irredundant_clauses(),
+            // `self.learnts` tracks only live learned long clauses after reductions.
+            live_learnt_clauses: self.learnts.len() as u64,
+            watcher_entries: telemetry::watcher_entries(),
             clause_words: self.clauses.word_count() as u64,
             wasted_clause_words: self.clauses.wasted_word_count() as u64,
         }
@@ -214,6 +214,10 @@ impl Solver {
 
     /// Searches for a satisfying assignment for the current formula.
     pub fn solve(&mut self) -> SatResult {
+        let (live_irredundant_clauses, _) = self.clauses.live_clause_counts();
+        let watcher_entries = self.watches.iter().map(Vec::len).sum::<usize>();
+        telemetry::initialize_solver_gauges(live_irredundant_clauses, watcher_entries);
+
         if !self.ok {
             return SatResult::Unsat;
         }
@@ -278,6 +282,6 @@ impl Solver {
 
     /// Emits one periodic telemetry sample when the timer thread requested it.
     fn maybe_emit_telemetry_sample(&self) {
-        telemetry::maybe_emit_sample(self.telemetry_gauges());
+        telemetry::maybe_emit_sample(|| self.telemetry_gauges());
     }
 }

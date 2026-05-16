@@ -148,7 +148,9 @@ impl Solver {
                             keep = Some(watcher);
                         } else {
                             match self.process_long_watch(clause, false_lit) {
-                                LongAction::Drop => {}
+                                LongAction::Drop => {
+                                    telemetry::record_removed_watchers(1);
+                                }
                                 LongAction::Keep { blocker } => {
                                     keep = Some(Watcher::Long { clause, blocker });
                                 }

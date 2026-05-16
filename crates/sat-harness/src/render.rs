@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use console::style;
 use indicatif::{HumanCount, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use sat::telemetry::SolverTelemetrySummary;
+use sat::telemetry::Summary;
 
 use crate::model::{CaseOutcome, OutcomeCategory, OutcomeStats};
 use crate::util::{format_compact_duration, truncate_display_path};
@@ -94,7 +94,7 @@ pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
 }
 
 /// Formats one compact telemetry summary for a per-case outcome line.
-fn format_telemetry_summary(summary: &SolverTelemetrySummary) -> String {
+fn format_telemetry_summary(summary: &Summary) -> String {
     format!(
         "tele conf {} prop {} dec {} rst {} red {} peak-lvl {} peak-assign {} final-learnt {}",
         HumanCount(summary.total_conflicts),
@@ -163,7 +163,7 @@ mod tests {
 
     use super::{format_outcome, progress_message};
     use crate::model::{CaseOutcome, CaseRecord, CaseTelemetry, OutcomeCategory, OutcomeStats};
-    use sat::telemetry::SolverTelemetrySummary;
+    use sat::telemetry::Summary;
 
     /// Ensures the live message exposes worker activity even before any case finishes.
     #[test]
@@ -245,7 +245,7 @@ mod tests {
             category: OutcomeCategory::Pass,
             detail: None,
             telemetry: Some(CaseTelemetry {
-                summary: SolverTelemetrySummary {
+                summary: Summary {
                     sample_count: 1,
                     total_conflicts: 7,
                     total_propagations: 42,

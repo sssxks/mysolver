@@ -80,6 +80,7 @@ impl Solver {
     pub(crate) fn attach_binary(&mut self, a: Lit, b: Lit) {
         self.watches[a.index()].push(Watcher::Binary { other: b });
         self.watches[b.index()].push(Watcher::Binary { other: a });
+        telemetry::record_added_watchers(2);
     }
 
     /// Stores and watches a long clause, optionally marking it as learned.
@@ -97,6 +98,7 @@ impl Solver {
             clause: cid,
             blocker: w0,
         });
+        telemetry::record_added_watchers(2);
         if learnt {
             self.learnts.push(cid);
         }

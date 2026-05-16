@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use console::{StyledObject, style};
-use sat::telemetry::{SolverTelemetrySample, SolverTelemetrySummary};
+use sat::telemetry::{Sample, Summary};
 use serde::{Deserialize, Serialize};
 
 /// One expected solver answer loaded from an expectations manifest.
@@ -148,10 +148,10 @@ pub(crate) struct CaseOutcome {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct CaseTelemetry {
     /// Aggregate metrics derived from the raw periodic samples.
-    pub(crate) summary: SolverTelemetrySummary,
+    pub(crate) summary: Summary,
     /// The raw periodic samples, kept only when the user requested `--save`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) samples: Vec<SolverTelemetrySample>,
+    pub(crate) samples: Vec<Sample>,
 }
 
 use strum::VariantArray as _;

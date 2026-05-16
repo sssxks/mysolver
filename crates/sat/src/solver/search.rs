@@ -146,6 +146,7 @@ impl Solver {
 #[cfg(test)]
 mod tests {
     use super::{Reason, Solver};
+    use crate::telemetry;
     use crate::{Lit, Var};
 
     fn lit(index: usize) -> Lit {
@@ -171,6 +172,7 @@ mod tests {
     #[test]
     fn delete_clause_leaves_stale_watchers_for_lazy_cleanup() {
         let mut solver = Solver::with_vars(5);
+        telemetry::initialize_solver_gauges(0, 0);
         let dead = solver.attach_long(&[lit(0), lit(1), lit(2)], true);
         solver.delete_clause(dead);
         let replacement = solver.attach_long(&[lit(0), lit(3), lit(4)], true);
@@ -180,6 +182,7 @@ mod tests {
         assert_eq!(long_watch_count(&solver, lit(0), dead), 1);
         assert_eq!(long_watch_count(&solver, lit(1), dead), 1);
         assert_eq!(long_watch_count(&solver, lit(0), replacement), 1);
+        assert_eq!(telemetry::watcher_entries(), 4);
 
         assert!(solver.enqueue(nlit(0), Reason::None));
         assert!(solver.propagate().is_none());
@@ -187,5 +190,6 @@ mod tests {
         assert_eq!(long_watch_count(&solver, lit(0), dead), 0);
         assert_eq!(long_watch_count(&solver, lit(1), dead), 1);
         assert!(solver.clauses.is_live(replacement));
+        assert_eq!(telemetry::watcher_entries(), 3);
     }
 }

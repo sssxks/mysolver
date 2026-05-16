@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use indicatif::{HumanCount, HumanDuration};
-use sat::telemetry::{SolverTelemetrySample, SolverTelemetrySummary};
+use sat::telemetry::{Sample, Summary};
 use tempfile::NamedTempFile;
 
 use crate::cli::RunArgs;
@@ -441,7 +441,7 @@ fn harness_error(case: DiscoveredCase, elapsed: Duration, detail: String) -> Cas
 /// Loads one child telemetry file and optionally retains raw samples for saving.
 fn load_case_telemetry(path: &Path, retain_samples: bool) -> Result<Option<CaseTelemetry>, String> {
     let samples = load_telemetry_samples(path)?;
-    let Some(summary) = SolverTelemetrySummary::from_samples(&samples) else {
+    let Some(summary) = Summary::from_samples(&samples) else {
         return Ok(None);
     };
 
@@ -452,7 +452,7 @@ fn load_case_telemetry(path: &Path, retain_samples: bool) -> Result<Option<CaseT
 }
 
 /// Reads one JSONL telemetry file emitted by the child process.
-fn load_telemetry_samples(path: &Path) -> Result<Vec<SolverTelemetrySample>, String> {
+fn load_telemetry_samples(path: &Path) -> Result<Vec<Sample>, String> {
     let payload = fs::read_to_string(path)
         .map_err(|error| format!("failed to read telemetry file {}: {error}", path.display()))?;
     let mut samples = Vec::new();
@@ -463,7 +463,7 @@ fn load_telemetry_samples(path: &Path) -> Result<Vec<SolverTelemetrySample>, Str
             continue;
         }
 
-        let sample = serde_json::from_str::<SolverTelemetrySample>(line).map_err(|error| {
+        let sample = serde_json::from_str::<Sample>(line).map_err(|error| {
             format!(
                 "failed to parse telemetry sample {} from {}: {error}",
                 line_index + 1,

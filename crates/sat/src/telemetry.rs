@@ -25,13 +25,15 @@ static SAMPLE_STOP: AtomicBool = AtomicBool::new(false);
 thread_local! {
     /// Thread-local counter storage for the solver hot path.
     static COUNTERS: CounterCells = const { CounterCells::new() };
+    /// Thread-local current-value gauges maintained incrementally on the solver thread.
+    static GAUGES: GaugeCells = const { GaugeCells::new() };
     /// Per-thread telemetry session state that owns the JSONL output writer.
     static SESSION: RefCell<Option<LocalSession>> = const { RefCell::new(None) };
 }
 
 /// Counter metrics accumulated between flushed samples.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SolverTelemetryCounters {
+pub struct Counters {
     /// Number of conflicts encountered since the previous sample.
     pub conflicts: u64,
     /// Number of propagated assignments enqueued since the previous sample.
@@ -50,7 +52,7 @@ pub struct SolverTelemetryCounters {
 
 /// Gauge metrics sampled from the live solver state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SolverTelemetryGauges {
+pub struct Gauges {
     /// Current decision level.
     pub decision_level: u64,
     /// Number of variables currently assigned.
@@ -73,18 +75,18 @@ pub struct SolverTelemetryGauges {
 
 /// One periodic JSONL telemetry sample emitted by the solver.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SolverTelemetrySample {
+pub struct Sample {
     /// Seconds elapsed since the telemetry session started.
     pub elapsed_secs: f64,
     /// Counter deltas accumulated since the previous sample.
-    pub counters: SolverTelemetryCounters,
+    pub counters: Counters,
     /// Point-in-time gauges captured at the sample boundary.
-    pub gauges: SolverTelemetryGauges,
+    pub gauges: Gauges,
 }
 
 /// Aggregate telemetry derived from one case's emitted samples.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SolverTelemetrySummary {
+pub struct Summary {
     /// Number of samples observed for the case.
     pub sample_count: u64,
     /// Total conflicts across all samples.
@@ -131,9 +133,9 @@ pub struct SolverTelemetrySummary {
     pub final_live_irredundant_clauses: u64,
 }
 
-impl SolverTelemetrySummary {
+impl Summary {
     /// Aggregates one full sample stream into one compact summary.
-    pub fn from_samples(samples: &[SolverTelemetrySample]) -> Option<Self> {
+    pub fn from_samples(samples: &[Sample]) -> Option<Self> {
         let last = samples.last()?;
         let mut summary = Self {
             sample_count: samples.len() as u64,
@@ -217,7 +219,7 @@ impl TelemetryRecorder {
     }
 
     /// Emits the final sample, stops the timer thread, and returns any write error.
-    pub fn finish(mut self, gauges: SolverTelemetryGauges) -> io::Result<()> {
+    pub fn finish(mut self, gauges: Gauges) -> io::Result<()> {
         emit_sample(gauges);
         self.shutdown();
         take_session_result()
@@ -275,13 +277,46 @@ pub(crate) fn record_deleted_clauses(count: usize) {
     COUNTERS.with(|counters| counters.bump(&counters.deleted_clauses, count as u64));
 }
 
+/// Initializes the current-value gauges for one solver run.
+pub(crate) fn initialize_solver_gauges(live_irredundant_clauses: usize, watcher_entries: usize) {
+    GAUGES.with(|gauges| {
+        gauges
+            .live_irredundant_clauses
+            .set(live_irredundant_clauses as u64);
+        gauges.watcher_entries.set(watcher_entries as u64);
+    });
+}
+
+/// Increments the watcher-entry gauge by `count`.
+pub(crate) fn record_added_watchers(count: usize) {
+    GAUGES.with(|gauges| gauges.bump(&gauges.watcher_entries, count as u64));
+}
+
+/// Decrements the watcher-entry gauge by `count`.
+pub(crate) fn record_removed_watchers(count: usize) {
+    GAUGES.with(|gauges| gauges.subtract(&gauges.watcher_entries, count as u64));
+}
+
+/// Returns the current irredundant long-clause count gauge.
+pub(crate) fn live_irredundant_clauses() -> u64 {
+    GAUGES.with(|gauges| gauges.live_irredundant_clauses.get())
+}
+
+/// Returns the current watcher-entry gauge.
+pub(crate) fn watcher_entries() -> u64 {
+    GAUGES.with(|gauges| gauges.watcher_entries.get())
+}
+
 /// Emits one sample when the timer thread requested a flush.
-pub(crate) fn maybe_emit_sample(gauges: SolverTelemetryGauges) {
-    if !SAMPLE_TICK.swap(false, Ordering::Relaxed) {
+pub(crate) fn maybe_emit_sample<F: FnOnce() -> Gauges>(gauges: F) {
+    if SAMPLE_TICK
+        .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
         return;
     }
 
-    emit_sample(gauges);
+    emit_sample(gauges());
 }
 
 /// Installs the per-thread session writer and resets all thread-local counters.
@@ -300,18 +335,19 @@ fn install_session(path: &Path) -> io::Result<()> {
         Ok(())
     })?;
     COUNTERS.with(CounterCells::reset);
+    GAUGES.with(GaugeCells::reset);
     Ok(())
 }
 
 /// Emits one JSONL sample to the active session, if any.
-fn emit_sample(gauges: SolverTelemetryGauges) {
+fn emit_sample(gauges: Gauges) {
     let counters = COUNTERS.with(CounterCells::take);
     SESSION.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(session) = slot.as_mut() else {
             return;
         };
-        let sample = SolverTelemetrySample {
+        let sample = Sample {
             elapsed_secs: session.started.elapsed().as_secs_f64(),
             counters,
             gauges,
@@ -341,6 +377,7 @@ fn clear_session() {
         let _ = slot.borrow_mut().take();
     });
     COUNTERS.with(CounterCells::reset);
+    GAUGES.with(GaugeCells::reset);
 }
 
 /// Thread-local counter cells used by the solver hot path.
@@ -392,8 +429,8 @@ impl CounterCells {
     }
 
     /// Takes the current counter deltas and resets them to zero.
-    fn take(&self) -> SolverTelemetryCounters {
-        SolverTelemetryCounters {
+    fn take(&self) -> Counters {
+        Counters {
             conflicts: self.conflicts.replace(0),
             propagations: self.propagations.replace(0),
             decisions: self.decisions.replace(0),
@@ -402,6 +439,42 @@ impl CounterCells {
             learnt_clauses: self.learnt_clauses.replace(0),
             deleted_clauses: self.deleted_clauses.replace(0),
         }
+    }
+}
+
+/// Thread-local gauges that reflect the solver's current structural state.
+struct GaugeCells {
+    /// Number of live irredundant long clauses for the current solver input.
+    live_irredundant_clauses: Cell<u64>,
+    /// Number of watcher entries currently present across all watch lists.
+    watcher_entries: Cell<u64>,
+}
+
+impl GaugeCells {
+    /// Creates one zeroed gauge bundle.
+    const fn new() -> Self {
+        Self {
+            live_irredundant_clauses: Cell::new(0),
+            watcher_entries: Cell::new(0),
+        }
+    }
+
+    /// Increments one gauge by `amount`.
+    fn bump(&self, gauge: &Cell<u64>, amount: u64) {
+        gauge.set(gauge.get() + amount);
+    }
+
+    /// Decrements one gauge by `amount`.
+    fn subtract(&self, gauge: &Cell<u64>, amount: u64) {
+        let current = gauge.get();
+        debug_assert!(current >= amount, "telemetry gauge underflow");
+        gauge.set(current.saturating_sub(amount));
+    }
+
+    /// Resets all gauges to zero.
+    fn reset(&self) {
+        self.live_irredundant_clauses.set(0);
+        self.watcher_entries.set(0);
     }
 }
 
@@ -426,7 +499,7 @@ impl LocalSession {
     }
 
     /// Writes one sample unless a previous write error already occurred.
-    fn write_sample(&mut self, sample: &SolverTelemetrySample) {
+    fn write_sample(&mut self, sample: &Sample) {
         if self.write_error.is_some() {
             return;
         }
@@ -437,7 +510,7 @@ impl LocalSession {
     }
 
     /// Serializes and flushes one sample line.
-    fn try_write_sample(&mut self, sample: &SolverTelemetrySample) -> io::Result<()> {
+    fn try_write_sample(&mut self, sample: &Sample) -> io::Result<()> {
         serde_json::to_writer(&mut self.writer, sample).map_err(io::Error::other)?;
         writeln!(self.writer)?;
         self.writer.flush()
@@ -446,18 +519,15 @@ impl LocalSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        SolverTelemetryCounters, SolverTelemetryGauges, SolverTelemetrySample,
-        SolverTelemetrySummary,
-    };
+    use super::{Counters, Gauges, Sample, Summary};
 
     /// Ensures telemetry aggregation combines counter totals and gauge peaks.
     #[test]
     fn summary_aggregates_samples() {
         let samples = [
-            SolverTelemetrySample {
+            Sample {
                 elapsed_secs: 0.5,
-                counters: SolverTelemetryCounters {
+                counters: Counters {
                     conflicts: 2,
                     propagations: 10,
                     decisions: 1,
@@ -466,7 +536,7 @@ mod tests {
                     learnt_clauses: 2,
                     deleted_clauses: 0,
                 },
-                gauges: SolverTelemetryGauges {
+                gauges: Gauges {
                     decision_level: 3,
                     assigned_vars: 8,
                     trail_len: 8,
@@ -478,9 +548,9 @@ mod tests {
                     wasted_clause_words: 0,
                 },
             },
-            SolverTelemetrySample {
+            Sample {
                 elapsed_secs: 1.0,
-                counters: SolverTelemetryCounters {
+                counters: Counters {
                     conflicts: 5,
                     propagations: 12,
                     decisions: 3,
@@ -489,7 +559,7 @@ mod tests {
                     learnt_clauses: 4,
                     deleted_clauses: 2,
                 },
-                gauges: SolverTelemetryGauges {
+                gauges: Gauges {
                     decision_level: 5,
                     assigned_vars: 11,
                     trail_len: 11,
@@ -503,7 +573,7 @@ mod tests {
             },
         ];
 
-        let summary = SolverTelemetrySummary::from_samples(&samples).expect("summary");
+        let summary = Summary::from_samples(&samples).expect("summary");
         assert_eq!(summary.sample_count, 2);
         assert_eq!(summary.total_conflicts, 7);
         assert_eq!(summary.total_propagations, 22);
