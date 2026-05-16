@@ -77,15 +77,6 @@ pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let elapsed = format_compact_duration(outcome.elapsed);
     let path = truncate_display_path(outcome.case.comparison_key());
 
-    // let mut suffixes = Vec::new();
-    // if let Some(detail) = outcome.detail.as_deref() {
-    //     suffixes.push(detail.to_owned());
-    // }
-    // if let Some(telemetry) = outcome.telemetry.as_ref() {
-    //     suffixes.push(format_telemetry_summary(&telemetry.summary));
-    // }
-    // let suffix = if suffixes.is_empty() {
-
     let detail = if let Some(detail) = outcome.detail.as_deref() {
         format!(" :: {}", detail)
     } else {
