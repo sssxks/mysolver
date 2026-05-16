@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -19,8 +20,6 @@ pub const DEFAULT_SAMPLE_PERIOD: Duration = Duration::from_secs(1);
 
 /// Periodic sampling request shared between the timer thread and the solver thread.
 static SAMPLE_TICK: AtomicBool = AtomicBool::new(false);
-/// Cooperative stop flag used to shut down the timer thread.
-static SAMPLE_STOP: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     /// Thread-local counter storage for the solver hot path.
@@ -187,6 +186,8 @@ impl Summary {
 /// A guard that owns one telemetry JSONL writer and its timer thread.
 #[derive(Debug)]
 pub struct TelemetryRecorder {
+    /// Cooperative stop signal used to interrupt the timer thread immediately.
+    stop_sender: Option<Sender<()>>,
     /// Background timer thread that requests periodic flushes.
     timer_thread: Option<JoinHandle<()>>,
 }
@@ -200,20 +201,22 @@ impl TelemetryRecorder {
     /// Starts writing JSONL telemetry samples to `path` using a custom period.
     pub fn with_period(path: &Path, period: Duration) -> io::Result<Self> {
         install_session(path)?;
-        SAMPLE_STOP.store(false, Ordering::Relaxed);
         SAMPLE_TICK.store(false, Ordering::Relaxed);
+        let (stop_sender, stop_receiver) = mpsc::channel();
 
         let timer_thread = thread::spawn(move || {
-            while !SAMPLE_STOP.load(Ordering::Relaxed) {
-                thread::sleep(period);
-                if SAMPLE_STOP.load(Ordering::Relaxed) {
-                    break;
+            loop {
+                match stop_receiver.recv_timeout(period) {
+                    Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => {
+                        SAMPLE_TICK.store(true, Ordering::Relaxed);
+                    }
                 }
-                SAMPLE_TICK.store(true, Ordering::Relaxed);
             }
         });
 
         Ok(Self {
+            stop_sender: Some(stop_sender),
             timer_thread: Some(timer_thread),
         })
     }
@@ -227,8 +230,10 @@ impl TelemetryRecorder {
 
     /// Stops the timer thread without emitting any additional sample.
     fn shutdown(&mut self) {
-        SAMPLE_STOP.store(true, Ordering::Relaxed);
         SAMPLE_TICK.store(false, Ordering::Relaxed);
+        if let Some(sender) = self.stop_sender.take() {
+            let _ = sender.send(());
+        }
         if let Some(handle) = self.timer_thread.take() {
             let _ = handle.join();
         }
@@ -517,7 +522,10 @@ impl LocalSession {
 
 #[cfg(test)]
 mod tests {
-    use super::{Counters, Gauges, Sample, Summary};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    use super::{Counters, Gauges, Sample, Summary, TelemetryRecorder};
 
     /// Ensures telemetry aggregation combines counter totals and gauge peaks.
     #[test]
@@ -583,5 +591,33 @@ mod tests {
         assert_eq!(summary.peak_decision_level, 5);
         assert_eq!(summary.peak_assigned_vars, 11);
         assert_eq!(summary.final_live_learnt_clauses, 4);
+    }
+
+    /// Ensures finalizing telemetry does not block until the next sample period.
+    #[test]
+    fn finish_interrupts_timer_thread_promptly() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "sat-telemetry-finish-interrupts-{}-{unique}.jsonl",
+            std::process::id()
+        ));
+        let recorder =
+            TelemetryRecorder::with_period(&path, Duration::from_millis(300)).expect("recorder");
+
+        // Give the timer thread time to enter its blocking wait state.
+        thread::sleep(Duration::from_millis(50));
+
+        let started = Instant::now();
+        recorder.finish(Gauges::default()).expect("finish");
+        let elapsed = started.elapsed();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "telemetry finalization took {elapsed:?}",
+        );
     }
 }
