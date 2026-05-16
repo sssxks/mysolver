@@ -26,3 +26,7 @@ bench argument="hard" *extra:\
 # Compares harness results before and after the current local changes.
 compare argument="hard" *extra:
     @./scripts/bench_compare_stash.py --preset {{ argument }} {{ extra }}
+
+# Run this recipe via `perf record` or `samply record`
+perf:
+    @cargo run -p sat-harness --profile perf -q -- run "test/fixture/sat/cases/satlib/engine_unsat_1.0" --all

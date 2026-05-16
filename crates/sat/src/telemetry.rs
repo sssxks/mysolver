@@ -313,10 +313,9 @@ pub(crate) fn maybe_emit_sample<F: FnOnce() -> Gauges>(gauges: F) {
         .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
-        return;
+        emit_sample(gauges());
     }
 
-    emit_sample(gauges());
 }
 
 /// Installs the per-thread session writer and resets all thread-local counters.
