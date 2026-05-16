@@ -79,6 +79,8 @@ impl Solver {
             self.seen[v.index()] = false;
         }
 
+        self.minimize_learnt_clause(learnt);
+
         let mut backtrack_level = 0usize;
         if learnt.len() > 1 {
             let mut max_i = 1;
@@ -92,6 +94,101 @@ impl Solver {
         }
 
         backtrack_level
+    }
+
+    /// Removes learned literals whose reasons are already implied by the rest.
+    fn minimize_learnt_clause(&mut self, learnt: &mut Vec<Lit>) {
+        if learnt.len() <= 2 {
+            return;
+        }
+
+        self.analyze_stack.clear();
+        for &lit in learnt.iter() {
+            let v = lit.var();
+            let vi = v.index();
+            if self.seen[vi] {
+                continue;
+            }
+            self.seen[vi] = true;
+            self.analyze_stack.push(v);
+        }
+
+        let mut out = 1usize;
+        for i in 1..learnt.len() {
+            let lit = learnt[i];
+            if !self.literal_is_redundant(lit.var()) {
+                learnt[out] = lit;
+                out += 1;
+            }
+        }
+
+        for v in self.analyze_stack.drain(..) {
+            self.seen[v.index()] = false;
+        }
+        for v in self.minimize_touched.drain(..) {
+            self.minimize_cache[v.index()] = 0;
+        }
+
+        learnt.truncate(out);
+    }
+
+    /// Returns whether one learned literal can be dropped without changing entailment.
+    fn literal_is_redundant(&mut self, var: Var) -> bool {
+        let vi = var.index();
+        match self.minimize_cache[vi] {
+            1 => return true,
+            2 => return false,
+            3 => return true,
+            _ => {}
+        }
+
+        let ok = match self.reason[vi] {
+            Reason::None => false,
+            Reason::Binary(a, b) => {
+                self.set_minimize_cache(var, 3);
+                self.reason_literal_is_redundant(var, a) && self.reason_literal_is_redundant(var, b)
+            }
+            Reason::Clause(cid) => {
+                self.set_minimize_cache(var, 3);
+                let len = self.clauses.header(cid).len();
+                let mut ok = true;
+                for i in 0..len {
+                    let q = self.clauses.clause(cid).lit(i);
+                    if !self.reason_literal_is_redundant(var, q) {
+                        ok = false;
+                        break;
+                    }
+                }
+                ok
+            }
+        };
+
+        self.set_minimize_cache(var, if ok { 1 } else { 2 });
+        ok
+    }
+
+    /// Tracks one redundancy memoization state for later cleanup.
+    fn set_minimize_cache(&mut self, var: Var, state: u8) {
+        let vi = var.index();
+        if self.minimize_cache[vi] == 0 {
+            self.minimize_touched.push(var);
+        }
+        self.minimize_cache[vi] = state;
+    }
+
+    /// Returns whether one antecedent literal is already covered by the learned clause.
+    fn reason_literal_is_redundant(&mut self, current: Var, lit: Lit) -> bool {
+        let antecedent = lit.var();
+        if antecedent == current {
+            return true;
+        }
+
+        let antecedent_index = antecedent.index();
+        if self.level[antecedent_index] == 0 || self.seen[antecedent_index] {
+            return true;
+        }
+
+        self.literal_is_redundant(antecedent)
     }
 
     /// Converts a propagated conflict into a clause-like analysis source.

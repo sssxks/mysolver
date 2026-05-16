@@ -98,6 +98,10 @@ pub struct Solver {
     seen: Vec<bool>,
     /// Variables marked during conflict analysis for later cleanup.
     analyze_stack: Vec<Var>,
+    /// Memoized redundancy states used while minimizing learned clauses.
+    minimize_cache: Vec<u8>,
+    /// Variables whose redundancy cache entries must be cleared after one analysis.
+    minimize_touched: Vec<Var>,
     /// Number of conflicts seen during the current search.
     conflicts: usize,
 }
@@ -133,6 +137,8 @@ impl Solver {
             clause_decay: 0.999,
             seen: Vec::new(),
             analyze_stack: Vec::new(),
+            minimize_cache: Vec::new(),
+            minimize_touched: Vec::new(),
             conflicts: 0,
         }
     }
@@ -158,6 +164,7 @@ impl Solver {
         self.watches.push(Vec::new());
         self.var_activity.push(0.0);
         self.seen.push(false);
+        self.minimize_cache.push(0);
         self.order.new_var();
         self.order.insert(v, &self.var_activity);
         v
