@@ -35,7 +35,7 @@ impl Solver {
                 true
             }
             _ => {
-                self.attach_long(&ps, false);
+                self.attach_irredundant_long(&ps);
                 true
             }
         }
@@ -83,13 +83,12 @@ impl Solver {
         telemetry::record_added_watchers(2);
     }
 
-    /// Stores and watches a long clause, optionally marking it as learned.
-    pub(crate) fn attach_long(&mut self, lits: &[Lit], learnt: bool) -> ClauseId {
+    /// Stores and watches one irredundant long clause.
+    pub(crate) fn attach_irredundant_long(&mut self, lits: &[Lit]) -> ClauseId {
         debug_assert!(lits.len() >= 3);
         let w0 = lits[0];
         let w1 = lits[1];
-        let activity = if learnt { self.clause_inc } else { 0.0 };
-        let cid = self.clauses.alloc(lits, learnt, activity);
+        let cid = self.clauses.alloc(lits, false, 0.0, 0);
         self.watches[w0.index()].push(Watcher::Long {
             clause: cid,
             blocker: w1,
@@ -99,9 +98,26 @@ impl Solver {
             blocker: w0,
         });
         telemetry::record_added_watchers(2);
-        if learnt {
-            self.learnts.push(cid);
-        }
+        cid
+    }
+
+    /// Stores and watches one learned long clause together with its initial LBD.
+    pub(crate) fn attach_learnt_long(&mut self, lits: &[Lit], lbd: u32) -> ClauseId {
+        debug_assert!(lits.len() >= 3);
+        debug_assert!(lbd > 0);
+        let w0 = lits[0];
+        let w1 = lits[1];
+        let cid = self.clauses.alloc(lits, true, self.clause_inc, lbd);
+        self.watches[w0.index()].push(Watcher::Long {
+            clause: cid,
+            blocker: w1,
+        });
+        self.watches[w1.index()].push(Watcher::Long {
+            clause: cid,
+            blocker: w0,
+        });
+        telemetry::record_added_watchers(2);
+        self.learnts.push(cid);
         cid
     }
 
@@ -110,8 +126,9 @@ impl Solver {
     /// The caller must provide `lits` in asserting order as produced by
     /// [`Self::analyze`]: `lits[0]` is the asserting literal and, when `lits.len() > 1`,
     /// `lits[1]` is the literal with the highest remaining decision level.
-    pub(crate) fn add_learnt_clause(&mut self, lits: &[Lit]) {
+    pub(crate) fn add_learnt_clause(&mut self, lits: &[Lit], lbd: u32) {
         debug_assert!(!lits.is_empty());
+        debug_assert!(lbd > 0);
         telemetry::record_learnt_clause();
 
         match lits.len() {
@@ -123,7 +140,7 @@ impl Solver {
                 let _ = self.enqueue(lits[0], Reason::Binary(lits[0], lits[1]));
             }
             _ => {
-                let cid = self.attach_long(lits, true);
+                let cid = self.attach_learnt_long(lits, lbd);
                 let _ = self.enqueue(lits[0], Reason::Clause(cid));
             }
         }

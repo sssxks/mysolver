@@ -44,8 +44,8 @@ impl ClauseId {
 /// Conceptually, this is
 /// ```text
 /// enum ClauseSlot {
-///     Live { generation: u30, offset, len, activity },
-///     LiveLearnt { generation: u30, offset, len, activity },
+///     Live { generation: u30, offset, len, activity, lbd: 0 },
+///     LiveLearnt { generation: u30, offset, len, activity, lbd: NonZeroU32 },
 ///     Free { generation: u30, next_free_slot: Option<NoMaxU32> },
 ///     Retired { generation: u30 }
 /// }
@@ -60,6 +60,11 @@ pub(crate) struct ClauseHeader {
     offset_or_next: u32,
     /// Clause activity used by learned-clause reduction.
     activity: f32,
+    /// Literal block distance used to rank learned clauses.
+    ///
+    /// Irredundant clauses always store `0` here because they are never reduced by
+    /// learned-clause heuristics.
+    lbd: u32,
 }
 
 impl ClauseHeader {
@@ -88,7 +93,14 @@ impl ClauseHeader {
         len: u32,
         learnt: bool,
         activity: f32,
+        lbd: u32,
     ) -> Self {
+        let stored_lbd = if learnt {
+            assert!(lbd > 0, "learned clauses must store a positive LBD");
+            lbd
+        } else {
+            0
+        };
         Self {
             len,
             generation_state: Self::pack_generation_state(
@@ -101,6 +113,7 @@ impl ClauseHeader {
             ),
             offset_or_next: offset,
             activity,
+            lbd: stored_lbd,
         }
     }
 
@@ -111,6 +124,7 @@ impl ClauseHeader {
             generation_state: Self::pack_generation_state(generation, Self::FREE_STATE),
             offset_or_next: next_free_slot.unwrap_or(Self::FREE_LIST_END),
             activity: 0.0,
+            lbd: 0,
         }
     }
 
@@ -121,6 +135,7 @@ impl ClauseHeader {
             generation_state: Self::pack_generation_state(generation, Self::RETIRED_STATE),
             offset_or_next: 0,
             activity: 0.0,
+            lbd: 0,
         }
     }
 
@@ -191,6 +206,20 @@ impl ClauseHeader {
     pub(crate) fn set_activity(&mut self, activity: f32) {
         debug_assert!(self.is_live());
         self.activity = activity;
+    }
+
+    /// Returns the stored literal block distance.
+    pub(crate) fn lbd(self) -> u32 {
+        debug_assert!(self.is_live());
+        self.lbd
+    }
+
+    /// Overwrites the stored literal block distance of one learned clause.
+    pub(crate) fn set_lbd(&mut self, lbd: u32) {
+        debug_assert!(self.is_live());
+        debug_assert!(self.is_learnt());
+        debug_assert!(lbd > 0);
+        self.lbd = lbd;
     }
 
     /// Returns the next free slot in the intrusive free list.
@@ -274,7 +303,13 @@ impl ClauseArena {
     }
 
     /// Allocates one clause slot and appends its literal payload.
-    pub(crate) fn alloc(&mut self, lits: &[Lit], learnt: bool, activity: f32) -> ClauseId {
+    pub(crate) fn alloc(
+        &mut self,
+        lits: &[Lit],
+        learnt: bool,
+        activity: f32,
+        lbd: u32,
+    ) -> ClauseId {
         assert!(
             self.headers.len() < ClauseHeader::FREE_LIST_END as usize,
             "clause arena exhausted u32 ids",
@@ -289,14 +324,14 @@ impl ClauseArena {
             self.free_head = next_free;
             let generation = header.generation();
             self.headers[free_slot as usize] =
-                ClauseHeader::new_live(generation, offset, len, learnt, activity);
+                ClauseHeader::new_live(generation, offset, len, learnt, activity, lbd);
             ClauseId::new(free_slot, generation)
         } else {
             let slot = u32::try_from(self.headers.len()).expect("clause arena exhausted u32 ids");
             let generation = 0;
             let cid = ClauseId::new(slot, generation);
             self.headers.push(ClauseHeader::new_live(
-                generation, offset, len, learnt, activity,
+                generation, offset, len, learnt, activity, lbd,
             ));
             cid
         };
@@ -510,11 +545,11 @@ mod tests {
     #[test]
     fn delete_reuses_header_slot_and_bumps_generation() {
         let mut arena = ClauseArena::new();
-        let a = arena.alloc(&[lit(0), lit(1), lit(2)], false, 0.0);
-        let b = arena.alloc(&[lit(3), lit(4), lit(5)], true, 7.0);
+        let a = arena.alloc(&[lit(0), lit(1), lit(2)], false, 0.0, 0);
+        let b = arena.alloc(&[lit(3), lit(4), lit(5)], true, 7.0, 5);
 
         arena.delete(a);
-        let c = arena.alloc(&[lit(6), lit(7), lit(8)], true, 9.0);
+        let c = arena.alloc(&[lit(6), lit(7), lit(8)], true, 9.0, 2);
 
         assert_eq!(c.slot(), a.slot());
         assert_ne!(c, a);
@@ -524,6 +559,8 @@ mod tests {
         assert_eq!(arena.clause(c).lit(2), lit(8));
         assert_eq!(arena.clause(b).lit(1), lit(4));
         assert!(arena.header(c).is_learnt());
+        assert_eq!(arena.header(c).lbd(), 2);
+        assert_eq!(arena.header(b).lbd(), 5);
     }
 
     #[test]
@@ -537,9 +574,9 @@ mod tests {
         let b_lits = make_clause(1_000);
         let c_lits = make_clause(2_000);
 
-        let a = arena.alloc(&a_lits, false, 0.0);
-        let b = arena.alloc(&b_lits, false, 0.0);
-        let c = arena.alloc(&c_lits, true, 3.0);
+        let a = arena.alloc(&a_lits, false, 0.0, 0);
+        let b = arena.alloc(&b_lits, false, 0.0, 0);
+        let c = arena.alloc(&c_lits, true, 3.0, 4);
 
         arena.delete(a);
         arena.delete(b);
@@ -552,7 +589,7 @@ mod tests {
             c_lits[c_lits.len() - 1]
         );
 
-        let reused = arena.alloc(&[lit(9_000), lit(9_001), lit(9_002)], false, 0.0);
+        let reused = arena.alloc(&[lit(9_000), lit(9_001), lit(9_002)], false, 0.0, 0);
         assert!(matches!(reused.slot(), 0 | 1));
         assert_eq!(reused.generation(), 1);
     }
@@ -560,10 +597,10 @@ mod tests {
     #[test]
     fn delete_retires_slot_when_generation_overflows() {
         let mut arena = ClauseArena::new();
-        let cid = arena.alloc(&[lit(0), lit(1), lit(2)], false, 0.0);
+        let cid = arena.alloc(&[lit(0), lit(1), lit(2)], false, 0.0, 0);
         let retired = super::ClauseId::new(cid.slot(), super::ClauseHeader::MAX_GENERATION);
         arena.headers[cid.slot_index()] =
-            super::ClauseHeader::new_live(super::ClauseHeader::MAX_GENERATION, 0, 3, false, 0.0);
+            super::ClauseHeader::new_live(super::ClauseHeader::MAX_GENERATION, 0, 3, false, 0.0, 0);
 
         arena.delete(retired);
 

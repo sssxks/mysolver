@@ -4,6 +4,9 @@ use crate::{Lit, Var};
 
 use super::{LBool, Reason, Solver};
 
+/// Learned clauses at or below this LBD stay in the protected core.
+const CORE_LBD_CUTOFF: u32 = 2;
+
 impl Solver {
     /// Starts a new decision level at the current trail position.
     pub(crate) fn new_decision_level(&mut self) {
@@ -113,7 +116,10 @@ impl Solver {
         let mut removable = 0;
         let mut locked_start = learnts.len();
         while removable < locked_start {
-            if locked[self.clauses.live_slot(learnts[removable])] {
+            let cid = learnts[removable];
+            let protected = locked[self.clauses.live_slot(cid)]
+                || self.clauses.header(cid).lbd() <= CORE_LBD_CUTOFF;
+            if protected {
                 locked_start -= 1;
                 learnts.swap(removable, locked_start);
             } else {
@@ -126,10 +132,12 @@ impl Solver {
             // `select_nth_unstable_by` requires a non-empty slice and does not help
             // when there is only one removable clause because `remove` stays zero.
             learnts[..removable].select_nth_unstable_by(remove, |&a, &b| {
-                self.clauses
-                    .header(a)
-                    .activity()
-                    .total_cmp(&self.clauses.header(b).activity())
+                let a_header = self.clauses.header(a);
+                let b_header = self.clauses.header(b);
+                b_header
+                    .lbd()
+                    .cmp(&a_header.lbd())
+                    .then_with(|| a_header.activity().total_cmp(&b_header.activity()))
             });
 
             for &cid in &learnts[..remove] {
@@ -145,6 +153,8 @@ impl Solver {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "telemetry")]
+    use super::CORE_LBD_CUTOFF;
     #[cfg(feature = "telemetry")]
     use super::Reason;
     #[cfg(feature = "telemetry")]
@@ -182,9 +192,9 @@ mod tests {
     fn delete_clause_leaves_stale_watchers_for_lazy_cleanup() {
         let mut solver = Solver::with_vars(5);
         telemetry::initialize_solver_gauges(0, 0);
-        let dead = solver.attach_long(&[lit(0), lit(1), lit(2)], true);
+        let dead = solver.attach_learnt_long(&[lit(0), lit(1), lit(2)], 4);
         solver.delete_clause(dead);
-        let replacement = solver.attach_long(&[lit(0), lit(3), lit(4)], true);
+        let replacement = solver.attach_learnt_long(&[lit(0), lit(3), lit(4)], 3);
 
         assert_eq!(dead.slot(), replacement.slot());
         assert_ne!(dead, replacement);
@@ -200,5 +210,41 @@ mod tests {
         assert_eq!(long_watch_count(&solver, lit(1), dead), 1);
         assert!(solver.clauses.is_live(replacement));
         assert_eq!(telemetry::watcher_entries(), 3);
+    }
+
+    #[cfg(feature = "telemetry")]
+    #[test]
+    fn reduce_db_keeps_low_lbd_core_clauses() {
+        let mut solver = Solver::with_vars(3 * 128);
+        telemetry::initialize_solver_gauges(0, 0);
+
+        let core = solver.attach_learnt_long(&[lit(0), lit(1), lit(2)], CORE_LBD_CUTOFF);
+        {
+            let header = solver.clauses.header_mut(core);
+            header.set_activity(0.01);
+        }
+
+        for clause_idx in 1..128usize {
+            let base = clause_idx * 3;
+            let cid = solver.attach_learnt_long(
+                &[lit(base), lit(base + 1), lit(base + 2)],
+                CORE_LBD_CUTOFF + 4,
+            );
+            solver
+                .clauses
+                .header_mut(cid)
+                .set_activity(100.0 + clause_idx as f32);
+        }
+
+        solver.reduce_db();
+
+        assert!(solver.clauses.is_live(core));
+        assert!(
+            solver
+                .learnts
+                .iter()
+                .all(|&cid| solver.clauses.is_live(cid))
+        );
+        assert!(solver.learnts.len() < 128);
     }
 }

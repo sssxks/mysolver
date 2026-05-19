@@ -47,6 +47,15 @@ pub enum SatResult {
     Unsat,
 }
 
+/// Summary of one first-UIP conflict analysis.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub(crate) struct AnalyzeSummary {
+    /// Decision level to keep when backtracking before asserting the learned clause.
+    backtrack_level: usize,
+    /// Number of distinct decision levels present in the minimized learned clause.
+    lbd: u32,
+}
+
 /// A CDCL SAT solver over CNF formulas.
 #[derive(Debug)]
 pub struct Solver {
@@ -102,6 +111,10 @@ pub struct Solver {
     minimize_cache: Vec<u8>,
     /// Variables whose redundancy cache entries must be cleared after one analysis.
     minimize_touched: Vec<Var>,
+    /// Epoch-stamped decision levels used while counting clause LBD values.
+    lbd_levels: Vec<u32>,
+    /// Current epoch value stored in [`Self::lbd_levels`].
+    lbd_epoch: u32,
     /// Number of conflicts seen during the current search.
     conflicts: usize,
 }
@@ -139,6 +152,8 @@ impl Solver {
             analyze_stack: Vec::new(),
             minimize_cache: Vec::new(),
             minimize_touched: Vec::new(),
+            lbd_levels: Vec::new(),
+            lbd_epoch: 0,
             conflicts: 0,
         }
     }
@@ -250,9 +265,9 @@ impl Solver {
                     return SatResult::Unsat;
                 }
 
-                let backtrack_level = self.analyze(conflict, &mut learnt);
-                self.cancel_until(backtrack_level);
-                self.add_learnt_clause(&learnt);
+                let summary = self.analyze(conflict, &mut learnt);
+                self.cancel_until(summary.backtrack_level);
+                self.add_learnt_clause(&learnt, summary.lbd);
                 self.var_decay_activity();
                 self.clause_decay_activity();
 
