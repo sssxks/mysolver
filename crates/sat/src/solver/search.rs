@@ -4,9 +4,6 @@ use crate::{Lit, Var};
 
 use super::{LBool, Reason, Solver};
 
-/// Learned long clauses up to this length are always kept during reduction.
-const PROTECTED_LEARNT_LEN: usize = 6;
-
 impl Solver {
     /// Starts a new decision level at the current trail position.
     pub(crate) fn new_decision_level(&mut self) {
@@ -116,10 +113,7 @@ impl Solver {
         let mut removable = 0;
         let mut locked_start = learnts.len();
         while removable < locked_start {
-            let cid = learnts[removable];
-            if locked[self.clauses.live_slot(cid)]
-                || self.clauses.header(cid).len() <= PROTECTED_LEARNT_LEN
-            {
+            if locked[self.clauses.live_slot(learnts[removable])] {
                 locked_start -= 1;
                 learnts.swap(removable, locked_start);
             } else {
@@ -132,13 +126,10 @@ impl Solver {
             // `select_nth_unstable_by` requires a non-empty slice and does not help
             // when there is only one removable clause because `remove` stays zero.
             learnts[..removable].select_nth_unstable_by(remove, |&a, &b| {
-                let a_len = self.clauses.header(a).len();
-                let b_len = self.clauses.header(b).len();
                 self.clauses
                     .header(a)
                     .activity()
                     .total_cmp(&self.clauses.header(b).activity())
-                    .then_with(|| b_len.cmp(&a_len))
             });
 
             for &cid in &learnts[..remove] {
