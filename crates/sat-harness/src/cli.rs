@@ -28,7 +28,7 @@ pub(crate) enum HarnessCommand {
     Run(RunArgs),
     /// Compare two previously saved harness result files.
     Compare(CompareArgs),
-    /// Run one benchmark case in an isolated child process.
+    /// For reentrant use, run one benchmark case in an isolated child process.
     #[command(hide = true, name = "__internal-run-case")]
     InternalRunCase(InternalRunCaseArgs),
 }

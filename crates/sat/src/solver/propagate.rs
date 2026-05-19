@@ -1,3 +1,4 @@
+//! Single hotspot of the entire solver: Boolean constraint propagation, accounting for around 90% of the runtime in typical cases. The implementation is based on classical two-literal watching.
 use std::mem;
 
 use crate::Lit;

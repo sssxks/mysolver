@@ -298,5 +298,6 @@ impl Solver {
 
     /// Compiles to a no-op when solver telemetry instrumentation is disabled.
     #[cfg(not(feature = "telemetry"))]
+    #[inline(always)]
     fn maybe_emit_telemetry_sample(&self) {}
 }
