@@ -86,7 +86,7 @@ pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let metrices = if let Some(telemetry) = outcome.telemetry.as_ref() {
         format!(
             "\n{}{}",
-            " ".repeat(4 + width + 1),
+            " ".repeat(4),
             style(format_telemetry_summary(&telemetry.summary)).dim()
         )
     } else {
