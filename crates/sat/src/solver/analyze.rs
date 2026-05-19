@@ -109,9 +109,8 @@ impl Solver {
         }
 
         let lbd = self.clause_lbd(cid);
-        let header = self.clauses.header_mut(cid);
-        if lbd < header.lbd() {
-            header.set_lbd(lbd);
+        if lbd < self.clauses.lbd(cid) {
+            self.clauses.set_lbd(cid, lbd);
         }
     }
 

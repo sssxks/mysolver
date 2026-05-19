@@ -64,15 +64,12 @@ impl Solver {
 
     /// Increases the activity score of a learned clause.
     pub(crate) fn bump_clause_activity(&mut self, cid: ClauseId) {
-        let new_activity = {
-            let header = self.clauses.header_mut(cid);
-            if !header.is_learnt() {
-                return;
-            }
-            let new_activity = header.activity() + self.clause_inc;
-            header.set_activity(new_activity);
-            new_activity
-        };
+        if !self.clauses.header(cid).is_learnt() {
+            return;
+        }
+
+        let new_activity = self.clauses.activity(cid) + self.clause_inc;
+        self.clauses.set_activity(cid, new_activity);
 
         if new_activity > 1e20 {
             self.clauses.scale_activities(1e-20);
@@ -118,7 +115,7 @@ impl Solver {
         while removable < locked_start {
             let cid = learnts[removable];
             let protected = locked[self.clauses.live_slot(cid)]
-                || self.clauses.header(cid).lbd() <= CORE_LBD_CUTOFF;
+                || self.clauses.lbd(cid) <= CORE_LBD_CUTOFF;
             if protected {
                 locked_start -= 1;
                 learnts.swap(removable, locked_start);
@@ -132,12 +129,14 @@ impl Solver {
             // `select_nth_unstable_by` requires a non-empty slice and does not help
             // when there is only one removable clause because `remove` stays zero.
             learnts[..removable].select_nth_unstable_by(remove, |&a, &b| {
-                let a_header = self.clauses.header(a);
-                let b_header = self.clauses.header(b);
-                b_header
-                    .lbd()
-                    .cmp(&a_header.lbd())
-                    .then_with(|| a_header.activity().total_cmp(&b_header.activity()))
+                self.clauses
+                    .lbd(b)
+                    .cmp(&self.clauses.lbd(a))
+                    .then_with(|| {
+                        self.clauses
+                            .activity(a)
+                            .total_cmp(&self.clauses.activity(b))
+                    })
             });
 
             for &cid in &learnts[..remove] {
@@ -219,10 +218,7 @@ mod tests {
         telemetry::initialize_solver_gauges(0, 0);
 
         let core = solver.attach_learnt_long(&[lit(0), lit(1), lit(2)], CORE_LBD_CUTOFF);
-        {
-            let header = solver.clauses.header_mut(core);
-            header.set_activity(0.01);
-        }
+        solver.clauses.set_activity(core, 0.01);
 
         for clause_idx in 1..128usize {
             let base = clause_idx * 3;
@@ -232,8 +228,7 @@ mod tests {
             );
             solver
                 .clauses
-                .header_mut(cid)
-                .set_activity(100.0 + clause_idx as f32);
+                .set_activity(cid, 100.0 + clause_idx as f32);
         }
 
         solver.reduce_db();

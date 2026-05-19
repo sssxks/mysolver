@@ -88,7 +88,7 @@ impl Solver {
         debug_assert!(lits.len() >= 3);
         let w0 = lits[0];
         let w1 = lits[1];
-        let cid = self.clauses.alloc(lits, false, 0.0, 0);
+        let cid = self.clauses.alloc_irredundant(lits);
         self.watches[w0.index()].push(Watcher::Long {
             clause: cid,
             blocker: w1,
@@ -107,7 +107,7 @@ impl Solver {
         debug_assert!(lbd > 0);
         let w0 = lits[0];
         let w1 = lits[1];
-        let cid = self.clauses.alloc(lits, true, self.clause_inc, lbd);
+        let cid = self.clauses.alloc_learnt(lits, self.clause_inc, lbd);
         self.watches[w0.index()].push(Watcher::Long {
             clause: cid,
             blocker: w1,

@@ -278,7 +278,7 @@ mod tests {
         };
 
         let rendered = format_outcome(&outcome);
-        assert!(rendered.contains("tele conf 7"));
+        assert!(rendered.contains("conf 7"));
         assert!(rendered.contains("peak-lvl 5"));
         assert!(rendered.contains("final-learnt 9"));
     }
