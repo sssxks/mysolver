@@ -400,6 +400,7 @@ impl ClauseArena {
     }
 
     /// Returns the live slot index named by `cid`, panicking if the id is stale.
+    #[inline(always)]
     pub(crate) fn live_slot(&self, cid: ClauseId) -> usize {
         self.try_live_slot(cid)
             .unwrap_or_else(|| panic!("stale clause id: {cid:?}"))
