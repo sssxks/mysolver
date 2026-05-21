@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import shutil
 from pathlib import Path
@@ -66,7 +67,9 @@ class VlsatCase:
         return f"https://cadp.inria.fr/ftp/benchmarks/vlsat/{self.file_name}"
 
 
-SATLIB_RANDOM = "https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/RND3SAT/{suite}.tar.gz"
+SATLIB_RANDOM = (
+    "https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/RND3SAT/{suite}.tar.gz"
+)
 SATLIB_VELEV = "https://www.cs.ubc.ca/~hoos/SATLIB/I-Velev03/{suite}.tar.gz"
 
 RANDOM_SUITES = {
@@ -76,10 +79,18 @@ RANDOM_SUITES = {
     "uuf100-430": SuiteDownload("SATLIB RND3SAT", SATLIB_RANDOM, "uuf100-430", "unsat"),
 }
 VELEV_SUITES = {
-    "engine_unsat_1.0": SuiteDownload("SATLIB I-Velev03", SATLIB_VELEV, "engine_unsat_1.0", "unsat"),
-    "vliw_unsat_3.0": SuiteDownload("SATLIB I-Velev03", SATLIB_VELEV, "vliw_unsat_3.0", "unsat"),
-    "pipe_sat_1.0": SuiteDownload("SATLIB I-Velev03", SATLIB_VELEV, "pipe_sat_1.0", "sat"),
-    "pipe_unsat_1.0": SuiteDownload("SATLIB I-Velev03", SATLIB_VELEV, "pipe_unsat_1.0", "unsat"),
+    "engine_unsat_1.0": SuiteDownload(
+        "SATLIB I-Velev03", SATLIB_VELEV, "engine_unsat_1.0", "unsat"
+    ),
+    "vliw_unsat_3.0": SuiteDownload(
+        "SATLIB I-Velev03", SATLIB_VELEV, "vliw_unsat_3.0", "unsat"
+    ),
+    "pipe_sat_1.0": SuiteDownload(
+        "SATLIB I-Velev03", SATLIB_VELEV, "pipe_sat_1.0", "sat"
+    ),
+    "pipe_unsat_1.0": SuiteDownload(
+        "SATLIB I-Velev03", SATLIB_VELEV, "pipe_unsat_1.0", "unsat"
+    ),
 }
 VLSAT_CASES = {
     "vlsat1_9588_392364": VlsatCase("vlsat1_9588_392364", "sat", "CADP VLSAT-1"),
@@ -98,16 +109,30 @@ PROFILES = {
     },
     "full": {
         "random": ("uf20-91", "uuf50-218", "uf100-430", "uuf100-430"),
-        "velev": ("engine_unsat_1.0", "vliw_unsat_3.0", "pipe_sat_1.0", "pipe_unsat_1.0"),
+        "velev": (
+            "engine_unsat_1.0",
+            "vliw_unsat_3.0",
+            "pipe_sat_1.0",
+            "pipe_unsat_1.0",
+        ),
         "vlsat": ("vlsat1_9588_392364", "vlsat1_15498_838393"),
     },
 }
+DEFAULT_DOWNLOAD_JOBS = 4
 
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--quiet", action="store_true", help="Suppress cache hit notices.")
+    parser.add_argument(
+        "--quiet", action="store_true", help="Suppress cache hit notices."
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=DEFAULT_DOWNLOAD_JOBS,
+        help="Maximum number of concurrent download jobs.",
+    )
     parser.add_argument(
         "--profile",
         choices=sorted(PROFILES),
@@ -119,7 +144,10 @@ def parse_arguments() -> argparse.Namespace:
         default="test/fixture/sat",
         help="Destination directory for downloaded benchmarks.",
     )
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    if arguments.jobs < 1:
+        parser.error("--jobs must be at least 1")
+    return arguments
 
 
 def download_file(url: str, output_path: Path, *, quiet: bool) -> None:
@@ -163,24 +191,86 @@ def extract_tarball(archive_path: Path, output_dir: Path, *, quiet: bool) -> Non
         archive.extractall(output_dir, filter="data")
 
 
-def fetch_suite(
-    suite: SuiteDownload,
+@dataclass(frozen=True)
+class DownloadTask:
+    """One file download scheduled for concurrent execution."""
+
+    url: str
+    output_path: Path
+
+
+def collect_download_tasks(
+    profile: str, archives_dir: Path, cases_dir: Path
+) -> list[DownloadTask]:
+    """Collect all files required by one benchmark profile."""
+    selected = PROFILES[profile]
+    tasks: list[DownloadTask] = []
+    tasks.extend(
+        DownloadTask(
+            url=RANDOM_SUITES[suite_name].url,
+            output_path=archives_dir / RANDOM_SUITES[suite_name].archive_name,
+        )
+        for suite_name in selected["random"]
+    )
+    tasks.extend(
+        DownloadTask(
+            url=VELEV_SUITES[suite_name].url,
+            output_path=archives_dir / VELEV_SUITES[suite_name].archive_name,
+        )
+        for suite_name in selected["velev"]
+    )
+    tasks.extend(
+        DownloadTask(
+            url=VLSAT_CASES[case_name].url,
+            output_path=cases_dir / "vlsat" / VLSAT_CASES[case_name].file_name,
+        )
+        for case_name in selected["vlsat"]
+    )
+    return tasks
+
+
+def download_profile(
+    profile: str,
     archives_dir: Path,
     cases_dir: Path,
     *,
+    jobs: int,
     quiet: bool,
 ) -> None:
-    """Download and extract one SATLIB suite."""
-    archive_path = archives_dir / suite.archive_name
-    output_dir = cases_dir / "satlib" / suite.suite
-    download_file(suite.url, archive_path, quiet=quiet)
-    extract_tarball(archive_path, output_dir, quiet=quiet)
+    """Download all missing benchmark files for one profile with bounded concurrency."""
+    tasks = collect_download_tasks(profile, archives_dir, cases_dir)
+    if not tasks:
+        return
+
+    max_workers = min(jobs, len(tasks))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures: list[Future[None]] = [
+            executor.submit(download_file, task.url, task.output_path, quiet=quiet)
+            for task in tasks
+        ]
+        for future in futures:
+            future.result()
 
 
-def fetch_vlsat_case(case: VlsatCase, cases_dir: Path, *, quiet: bool) -> None:
-    """Download one compressed VLSAT case file."""
-    output_path = cases_dir / "vlsat" / case.file_name
-    download_file(case.url, output_path, quiet=quiet)
+def extract_profile(
+    profile: str, archives_dir: Path, cases_dir: Path, *, quiet: bool
+) -> None:
+    """Extract all SATLIB suites needed by one benchmark profile."""
+    selected = PROFILES[profile]
+    for suite_name in selected["random"]:
+        suite = RANDOM_SUITES[suite_name]
+        extract_tarball(
+            archives_dir / suite.archive_name,
+            cases_dir / "satlib" / suite.suite,
+            quiet=quiet,
+        )
+    for suite_name in selected["velev"]:
+        suite = VELEV_SUITES[suite_name]
+        extract_tarball(
+            archives_dir / suite.archive_name,
+            cases_dir / "satlib" / suite.suite,
+            quiet=quiet,
+        )
 
 
 def manifest_lines(profile: str) -> list[str]:
@@ -196,7 +286,9 @@ def manifest_lines(profile: str) -> list[str]:
 def write_manifest(profile: str, manifest_path: Path) -> None:
     """Write the expectations manifest."""
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text("\n".join(manifest_lines(profile)) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        "\n".join(manifest_lines(profile)) + "\n", encoding="utf-8"
+    )
 
 
 def main() -> int:
@@ -207,13 +299,15 @@ def main() -> int:
     cases_dir = destination / "cases"
     manifest_path = destination / "expectations.tsv"
 
-    selected = PROFILES[arguments.profile]
-    for suite_name in selected["random"]:
-        fetch_suite(RANDOM_SUITES[suite_name], archives_dir, cases_dir, quiet=arguments.quiet)
-    for suite_name in selected["velev"]:
-        fetch_suite(VELEV_SUITES[suite_name], archives_dir, cases_dir, quiet=arguments.quiet)
-    for case_name in selected["vlsat"]:
-        fetch_vlsat_case(VLSAT_CASES[case_name], cases_dir, quiet=arguments.quiet)
+    download_profile(
+        arguments.profile,
+        archives_dir,
+        cases_dir,
+        jobs=arguments.jobs,
+        quiet=arguments.quiet,
+    )
+
+    extract_profile(arguments.profile, archives_dir, cases_dir, quiet=arguments.quiet)
 
     write_manifest(arguments.profile, manifest_path)
 
