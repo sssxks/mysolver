@@ -4,7 +4,7 @@ set no-exit-message := true
 
 # Runs the harness with shared flags.
 harness-run *args="":
-    @cargo run -p sat-harness --release -q -- run {{ args }}
+    @cargo run -p my-harness --release -q -- run {{ args }}
 
 # Fetches SAT benchmarks.
 sat-bench-fetch *args="":
