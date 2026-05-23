@@ -74,7 +74,7 @@ pub fn parse_dimacs(input: &str) -> Result<Solver, String> {
                 ));
             }
         }
-        solver.add_clause(&clause);
+        let _ = solver.add_clause(&clause);
     }
     Ok(solver)
 }

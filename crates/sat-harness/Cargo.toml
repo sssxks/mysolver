@@ -1,5 +1,5 @@
 [package]
-name = "sat-harness"
+name = "my-harness"
 version.workspace = true
 edition.workspace = true
 

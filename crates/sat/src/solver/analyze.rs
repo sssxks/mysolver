@@ -1,17 +1,32 @@
 use crate::Lit;
+use crate::Var;
 use crate::clause_db::ClauseId;
 
 use super::propagate::Conflict;
 use super::{AnalyzeSummary, Reason, Solver};
-use crate::Var;
+use crate::AssertionLevel;
 
 /// A clause-like source used during conflict analysis.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum AnalyzeSource {
-    /// Treat a binary clause as an analysis source.
-    Binary(Lit, Lit),
+enum AnalyzeSource<'a> {
+    /// Treat an inline binary clause as an analysis source.
+    Binary {
+        /// The literal that was false when the clause became active.
+        false_lit: Lit,
+        /// The propagated or conflicting counterpart literal.
+        other: Lit,
+        /// User scope in which this binary clause exists.
+        assertion_level: AssertionLevel,
+    },
     /// Treat a long clause as an analysis source.
     Clause(ClauseId),
+    /// Treat one unstored theory explanation clause as an analysis source.
+    TheoryClause {
+        /// The falsified theory clause literals.
+        lits: &'a [Lit],
+        /// User scope carried by the theory explanation.
+        assertion_level: AssertionLevel,
+    },
 }
 
 impl Solver {
@@ -19,29 +34,76 @@ impl Solver {
     ///
     /// The caller-provided `learnt` buffer is cleared and then populated in asserting
     /// order: slot 0 is the asserting literal, and slot 1, when present, is the
-    /// literal with the highest remaining decision level. The returned value is the
-    /// backtrack level induced by that second watched position.
+    /// literal with the highest remaining decision level.
     pub(crate) fn analyze(&mut self, conflict: Conflict, learnt: &mut Vec<Lit>) -> AnalyzeSummary {
+        self.analyze_from_source(self.conflict_source(conflict), learnt)
+    }
+
+    /// Performs first-UIP conflict analysis starting from one theory clause that
+    /// is already falsified under the current assignment.
+    pub(crate) fn analyze_theory_clause(
+        &mut self,
+        lits: &[Lit],
+        assertion_level: AssertionLevel,
+        learnt: &mut Vec<Lit>,
+    ) -> AnalyzeSummary {
+        self.analyze_from_source(
+            AnalyzeSource::TheoryClause {
+                lits,
+                assertion_level,
+            },
+            learnt,
+        )
+    }
+
+    /// Shared first-UIP conflict analysis entry point for propagator and theory sources.
+    fn analyze_from_source(
+        &mut self,
+        mut source: AnalyzeSource<'_>,
+        learnt: &mut Vec<Lit>,
+    ) -> AnalyzeSummary {
         let current_level = self.decision_level();
+        let mut max_assertion_level = AssertionLevel::ROOT;
         learnt.clear();
         learnt.push(Lit::from_raw(0));
 
         let mut path_count = 0usize;
         let mut trail_idx = self.trail.len();
-        let mut source = self.conflict_source(conflict);
         let mut resolved: Option<Var> = None;
 
         loop {
             match source {
-                AnalyzeSource::Binary(a, b) => {
-                    self.analyze_lit(a, resolved, current_level, &mut path_count, learnt);
-                    self.analyze_lit(b, resolved, current_level, &mut path_count, learnt);
+                AnalyzeSource::Binary {
+                    false_lit,
+                    other,
+                    assertion_level,
+                } => {
+                    max_assertion_level = max_assertion_level.max(assertion_level);
+                    self.analyze_lit(
+                        false_lit,
+                        resolved,
+                        current_level,
+                        &mut path_count,
+                        learnt,
+                    );
+                    self.analyze_lit(other, resolved, current_level, &mut path_count, learnt);
                 }
                 AnalyzeSource::Clause(cid) => {
                     self.note_clause_analysis(cid);
+                    max_assertion_level =
+                        max_assertion_level.max(self.clauses.header(cid).assertion_level());
                     let len = self.clauses.header(cid).len();
                     for i in 0..len {
                         let q = self.clauses.clause(cid).lit(i);
+                        self.analyze_lit(q, resolved, current_level, &mut path_count, learnt);
+                    }
+                }
+                AnalyzeSource::TheoryClause {
+                    lits,
+                    assertion_level,
+                } => {
+                    max_assertion_level = max_assertion_level.max(assertion_level);
+                    for &q in lits {
                         self.analyze_lit(q, resolved, current_level, &mut path_count, learnt);
                     }
                 }
@@ -66,7 +128,15 @@ impl Solver {
 
             resolved = Some(pv);
             source = match self.reason[pv.index()] {
-                Reason::Binary(a, b) => AnalyzeSource::Binary(a, b),
+                Reason::Binary {
+                    false_lit,
+                    other,
+                    assertion_level,
+                } => AnalyzeSource::Binary {
+                    false_lit,
+                    other,
+                    assertion_level,
+                },
                 Reason::Clause(cid) => AnalyzeSource::Clause(cid),
                 Reason::None => {
                     learnt[0] = !p;
@@ -86,16 +156,19 @@ impl Solver {
         if learnt.len() > 1 {
             let mut max_i = 1;
             for i in 2..learnt.len() {
-                if self.level[learnt[i].var().index()] > self.level[learnt[max_i].var().index()] {
+                if self.sat_level[learnt[i].var().index()]
+                    > self.sat_level[learnt[max_i].var().index()]
+                {
                     max_i = i;
                 }
             }
             learnt.swap(1, max_i);
-            backtrack_level = self.level[learnt[1].var().index()];
+            backtrack_level = self.sat_level[learnt[1].var().index()];
         }
 
         AnalyzeSummary {
             backtrack_level,
+            assertion_level: max_assertion_level,
             lbd,
         }
     }
@@ -162,9 +235,14 @@ impl Solver {
 
         let ok = match self.reason[vi] {
             Reason::None => false,
-            Reason::Binary(a, b) => {
+            Reason::Binary {
+                false_lit,
+                other,
+                ..
+            } => {
                 self.set_minimize_cache(var, 3);
-                self.reason_literal_is_redundant(var, a) && self.reason_literal_is_redundant(var, b)
+                self.reason_literal_is_redundant(var, false_lit)
+                    && self.reason_literal_is_redundant(var, other)
             }
             Reason::Clause(cid) => {
                 self.set_minimize_cache(var, 3);
@@ -202,7 +280,7 @@ impl Solver {
         }
 
         let antecedent_index = antecedent.index();
-        if self.level[antecedent_index] == 0 || self.seen[antecedent_index] {
+        if self.sat_level[antecedent_index] == 0 || self.seen[antecedent_index] {
             return true;
         }
 
@@ -215,7 +293,7 @@ impl Solver {
         let mut count = 0u32;
 
         for &lit in learnt {
-            self.note_clause_level(epoch, self.level[lit.var().index()], &mut count);
+            self.note_clause_level(epoch, self.sat_level[lit.var().index()], &mut count);
         }
 
         count.max(1)
@@ -229,7 +307,7 @@ impl Solver {
 
         for i in 0..len {
             let lit = self.clauses.clause(cid).lit(i);
-            self.note_clause_level(epoch, self.level[lit.var().index()], &mut count);
+            self.note_clause_level(epoch, self.sat_level[lit.var().index()], &mut count);
         }
 
         count.max(1)
@@ -258,9 +336,17 @@ impl Solver {
     }
 
     /// Converts a propagated conflict into a clause-like analysis source.
-    fn conflict_source(&self, conflict: Conflict) -> AnalyzeSource {
+    fn conflict_source(&self, conflict: Conflict) -> AnalyzeSource<'static> {
         match conflict {
-            Conflict::Binary(a, b) => AnalyzeSource::Binary(a, b),
+            Conflict::Binary {
+                false_lit,
+                other,
+                assertion_level,
+            } => AnalyzeSource::Binary {
+                false_lit,
+                other,
+                assertion_level,
+            },
             Conflict::Clause(cid) => AnalyzeSource::Clause(cid),
         }
     }
@@ -279,11 +365,11 @@ impl Solver {
             return;
         }
         let vi = v.index();
-        if !self.seen[vi] && self.level[vi] > 0 {
+        if !self.seen[vi] && self.sat_level[vi] > 0 {
             self.seen[vi] = true;
             self.analyze_stack.push(v);
             self.bump_var_activity(v);
-            if self.level[vi] == current_level {
+            if self.sat_level[vi] == current_level {
                 *path_count += 1;
             } else {
                 learnt.push(q);
@@ -295,7 +381,7 @@ impl Solver {
 #[cfg(test)]
 mod tests {
     use super::Solver;
-    use crate::{Lit, Var};
+    use crate::{AddClauseResult, Lit, Var};
 
     fn lit(index: usize) -> Lit {
         Lit::new(Var::from_index(index), false)
@@ -309,11 +395,14 @@ mod tests {
     fn analyze_reports_distinct_decision_levels_as_lbd() {
         let mut solver = Solver::with_vars(7);
 
-        assert!(solver.add_clause(&[nlit(0), lit(1)]));
-        assert!(solver.add_clause(&[nlit(2), lit(3)]));
-        assert!(solver.add_clause(&[nlit(4), lit(5)]));
-        assert!(solver.add_clause(&[nlit(4), lit(6)]));
-        assert!(solver.add_clause(&[nlit(1), nlit(3), nlit(5), nlit(6)]));
+        assert_eq!(solver.add_clause(&[nlit(0), lit(1)]), AddClauseResult::Added);
+        assert_eq!(solver.add_clause(&[nlit(2), lit(3)]), AddClauseResult::Added);
+        assert_eq!(solver.add_clause(&[nlit(4), lit(5)]), AddClauseResult::Added);
+        assert_eq!(solver.add_clause(&[nlit(4), lit(6)]), AddClauseResult::Added);
+        assert_eq!(
+            solver.add_clause(&[nlit(1), nlit(3), nlit(5), nlit(6)]),
+            AddClauseResult::Added
+        );
 
         solver.new_decision_level();
         assert!(solver.enqueue(lit(0), super::Reason::None));

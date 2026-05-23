@@ -1,5 +1,30 @@
 use std::ops::Not;
 
+/// User-level assertion depth created by SMT-LIB `push` and `pop`.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
+pub struct AssertionLevel(u32);
+
+impl AssertionLevel {
+    /// The root assertion level.
+    pub const ROOT: Self = Self(0);
+
+    /// Returns the zero-based depth index.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    /// Creates an assertion level from one zero-based depth.
+    pub(crate) fn from_index(index: usize) -> Self {
+        debug_assert!(u32::try_from(index).is_ok());
+        Self(index as u32)
+    }
+
+    /// Returns the next deeper assertion level.
+    pub fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
 /// A zero-based propositional variable identifier.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct Var(u32);

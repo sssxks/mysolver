@@ -20,8 +20,8 @@ use crate::cli::{OutputMode, RunArgs};
 use crate::discover::discover_cases;
 use crate::jobs::default_jobs;
 use crate::model::{
-    CaseOutcome, CaseTelemetry, ChildReport, ChildReportKind, DiscoveredCase, ExpectedResult,
-    OutcomeCategory, OutcomeStats, RunSummary,
+    CaseOutcome, CaseTelemetry, ChildReport, ChildReportKind, DiscoveredCase, OutcomeCategory,
+    OutcomeStats, QueryAnswer, QueryOutcome, RunSummary,
 };
 use crate::render::{
     PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_outcome, print_summary,
@@ -41,7 +41,7 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
     } = args;
 
     let requested_roots = if roots.is_empty() {
-        vec![PathBuf::from("test/fixture/sat")]
+        vec![PathBuf::from(".")]
     } else {
         roots
     };
@@ -288,8 +288,9 @@ fn run_case_subprocess(
     if timed_out {
         return CaseOutcome {
             case: case.into_record(),
-            elapsed,
+            total_elapsed: elapsed,
             category: OutcomeCategory::Timeout,
+            queries: Vec::new(),
             detail: None,
             telemetry: load_case_telemetry(
                 telemetry_file.as_ref().map(NamedTempFile::path),
@@ -362,8 +363,9 @@ fn classify_child_completion(
     if stderr.contains("panicked at") {
         return CaseOutcome {
             case: case.into_record(),
-            elapsed,
+            total_elapsed: elapsed,
             category: OutcomeCategory::Panic,
+            queries: Vec::new(),
             detail: Some(trim_detail(stderr).into()),
             telemetry,
         };
@@ -377,8 +379,9 @@ fn classify_child_completion(
         };
         return CaseOutcome {
             case: case.into_record(),
-            elapsed,
+            total_elapsed: elapsed,
             category: OutcomeCategory::Killed,
+            queries: Vec::new(),
             detail: Some(detail.into()),
             telemetry,
         };
@@ -410,53 +413,123 @@ fn classify_report(
     telemetry: Option<CaseTelemetry>,
 ) -> CaseOutcome {
     match report.kind {
-        ChildReportKind::Sat | ChildReportKind::Unsat => {
-            let actual = match report.kind {
-                ChildReportKind::Sat => ExpectedResult::Sat,
-                ChildReportKind::Unsat => ExpectedResult::Unsat,
-                ChildReportKind::ParseError(_) | ChildReportKind::InputError(_) => unreachable!(),
-            };
-            let record = case.record();
-            match record.expected {
-                Some(expected) if expected == actual => CaseOutcome {
-                    case: case.into_record(),
-                    elapsed,
-                    category: OutcomeCategory::Pass,
-                    detail: None,
-                    telemetry,
-                },
-                Some(expected) => CaseOutcome {
-                    detail: Some(
-                        format!(
-                            "expected {} from {}, got {}",
-                            expected.as_str(),
-                            record.source.as_deref().unwrap_or("manifest"),
-                            actual.as_str()
-                        )
-                        .into(),
-                    ),
-                    case: case.into_record(),
-                    elapsed,
-                    category: OutcomeCategory::WrongAnswer,
-                    telemetry,
-                },
-                None => CaseOutcome {
-                    case: case.into_record(),
-                    elapsed,
-                    category: OutcomeCategory::NoOracle,
-                    detail: None,
-                    telemetry,
-                },
-            }
-        }
+        ChildReportKind::Completed(run) => classify_completed_run(case, elapsed, run, telemetry),
         ChildReportKind::ParseError(error) => CaseOutcome {
             case: case.into_record(),
-            elapsed,
+            total_elapsed: elapsed,
             category: OutcomeCategory::ParseError,
+            queries: Vec::new(),
             detail: Some(trim_detail(&error).into()),
             telemetry,
         },
-        ChildReportKind::InputError(error) => harness_error(case, elapsed, error),
+        ChildReportKind::InputError(error) | ChildReportKind::ProtocolError(error) => {
+            harness_error(case, elapsed, error)
+        }
+    }
+}
+
+/// Maps one completed child query sequence into the final parent outcome categories.
+fn classify_completed_run(
+    case: DiscoveredCase,
+    elapsed: Duration,
+    run: crate::model::CompletedQueryRun,
+    telemetry: Option<CaseTelemetry>,
+) -> CaseOutcome {
+    let mut queries = Vec::new();
+    let mut wrong = false;
+    let mut no_oracle = false;
+    let mut first_wrong = None;
+
+    for (query_index, actual) in run.actual_answers.iter().copied().enumerate() {
+        let expected = case
+            .expected_queries()
+            .get(query_index)
+            .map(|query| query.expected)
+            .unwrap_or(QueryAnswer::Unknown);
+        let category = match expected {
+            QueryAnswer::Unknown => {
+                no_oracle = true;
+                OutcomeCategory::NoOracle
+            }
+            _ if expected == actual => OutcomeCategory::Pass,
+            _ => {
+                wrong = true;
+                first_wrong.get_or_insert((query_index, expected, actual));
+                OutcomeCategory::WrongAnswer
+            }
+        };
+        queries.push(QueryOutcome {
+            query_index,
+            expected,
+            actual,
+            elapsed,
+            category,
+        });
+    }
+
+    let missing = case.expected_queries().len().saturating_sub(queries.len());
+    if missing > 0 {
+        wrong = true;
+        for query in case.expected_queries().iter().skip(queries.len()) {
+            let category = if query.expected == QueryAnswer::Unknown {
+                no_oracle = true;
+                OutcomeCategory::NoOracle
+            } else {
+                first_wrong.get_or_insert((
+                    query.query_index,
+                    query.expected,
+                    QueryAnswer::Unknown,
+                ));
+                OutcomeCategory::WrongAnswer
+            };
+            queries.push(QueryOutcome {
+                query_index: query.query_index,
+                expected: query.expected,
+                actual: QueryAnswer::Unknown,
+                elapsed,
+                category,
+            });
+        }
+    }
+
+    let category = if wrong {
+        OutcomeCategory::WrongAnswer
+    } else if queries.is_empty() || no_oracle {
+        OutcomeCategory::NoOracle
+    } else {
+        OutcomeCategory::Pass
+    };
+
+    let detail = if let Some((query_index, expected, actual)) = first_wrong {
+        Some(
+            format!(
+                "query {} expected {:?}, got {:?}",
+                query_index + 1,
+                expected,
+                actual
+            )
+            .into_boxed_str(),
+        )
+    } else if missing > 0 {
+        Some(
+            format!(
+                "expected {} queries, got {}",
+                case.expected_queries().len(),
+                run.actual_answers.len()
+            )
+            .into_boxed_str(),
+        )
+    } else {
+        None
+    };
+
+    CaseOutcome {
+        case: case.into_record(),
+        total_elapsed: elapsed,
+        category,
+        queries,
+        detail,
+        telemetry,
     }
 }
 
@@ -464,8 +537,9 @@ fn classify_report(
 fn harness_error(case: DiscoveredCase, elapsed: Duration, detail: String) -> CaseOutcome {
     CaseOutcome {
         case: case.into_record(),
-        elapsed,
+        total_elapsed: elapsed,
         category: OutcomeCategory::HarnessError,
+        queries: Vec::new(),
         detail: Some(detail.into()),
         telemetry: None,
     }
@@ -539,10 +613,11 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use super::{should_print_outcome, write_summary_file};
+    use super::{classify_completed_run, should_print_outcome, write_summary_file};
     use crate::cli::OutputMode;
     use crate::model::{
-        CaseOutcome, CaseRecord, ExpectedResult, OutcomeCategory, OutcomeStats, RunSummary,
+        CaseOutcome, CaseRecord, CompletedQueryRun, DiscoveredCase, ExpectedQueryResult,
+        OutcomeCategory, OutcomeStats, QueryAnswer, RunSummary,
     };
 
     /// Ensures the default live stream remains failure-only.
@@ -596,11 +671,12 @@ mod tests {
                 case: CaseRecord {
                     key: "cases/example.cnf".into(),
                     bytes: 12,
-                    expected: Some(ExpectedResult::Sat),
-                    source: Some("fixture".into()),
+                    logic: Some("QF_UF".into()),
+                    query_count: Some(1),
                 },
-                elapsed: Duration::from_millis(5),
+                total_elapsed: Duration::from_millis(5),
                 category: OutcomeCategory::Pass,
+                queries: Vec::new(),
                 detail: None,
                 telemetry: None,
             }],
@@ -621,5 +697,37 @@ mod tests {
             round_trip.cases[0].case.comparison_key(),
             "cases/example.cnf"
         );
+    }
+
+    /// Ensures unknown oracle entries classify as `NoOracle` instead of wrong answer.
+    #[test]
+    fn classify_completed_run_marks_unknown_expectations_as_no_oracle() {
+        let case = DiscoveredCase::new(
+            PathBuf::from("/tmp/case.smt2"),
+            CaseRecord {
+                key: "cases/example.smt2".into(),
+                bytes: 12,
+                logic: Some("QF_UF".into()),
+                query_count: Some(1),
+            },
+            vec![ExpectedQueryResult {
+                query_index: 0,
+                expected: QueryAnswer::Unknown,
+            }],
+        );
+
+        let outcome = classify_completed_run(
+            case,
+            Duration::from_millis(5),
+            CompletedQueryRun {
+                actual_answers: vec![QueryAnswer::Sat],
+            },
+            None,
+        );
+
+        assert_eq!(outcome.category, OutcomeCategory::NoOracle);
+        assert_eq!(outcome.queries.len(), 1);
+        assert_eq!(outcome.queries[0].category, OutcomeCategory::NoOracle);
+        assert!(outcome.detail.is_none());
     }
 }

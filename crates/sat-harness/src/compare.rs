@@ -115,12 +115,20 @@ fn index_cases(cases: &[CaseOutcome]) -> BTreeMap<String, CaseOutcome> {
 }
 
 /// Returns whether two saved outcomes represent the same semantic result.
-///
-/// Rule: Outcomes must have the same category and detail, and if they are passing then they must also have the same elapsed time.
 fn outcomes_match(left: &CaseOutcome, right: &CaseOutcome) -> bool {
     left.category == right.category
         && left.detail == right.detail
-        && (left.category.is_failure() || left.elapsed == right.elapsed)
+        && left.queries.len() == right.queries.len()
+        && left
+            .queries
+            .iter()
+            .zip(&right.queries)
+            .all(|(left_query, right_query)| {
+                left_query.query_index == right_query.query_index
+                    && left_query.category == right_query.category
+                    && left_query.expected == right_query.expected
+                    && left_query.actual == right_query.actual
+            })
 }
 
 /// Prints a complete human-readable comparison report.
@@ -243,7 +251,7 @@ fn format_missing_case(outcome: &CaseOutcome) -> String {
     format!(
         "    {:<width$} {:>6} {}{detail}",
         outcome.category.styled_label(),
-        format_compact_duration(outcome.elapsed),
+        format_compact_duration(outcome.total_elapsed),
         path,
         width = width,
     )
@@ -252,7 +260,7 @@ fn format_missing_case(outcome: &CaseOutcome) -> String {
 /// Formats one changed case for terminal output.
 fn format_changed_case(change: &ChangedCase) -> String {
     let label = format_category_change(change.left.category, change.right.category);
-    let elapsed = format_elapsed_change(change.left.elapsed, change.right.elapsed);
+    let elapsed = format_elapsed_change(change.left.total_elapsed, change.right.total_elapsed);
     let detail = format_detail_change(
         change.left.detail.as_deref(),
         change.right.detail.as_deref(),
@@ -311,9 +319,9 @@ mod tests {
     use super::{RunComparison, format_changed_case, format_missing_case, outcomes_match};
     use crate::model::{CaseOutcome, CaseRecord, OutcomeCategory, OutcomeStats, RunSummary};
 
-    /// Ensures passing outcomes compare unequal when runtimes differ.
+    /// Ensures saved-run comparisons ignore wall-clock runtime differences.
     #[test]
-    fn pass_outcomes_require_matching_elapsed_time() {
+    fn outcomes_ignore_elapsed_time() {
         let left = sample_outcome(
             "case.cnf",
             OutcomeCategory::Pass,
@@ -323,24 +331,6 @@ mod tests {
         let right = sample_outcome(
             "case.cnf",
             OutcomeCategory::Pass,
-            Duration::from_secs(2),
-            None,
-        );
-        assert!(!outcomes_match(&left, &right));
-    }
-
-    /// Ensures non-passing outcomes still compare equal when runtimes differ.
-    #[test]
-    fn non_pass_outcomes_ignore_elapsed_time() {
-        let left = sample_outcome(
-            "case.cnf",
-            OutcomeCategory::Timeout,
-            Duration::from_secs(1),
-            None,
-        );
-        let right = sample_outcome(
-            "case.cnf",
-            OutcomeCategory::Timeout,
             Duration::from_secs(2),
             None,
         );
@@ -392,8 +382,8 @@ mod tests {
         ]);
 
         let comparison = RunComparison::build(&left, &right);
-        assert_eq!(comparison.identical, 0);
-        assert_eq!(comparison.changed.len(), 2);
+        assert_eq!(comparison.identical, 1);
+        assert_eq!(comparison.changed.len(), 1);
         assert_eq!(comparison.only_left.len(), 1);
         assert_eq!(comparison.only_right.len(), 1);
         assert!(!comparison.is_match());
@@ -451,11 +441,12 @@ mod tests {
             case: CaseRecord {
                 key: key.into(),
                 bytes: 1,
-                expected: None,
-                source: None,
+                logic: Some("QF_UF".into()),
+                query_count: Some(1),
             },
-            elapsed,
+            total_elapsed: elapsed,
             category,
+            queries: Vec::new(),
             detail: detail.map(Into::into),
             telemetry: None,
         }

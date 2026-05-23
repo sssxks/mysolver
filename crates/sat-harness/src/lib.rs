@@ -1,9 +1,10 @@
-//! A subprocess-isolated benchmark harness for the [`sat`] solver.
+//! A subprocess-isolated benchmark harness for the local solver binaries.
 //!
 //! The parent process discovers benchmark inputs, runs one benchmark per child
 //! process, enforces wall-clock timeouts, and renders a friendly terminal view.
-//! Each child process loads exactly one DIMACS case and emits a compact JSON
-//! report so that panics, signals, and out-of-memory kills stay isolated.
+//! Each child process loads exactly one SMT-LIB trace, runs the `qfuf` binary
+//! over stdin/stdout, and emits a compact JSON report so that panics, signals,
+//! and out-of-memory kills stay isolated.
 
 mod child;
 mod cli;

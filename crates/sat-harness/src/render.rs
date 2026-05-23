@@ -74,7 +74,7 @@ pub(crate) fn progress_message(stats: &OutcomeStats, running: usize) -> String {
 pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let label = outcome.category.styled_label();
     let width = OutcomeCategory::LABEL_WIDTH;
-    let elapsed = format_compact_duration(outcome.elapsed);
+    let elapsed = format_compact_duration(outcome.total_elapsed);
     let path = truncate_display_path(outcome.case.comparison_key());
 
     let detail = if let Some(detail) = outcome.detail.as_deref() {
@@ -201,11 +201,12 @@ mod tests {
             case: CaseRecord {
                 key: "fixture/example.cnf".into(),
                 bytes: 123,
-                expected: None,
-                source: None,
+                logic: Some("QF_UF".into()),
+                query_count: Some(1),
             },
-            elapsed: Duration::from_millis(42),
+            total_elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
+            queries: Vec::new(),
             detail: None,
             telemetry: None,
         };
@@ -222,11 +223,12 @@ mod tests {
             case: CaseRecord {
                 key: "cases/satlib/instance-group/very-long-case-name.cnf.gz".into(),
                 bytes: 123,
-                expected: None,
-                source: None,
+                logic: Some("QF_UF".into()),
+                query_count: Some(1),
             },
-            elapsed: Duration::from_millis(42),
+            total_elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
+            queries: Vec::new(),
             detail: None,
             telemetry: None,
         };
@@ -242,11 +244,12 @@ mod tests {
             case: CaseRecord {
                 key: "fixture/example.cnf".into(),
                 bytes: 123,
-                expected: None,
-                source: None,
+                logic: Some("QF_UF".into()),
+                query_count: Some(1),
             },
-            elapsed: Duration::from_secs(1),
+            total_elapsed: Duration::from_secs(1),
             category: OutcomeCategory::Pass,
+            queries: Vec::new(),
             detail: None,
             telemetry: Some(CaseTelemetry {
                 summary: Summary {

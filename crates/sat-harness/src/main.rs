@@ -1,6 +1,6 @@
-//! Binary entrypoint for the SAT benchmark harness package.
+//! Binary entrypoint for the benchmark harness package.
 
-/// Runs the SAT benchmark harness command line.
+/// Runs the benchmark harness command line.
 fn main() -> std::process::ExitCode {
-    sat_harness::main()
+    my_harness::main()
 }

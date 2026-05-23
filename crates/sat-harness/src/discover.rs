@@ -2,16 +2,30 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bzip2::read::BzDecoder;
+use flate2::read::MultiGzDecoder;
 use walkdir::WalkDir;
 
-use crate::model::{CaseRecord, DiscoveredCase, ExpectationRule, ExpectedResult};
+use crate::model::{
+    CaseRecord, DiscoveredCase, ExpectationRule, ExpectedQueryResult, QueryAnswer,
+};
 
 /// The hidden manifest file used to attach expected results to benchmark paths.
 const EXPECTATIONS_FILE: &str = "expectations.tsv";
+
+/// One metadata summary extracted from one SMT-LIB trace.
+#[derive(Debug, Default)]
+struct TraceMetadata {
+    /// Declared SMT logic, when any.
+    logic: Option<Box<str>>,
+    /// Expected results attached to `check-sat` commands.
+    expected_queries: Vec<ExpectedQueryResult>,
+}
 
 /// Discovers all supported benchmark files under the provided roots.
 pub(crate) fn discover_cases(roots: &[PathBuf]) -> Result<Vec<DiscoveredCase>, String> {
@@ -75,33 +89,47 @@ fn maybe_push_case(
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned();
-    let (expected, source) = lookup_expectation(&display_path, &rules);
+    let (default_expected, _source) = lookup_expectation(&display_path, &rules);
+    let input = read_case_text(&canonical)?;
+    let mut metadata = parse_trace_metadata(&input)?;
+    if metadata.expected_queries.is_empty() {
+        if let Some(expected) = default_expected {
+            metadata.expected_queries.push(ExpectedQueryResult {
+                query_index: 0,
+                expected,
+            });
+        }
+    } else if let Some(expected) = default_expected {
+        for query in &mut metadata.expected_queries {
+            if query.expected == QueryAnswer::Unknown {
+                query.expected = expected;
+            }
+        }
+    }
+
     let bytes = fs::metadata(&canonical)
         .map_err(|error| format!("failed to stat {}: {error}", canonical.display()))?
         .len();
+    let query_count = Some(metadata.expected_queries.len());
     cases.push(DiscoveredCase::new(
         canonical,
         CaseRecord {
             key: display_path.clone().into_boxed_str(),
             bytes,
-            expected,
-            source,
+            logic: metadata.logic,
+            query_count,
         },
+        metadata.expected_queries,
     ));
     Ok(())
 }
 
-/// Returns `true` when the file suffix is a supported DIMACS case format.
+/// Returns `true` when the file suffix is a supported SMT-LIB case format.
 fn is_supported_case(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    name.ends_with(".cnf")
-        || name.ends_with(".dimacs")
-        || name.ends_with(".cnf.gz")
-        || name.ends_with(".dimacs.gz")
-        || name.ends_with(".cnf.bz2")
-        || name.ends_with(".dimacs.bz2")
+    name.ends_with(".smt2") || name.ends_with(".smt2.gz") || name.ends_with(".smt2.bz2")
 }
 
 /// Finds the nearest ancestor directory that contains an expectations manifest.
@@ -138,7 +166,7 @@ fn load_expectation_rules(root: &Path) -> Result<Vec<ExpectationRule>, String> {
         }
         rules.push(ExpectationRule {
             prefix: parts[0].into(),
-            expected: ExpectedResult::parse(parts[1])?,
+            expected: QueryAnswer::parse(parts[1])?,
             source: parts[2].into(),
         });
     }
@@ -150,11 +178,171 @@ fn load_expectation_rules(root: &Path) -> Result<Vec<ExpectationRule>, String> {
 fn lookup_expectation(
     display_path: &str,
     rules: &[ExpectationRule],
-) -> (Option<ExpectedResult>, Option<Box<str>>) {
+) -> (Option<QueryAnswer>, Option<Box<str>>) {
     for rule in rules {
         if display_path.starts_with(rule.prefix.as_ref()) {
             return (Some(rule.expected), Some(rule.source.clone()));
         }
     }
     (None, None)
+}
+
+/// Reads one benchmark file, transparently decompressing gzip and bzip2 inputs.
+fn read_case_text(path: &Path) -> Result<String, String> {
+    let mut text = String::new();
+    if has_suffix(path, ".gz") {
+        let file = File::open(path)
+            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+        let mut decoder = MultiGzDecoder::new(file);
+        decoder
+            .read_to_string(&mut text)
+            .map_err(|error| format!("failed to decode gzip {}: {error}", path.display()))?;
+    } else if has_suffix(path, ".bz2") {
+        let file = File::open(path)
+            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+        let mut decoder = BzDecoder::new(file);
+        decoder
+            .read_to_string(&mut text)
+            .map_err(|error| format!("failed to decode bzip2 {}: {error}", path.display()))?;
+    } else {
+        let mut file = File::open(path)
+            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+        file.read_to_string(&mut text)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    }
+    Ok(text)
+}
+
+/// Returns `true` when the path ends with the provided suffix.
+fn has_suffix(path: &Path, suffix: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(suffix))
+}
+
+/// Extracts the logic and expected query answers from one SMT-LIB trace.
+fn parse_trace_metadata(input: &str) -> Result<TraceMetadata, String> {
+    let tokens = tokenize(input);
+    let (exprs, next) = parse_many(&tokens, 0)?;
+    if next != tokens.len() {
+        return Err("trailing tokens after trace parse".to_owned());
+    }
+
+    let mut metadata = TraceMetadata::default();
+    let mut pending_status = None;
+    for expr in exprs {
+        let SExpr::List(items) = expr else {
+            continue;
+        };
+        let Some(SExpr::Atom(head)) = items.first() else {
+            continue;
+        };
+        match head.as_ref() {
+            "set-logic" => {
+                if let [_, SExpr::Atom(logic)] = items.as_slice() {
+                    metadata.logic = Some(logic.clone());
+                }
+            }
+            "set-info" => {
+                if let [_, SExpr::Atom(keyword), SExpr::Atom(value)] = items.as_slice()
+                    && keyword.as_ref() == ":status"
+                {
+                    pending_status = Some(QueryAnswer::parse(value)?);
+                }
+            }
+            "check-sat" => {
+                metadata.expected_queries.push(ExpectedQueryResult {
+                    query_index: metadata.expected_queries.len(),
+                    expected: pending_status.take().unwrap_or(QueryAnswer::Unknown),
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(metadata)
+}
+
+/// Counts `check-sat` queries in one SMT-LIB trace without re-reading the file.
+pub(crate) fn query_count(input: &str) -> Result<usize, String> {
+    parse_trace_metadata(input).map(|metadata| metadata.expected_queries.len())
+}
+
+/// One parsed S-expression.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SExpr {
+    /// One atom token.
+    Atom(Box<str>),
+    /// One list form.
+    List(Vec<SExpr>),
+}
+
+/// Tokenizes one SMT-LIB input string into atoms and parentheses.
+fn tokenize(input: &str) -> Vec<Box<str>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == ';' {
+            while let Some(next) = chars.peek() {
+                if *next == '\n' {
+                    break;
+                }
+                chars.next();
+            }
+            continue;
+        }
+        match ch {
+            '(' | ')' => {
+                if !current.is_empty() {
+                    tokens.push(current.clone().into_boxed_str());
+                    current.clear();
+                }
+                tokens.push(ch.to_string().into_boxed_str());
+            }
+            ch if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(current.clone().into_boxed_str());
+                    current.clear();
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current.into_boxed_str());
+    }
+    tokens
+}
+
+/// Parses as many S-expressions as possible starting at `start`.
+fn parse_many(tokens: &[Box<str>], mut start: usize) -> Result<(Vec<SExpr>, usize), String> {
+    let mut exprs = Vec::new();
+    while start < tokens.len() {
+        if tokens[start].as_ref() == ")" {
+            break;
+        }
+        let (expr, next) = parse_one(tokens, start)?;
+        exprs.push(expr);
+        start = next;
+    }
+    Ok((exprs, start))
+}
+
+/// Parses one S-expression starting at `start`.
+fn parse_one(tokens: &[Box<str>], start: usize) -> Result<(SExpr, usize), String> {
+    let token = tokens
+        .get(start)
+        .ok_or_else(|| "unexpected end of input".to_owned())?;
+    if token.as_ref() == "(" {
+        let (items, next) = parse_many(tokens, start + 1)?;
+        if tokens.get(next).map(|token| token.as_ref()) != Some(")") {
+            return Err("missing closing `)`".to_owned());
+        }
+        return Ok((SExpr::List(items), next + 1));
+    }
+    if token.as_ref() == ")" {
+        return Err("unexpected `)`".to_owned());
+    }
+    Ok((SExpr::Atom(token.clone()), start + 1))
 }

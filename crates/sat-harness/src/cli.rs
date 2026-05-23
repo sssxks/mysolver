@@ -13,7 +13,7 @@ use crate::util::parse_timeout;
 #[command(
     author,
     version,
-    about = "Run SAT benchmarks with subprocess isolation and live progress output."
+    about = "Run incremental SMT-LIB benchmarks with subprocess isolation and live progress output."
 )]
 pub(crate) struct Cli {
     /// The subcommand to execute.
@@ -40,7 +40,7 @@ pub(crate) enum HarnessCommand {
 pub(crate) struct RunArgs {
     /// Benchmark roots to scan.
     ///
-    /// When omitted, the harness scans `test/fixture/sat`.
+    /// When omitted, the harness scans the current directory.
     pub(crate) roots: Vec<PathBuf>,
     /// The number of child processes to run concurrently.
     ///
@@ -138,7 +138,7 @@ mod tests {
     /// Ensures the default `run` output mode remains failure-only.
     #[test]
     fn run_defaults_to_failure_only_output() {
-        let cli = Cli::parse_from(["sat-harness", "run"]);
+        let cli = Cli::parse_from(["my-harness", "run"]);
         let HarnessCommand::Run(args) = cli.command else {
             panic!("expected run command");
         };
@@ -153,7 +153,7 @@ mod tests {
             ("--fail-only", OutputMode::FailOnly),
             ("--terse", OutputMode::Terse),
         ] {
-            let cli = Cli::parse_from(["sat-harness", "run", flag]);
+            let cli = Cli::parse_from(["my-harness", "run", flag]);
             let HarnessCommand::Run(args) = cli.command else {
                 panic!("expected run command");
             };
@@ -164,7 +164,7 @@ mod tests {
     /// Ensures the output-mode flags stay mutually exclusive.
     #[test]
     fn run_rejects_multiple_output_mode_flags() {
-        let result = Cli::try_parse_from(["sat-harness", "run", "--all", "--terse"]);
+        let result = Cli::try_parse_from(["my-harness", "run", "--all", "--terse"]);
         assert!(result.is_err());
     }
 
@@ -172,9 +172,9 @@ mod tests {
     #[test]
     fn run_case_is_publicly_parseable() {
         let cli = Cli::parse_from([
-            "sat-harness",
+            "my-harness",
             "case",
-            "fixture/example.cnf",
+            "fixture/example.smt2",
             "--report",
             "report.json",
             #[cfg(feature = "telemetry")]

@@ -1,11 +1,10 @@
 [package]
-name = "euf"
+name = "qfuf"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bumpalo = "3"
-hashbrown = "0.16"
+euf = { path = "../euf" }
 sat = { path = "../sat" }
 
 [lints.clippy]

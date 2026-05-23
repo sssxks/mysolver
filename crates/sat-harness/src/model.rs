@@ -7,33 +7,31 @@ use console::{StyledObject, style};
 use sat::telemetry::{Sample, Summary};
 use serde::{Deserialize, Serialize};
 
-/// One expected solver answer loaded from an expectations manifest.
+use strum::VariantArray as _;
+
+/// One solver answer expected or produced for a single query.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ExpectedResult {
-    /// The case is expected to be satisfiable.
+pub(crate) enum QueryAnswer {
+    /// The query is satisfiable.
     Sat,
-    /// The case is expected to be unsatisfiable.
+    /// The query is unsatisfiable.
     Unsat,
+    /// The query expectation or solver response is unknown.
+    Unknown,
 }
 
-impl ExpectedResult {
-    /// Parses a manifest token into an expected-answer label.
+impl QueryAnswer {
+    /// Parses one SMT-LIB answer token.
     pub(crate) fn parse(text: &str) -> Result<Self, String> {
         match text {
             "sat" => Ok(Self::Sat),
             "unsat" => Ok(Self::Unsat),
-            _ => Err(format!("unsupported expectation label: {text}")),
+            "unknown" => Ok(Self::Unknown),
+            _ => Err(format!("unsupported query answer label: {text}")),
         }
     }
 
-    /// Returns the lowercase display label used in the terminal.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Sat => "sat",
-            Self::Unsat => "unsat",
-        }
-    }
 }
 
 /// One expectations rule loaded from `expectations.tsv`.
@@ -42,9 +40,18 @@ pub(crate) struct ExpectationRule {
     /// The path prefix, relative to the manifest directory.
     pub(crate) prefix: Box<str>,
     /// The expected solver answer for matching paths.
-    pub(crate) expected: ExpectedResult,
+    pub(crate) expected: QueryAnswer,
     /// A short human-readable source label.
     pub(crate) source: Box<str>,
+}
+
+/// One expected answer attached to one `check-sat` call.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub(crate) struct ExpectedQueryResult {
+    /// Zero-based query index within the benchmark trace.
+    pub(crate) query_index: usize,
+    /// Expected answer for that query.
+    pub(crate) expected: QueryAnswer,
 }
 
 /// The stable case metadata kept in saved harness result files.
@@ -54,10 +61,10 @@ pub(crate) struct CaseRecord {
     pub(crate) key: Box<str>,
     /// The file size in bytes used to sort long cases first.
     pub(crate) bytes: u64,
-    /// The optional oracle answer for correctness checking.
-    pub(crate) expected: Option<ExpectedResult>,
-    /// The optional source label that provided the oracle answer.
-    pub(crate) source: Option<Box<str>>,
+    /// The SMT-LIB logic declared by the case, when precomputed.
+    pub(crate) logic: Option<Box<str>>,
+    /// The number of `check-sat` queries discovered in the trace, when precomputed.
+    pub(crate) query_count: Option<usize>,
 }
 
 impl CaseRecord {
@@ -74,14 +81,21 @@ pub(crate) struct DiscoveredCase {
     absolute_path: PathBuf,
     /// The stable case metadata that survives into saved result files.
     record: CaseRecord,
+    /// Expected answers for each `check-sat`, in order.
+    expected_queries: Vec<ExpectedQueryResult>,
 }
 
 impl DiscoveredCase {
     /// Builds one discovered runtime case from its executable path and saved metadata.
-    pub(crate) fn new(absolute_path: PathBuf, record: CaseRecord) -> Self {
+    pub(crate) fn new(
+        absolute_path: PathBuf,
+        record: CaseRecord,
+        expected_queries: Vec<ExpectedQueryResult>,
+    ) -> Self {
         Self {
             absolute_path,
             record,
+            expected_queries,
         }
     }
 
@@ -95,9 +109,9 @@ impl DiscoveredCase {
         self.record.bytes
     }
 
-    /// Returns the stable case metadata borrowed from this runtime case.
-    pub(crate) fn record(&self) -> &CaseRecord {
-        &self.record
+    /// Returns the expected query sequence.
+    pub(crate) fn expected_queries(&self) -> &[ExpectedQueryResult] {
+        &self.expected_queries
     }
 
     /// Consumes the runtime case and returns the persistent case metadata.
@@ -113,18 +127,41 @@ pub(crate) struct ChildReport {
     pub(crate) kind: ChildReportKind,
 }
 
+/// One complete query sequence returned by the child process.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct CompletedQueryRun {
+    /// Actual answers returned by the solver, in query order.
+    pub(crate) actual_answers: Vec<QueryAnswer>,
+}
+
 /// All structured outcomes that can be reported by the child process.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "detail")]
 pub(crate) enum ChildReportKind {
-    /// The solver returned `SAT`.
-    Sat,
-    /// The solver returned `UNSAT`.
-    Unsat,
-    /// The DIMACS input could not be parsed.
+    /// The solver completed the trace and returned one answer per query.
+    Completed(CompletedQueryRun),
+    /// The SMT-LIB input could not be parsed.
     ParseError(String),
     /// The case file could not be loaded from disk.
     InputError(String),
+    /// The interactive solver protocol was violated.
+    ProtocolError(String),
+}
+
+/// One per-query outcome stored in saved harness artifacts.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct QueryOutcome {
+    /// Zero-based query index within the trace.
+    pub(crate) query_index: usize,
+    /// Expected answer for this query.
+    pub(crate) expected: QueryAnswer,
+    /// Actual solver answer for this query.
+    pub(crate) actual: QueryAnswer,
+    /// Elapsed time since case start when the query completed.
+    #[serde(with = "duration_serde")]
+    pub(crate) elapsed: Duration,
+    /// The classified query-level category.
+    pub(crate) category: OutcomeCategory,
 }
 
 /// One completed case outcome received by the parent process.
@@ -134,9 +171,11 @@ pub(crate) struct CaseOutcome {
     pub(crate) case: CaseRecord,
     /// The wall-clock runtime measured by the parent process.
     #[serde(with = "duration_serde")]
-    pub(crate) elapsed: Duration,
-    /// The classified result category.
+    pub(crate) total_elapsed: Duration,
+    /// The classified case-level result category.
     pub(crate) category: OutcomeCategory,
+    /// One saved query outcome for each completed `check-sat`.
+    pub(crate) queries: Vec<QueryOutcome>,
     /// An optional detail string for failures and summaries.
     pub(crate) detail: Option<Box<str>>,
     /// Optional solver telemetry aggregated from periodic samples.
@@ -154,8 +193,6 @@ pub(crate) struct CaseTelemetry {
     pub(crate) samples: Vec<Sample>,
 }
 
-use strum::VariantArray as _;
-
 /// The top-level result category used in summaries and exit codes.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize, strum::VariantArray)]
 #[serde(rename_all = "snake_case")]
@@ -164,9 +201,9 @@ pub(crate) enum OutcomeCategory {
     Pass,
     /// The solver finished, but the case had no oracle answer.
     NoOracle,
-    /// The solver returned the wrong answer.
+    /// At least one query returned the wrong answer.
     WrongAnswer,
-    /// The DIMACS input was rejected by the parser.
+    /// The input trace was rejected by the parser.
     ParseError,
     /// The child exceeded the configured timeout.
     Timeout,
@@ -218,11 +255,9 @@ impl OutcomeCategory {
 
         while i < variants.len() {
             let len = variants[i].label().len();
-
             if len > max {
                 max = len;
             }
-
             i += 1;
         }
 
@@ -239,13 +274,13 @@ pub(crate) struct OutcomeStats {
     pub(crate) pass: usize,
     /// The number of completed cases without an oracle answer.
     pub(crate) no_oracle: usize,
-    /// The number of wrong answers.
+    /// The number of wrong-answer cases.
     pub(crate) wrong: usize,
-    /// The number of parse errors.
+    /// The number of parse-error cases.
     pub(crate) parse: usize,
-    /// The number of timeouts.
+    /// The number of timed-out cases.
     pub(crate) timeout: usize,
-    /// The number of panics.
+    /// The number of panic cases.
     pub(crate) panic: usize,
     /// The number of signal-killed children.
     pub(crate) killed: usize,
@@ -254,7 +289,7 @@ pub(crate) struct OutcomeStats {
 }
 
 impl OutcomeStats {
-    /// Records one completed outcome.
+    /// Records one completed case outcome.
     pub(crate) fn record(&mut self, category: OutcomeCategory) {
         self.done += 1;
         match category {
@@ -304,7 +339,7 @@ pub(crate) struct RunSummary {
 
 impl RunSummary {
     /// The current on-disk file format version.
-    pub(crate) const FORMAT_VERSION: u32 = 2;
+    pub(crate) const FORMAT_VERSION: u32 = 3;
 
     /// Returns the current on-disk file format version.
     pub(crate) const fn format_version() -> u32 {

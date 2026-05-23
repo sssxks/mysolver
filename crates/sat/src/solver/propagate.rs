@@ -6,6 +6,7 @@ use crate::clause_db::ClauseId;
 use crate::telemetry;
 
 use super::{LBool, Reason, Solver};
+use crate::AssertionLevel;
 
 /// A watched-literal entry attached to a literal's watch list.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -14,6 +15,8 @@ pub(crate) enum Watcher {
     Binary {
         /// The other literal in the watched binary clause.
         other: Lit,
+        /// User scope in which this binary clause exists.
+        assertion_level: AssertionLevel,
     },
     /// Watches a long clause together with a blocker literal.
     Long {
@@ -28,7 +31,14 @@ pub(crate) enum Watcher {
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub(crate) enum Conflict {
     /// A conflict caused by a falsified binary clause.
-    Binary(Lit, Lit),
+    Binary {
+        /// The literal that became false.
+        false_lit: Lit,
+        /// The opposite endpoint of the binary clause.
+        other: Lit,
+        /// User scope in which this binary clause exists.
+        assertion_level: AssertionLevel,
+    },
     /// A conflict caused by a falsified long clause.
     Clause(ClauseId),
 }
@@ -72,7 +82,8 @@ impl Solver {
                 } else {
                     LBool::True
                 };
-                self.level[v] = self.decision_level();
+                self.sat_level[v] = self.decision_level();
+                self.user_level[v] = self.assertion_level;
                 self.reason[v] = reason;
                 self.phase[v] = !lit.is_negated();
                 self.trail.push(lit);
@@ -129,19 +140,37 @@ impl Solver {
                 let mut conflict: Option<Conflict> = None;
 
                 match watcher {
-                    Watcher::Binary { other } => match self.value_lit(other) {
+                    Watcher::Binary {
+                        other,
+                        assertion_level,
+                    } => match self.value_lit(other) {
                         LBool::True => {
                             keep = Some(watcher);
                         }
                         LBool::Undef => {
                             keep = Some(watcher);
-                            if !self.enqueue(other, Reason::Binary(false_lit, other)) {
-                                conflict = Some(Conflict::Binary(false_lit, other));
+                            if !self.enqueue(
+                                other,
+                                Reason::Binary {
+                                    false_lit,
+                                    other,
+                                    assertion_level,
+                                },
+                            ) {
+                                conflict = Some(Conflict::Binary {
+                                    false_lit,
+                                    other,
+                                    assertion_level,
+                                });
                             }
                         }
                         LBool::False => {
                             keep = Some(watcher);
-                            conflict = Some(Conflict::Binary(false_lit, other));
+                            conflict = Some(Conflict::Binary {
+                                false_lit,
+                                other,
+                                assertion_level,
+                            });
                         }
                     },
                     Watcher::Long { clause, blocker } => {
