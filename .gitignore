@@ -4,6 +4,6 @@ agent_log/
 
 perf.data
 perf.data.old
-profile.json.gz
+profile.json.*
 
 /.idea

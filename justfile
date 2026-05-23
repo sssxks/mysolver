@@ -31,6 +31,6 @@ bench preset="hard" *extra:\
 compare argument="hard" *extra:
     @./scripts/bench_compare_stash.py --preset {{ argument }} {{ extra }}
 
-# Run this recipe via `perf record` or `samply record`
-perf:
-    @cargo run -p my-harness --profile perf -q -- run "test/fixture/sat/cases/satlib/engine_unsat_1.0" --all
+# recipe for perf recording. e.g. run with `timeout ...`, `cargo run ...`. use `--profile perf` to build the harness with perf instrumentation.
+perf *args="":
+    samply record --unstable-presymbolicate -- {{ args }}

@@ -1,0 +1,5 @@
+[mcp_servers.samply]
+command = "npx"
+args = ["-y", "mcp-samply"]
+enabled = true
+startup_timeout_sec = 5
