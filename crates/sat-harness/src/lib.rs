@@ -41,7 +41,7 @@ fn run_command(cli: Cli) -> Result<u8, String> {
     match cli.command {
         HarnessCommand::Run(args) => Ok(u8::from(run_parent(args)?.stats.has_failures())),
         HarnessCommand::Compare(args) => Ok(u8::from(!compare_saved_runs(args)?)),
-        HarnessCommand::InternalRunCase(args) => {
+        HarnessCommand::Case(args) => {
             run_child(args)?;
             Ok(0)
         }

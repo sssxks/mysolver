@@ -16,7 +16,7 @@ use indicatif::{HumanCount, HumanDuration};
 use sat::telemetry::{Sample, Summary};
 use tempfile::NamedTempFile;
 
-use crate::cli::RunArgs;
+use crate::cli::{OutputMode, RunArgs};
 use crate::discover::discover_cases;
 use crate::jobs::default_jobs;
 use crate::model::{
@@ -31,12 +31,13 @@ use crate::util::{exit_signal, trim_detail};
 
 /// Executes the top-level parent harness flow.
 pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
+    let output_mode = args.output_mode();
     let RunArgs {
         roots,
         jobs,
         timeout,
-        all: print_all_outcomes,
         save,
+        ..
     } = args;
 
     let requested_roots = if roots.is_empty() {
@@ -105,7 +106,7 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
                     &stats,
                     total.saturating_sub(stats.done).min(jobs),
                 ));
-                if should_print_outcome(print_all_outcomes, outcome.category) {
+                if should_print_outcome(output_mode, outcome.category) {
                     let rendered = format_outcome(&outcome);
                     if interactive {
                         progress_bar.println(rendered);
@@ -161,8 +162,12 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
 }
 
 /// Returns whether one completed case should be printed immediately.
-fn should_print_outcome(print_all_outcomes: bool, category: OutcomeCategory) -> bool {
-    print_all_outcomes || category.is_failure()
+fn should_print_outcome(output_mode: OutputMode, category: OutcomeCategory) -> bool {
+    match output_mode {
+        OutputMode::All => true,
+        OutputMode::FailOnly => category.is_failure(),
+        OutputMode::Terse => false,
+    }
 }
 
 /// Repeatedly executes cases from the shared queue until all work is exhausted.
@@ -227,8 +232,7 @@ fn run_case_subprocess(
 
     let mut command = Command::new(current_exe);
     command
-        .arg("__internal-run-case")
-        .arg("--case")
+        .arg("case")
         .arg(case.absolute_path())
         .arg("--report")
         .arg(report_file.path());
@@ -536,6 +540,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{should_print_outcome, write_summary_file};
+    use crate::cli::OutputMode;
     use crate::model::{
         CaseOutcome, CaseRecord, ExpectedResult, OutcomeCategory, OutcomeStats, RunSummary,
     };
@@ -543,15 +548,37 @@ mod tests {
     /// Ensures the default live stream remains failure-only.
     #[test]
     fn default_output_filters_successes() {
-        assert!(!should_print_outcome(false, OutcomeCategory::Pass));
-        assert!(should_print_outcome(false, OutcomeCategory::WrongAnswer));
+        assert!(!should_print_outcome(
+            OutputMode::FailOnly,
+            OutcomeCategory::Pass
+        ));
+        assert!(should_print_outcome(
+            OutputMode::FailOnly,
+            OutcomeCategory::WrongAnswer
+        ));
     }
 
     /// Ensures the verbose mode prints every completed case outcome.
     #[test]
     fn verbose_output_prints_every_outcome() {
-        assert!(should_print_outcome(true, OutcomeCategory::Pass));
-        assert!(should_print_outcome(true, OutcomeCategory::NoOracle));
+        assert!(should_print_outcome(OutputMode::All, OutcomeCategory::Pass));
+        assert!(should_print_outcome(
+            OutputMode::All,
+            OutcomeCategory::NoOracle
+        ));
+    }
+
+    /// Ensures the terse mode suppresses every per-case outcome line.
+    #[test]
+    fn terse_output_prints_nothing() {
+        assert!(!should_print_outcome(
+            OutputMode::Terse,
+            OutcomeCategory::Pass
+        ));
+        assert!(!should_print_outcome(
+            OutputMode::Terse,
+            OutcomeCategory::WrongAnswer
+        ));
     }
 
     /// Ensures saved summaries round-trip through the JSON artifact writer.

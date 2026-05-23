@@ -383,9 +383,10 @@ impl ClauseArena {
     fn try_live_slot(&self, cid: ClauseId) -> Option<usize> {
         // Slots are never truncated, so out-of-bounds signals a caller bug rather
         // than a stale id, which is expected and tracked generationally.
-        let header = self.headers.get(cid.slot_index()).unwrap_or_else(|| {
-            panic!("clause slot out of bounds: {}", cid.slot())
-        });
+        let header = self
+            .headers
+            .get(cid.slot_index())
+            .unwrap_or_else(|| panic!("clause slot out of bounds: {}", cid.slot()));
         // header is free or retired or header is already reused for another generation.
         if header.is_free() || header.is_retired() || header.generation() != cid.generation() {
             None

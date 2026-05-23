@@ -2,24 +2,28 @@
 
 set no-exit-message := true
 
-# Runs the SAT harness with shared flags.
-sat-harness-run *args="":
+# Runs the harness with shared flags.
+harness-run *args="":
     @cargo run -p sat-harness --release -q -- run {{ args }}
 
 # Fetches SAT benchmarks.
 sat-bench-fetch *args="":
     @./scripts/fetch_sat_benchmarks.py {{ args }}
 
+# Fetches SMT-LIB benchmarks.
+smt-bench-fetch *args="":
+    @./scripts/fetch_smt_benchmarks.py {{ args }}
+
 # Tests and benchmarks our SAT solver, default to hard subset.
-bench argument="hard" *extra:\
+bench preset="hard" *extra:\
   (sat-bench-fetch "--quiet") \
-  (sat-harness-run \
-    if argument == "full" {\
+  (harness-run \
+    if preset == "full" {\
          "" \
-    } else if argument == "hard" {\
+    } else if preset == "hard" {\
         "test/fixture/sat/cases/satlib/engine_unsat_1.0" \
     } else {\
-        error("unknown bench preset: " + argument) \
+        error("unknown bench preset: " + preset) \
     } extra\
   )\
 
@@ -29,4 +33,4 @@ compare argument="hard" *extra:
 
 # Run this recipe via `perf record` or `samply record`
 perf:
-    @cargo run -p sat-harness --profile perf -q -- run "test/fixture/sat/cases/satlib/engine_unsat_1.0" --all
+    @cargo run -p my-harness --profile perf -q -- run "test/fixture/sat/cases/satlib/engine_unsat_1.0" --all

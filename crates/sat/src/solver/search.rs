@@ -114,8 +114,8 @@ impl Solver {
         let mut locked_start = learnts.len();
         while removable < locked_start {
             let cid = learnts[removable];
-            let protected = locked[self.clauses.live_slot(cid)]
-                || self.clauses.lbd(cid) <= CORE_LBD_CUTOFF;
+            let protected =
+                locked[self.clauses.live_slot(cid)] || self.clauses.lbd(cid) <= CORE_LBD_CUTOFF;
             if protected {
                 locked_start -= 1;
                 learnts.swap(removable, locked_start);
@@ -129,14 +129,11 @@ impl Solver {
             // `select_nth_unstable_by` requires a non-empty slice and does not help
             // when there is only one removable clause because `remove` stays zero.
             learnts[..removable].select_nth_unstable_by(remove, |&a, &b| {
-                self.clauses
-                    .lbd(b)
-                    .cmp(&self.clauses.lbd(a))
-                    .then_with(|| {
-                        self.clauses
-                            .activity(a)
-                            .total_cmp(&self.clauses.activity(b))
-                    })
+                self.clauses.lbd(b).cmp(&self.clauses.lbd(a)).then_with(|| {
+                    self.clauses
+                        .activity(a)
+                        .total_cmp(&self.clauses.activity(b))
+                })
             });
 
             for &cid in &learnts[..remove] {
@@ -226,9 +223,7 @@ mod tests {
                 &[lit(base), lit(base + 1), lit(base + 2)],
                 CORE_LBD_CUTOFF + 4,
             );
-            solver
-                .clauses
-                .set_activity(cid, 100.0 + clause_idx as f32);
+            solver.clauses.set_activity(cid, 100.0 + clause_idx as f32);
         }
 
         solver.reduce_db();

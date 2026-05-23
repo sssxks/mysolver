@@ -10,11 +10,11 @@ use flate2::read::MultiGzDecoder;
 use sat::telemetry::TelemetryRecorder;
 use sat::{SatResult as SolverSatResult, Solver, parse_dimacs};
 
-use crate::cli::InternalRunCaseArgs;
+use crate::cli::RunCaseArgs;
 use crate::model::{ChildReport, ChildReportKind};
 
-/// Runs the hidden child process entrypoint and writes the structured report.
-pub(crate) fn run_child(args: InternalRunCaseArgs) -> Result<(), String> {
+/// Runs the isolated single-case entrypoint and writes the structured report.
+pub(crate) fn run_child(args: RunCaseArgs) -> Result<(), String> {
     let report = match load_case_and_solver(&args.case) {
         Ok(mut solver) => {
             let kind = solve_case_with_optional_telemetry(&mut solver, &args)?;
@@ -41,7 +41,7 @@ pub(crate) fn run_child(args: InternalRunCaseArgs) -> Result<(), String> {
 #[cfg(feature = "telemetry")]
 fn solve_case_with_optional_telemetry(
     solver: &mut Solver,
-    args: &InternalRunCaseArgs,
+    args: &RunCaseArgs,
 ) -> Result<ChildReportKind, String> {
     let recorder = TelemetryRecorder::start(&args.telemetry).map_err(|error| {
         format!(
@@ -68,7 +68,7 @@ fn solve_case_with_optional_telemetry(
 #[cfg(not(feature = "telemetry"))]
 fn solve_case_with_optional_telemetry(
     solver: &mut Solver,
-    _args: &InternalRunCaseArgs,
+    _args: &RunCaseArgs,
 ) -> Result<ChildReportKind, String> {
     let kind = match solver.solve() {
         SolverSatResult::Sat => ChildReportKind::Sat,
