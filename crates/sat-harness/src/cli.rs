@@ -184,5 +184,4 @@ mod tests {
         ]);
         assert!(matches!(cli.command, HarnessCommand::Case(_)));
     }
-
 }

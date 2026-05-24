@@ -31,7 +31,6 @@ impl QueryAnswer {
             _ => Err(format!("unsupported query answer label: {text}")),
         }
     }
-
 }
 
 /// One expectations rule loaded from `expectations.tsv`.

@@ -263,7 +263,13 @@ impl Term {
     fn matches_ref(&self, term: TermRef<'_>) -> bool {
         match (self, term) {
             (Self::Const(symbol), TermRef::Const(query)) => *symbol == query,
-            (Self::App { fun, args }, TermRef::App { fun: query_fun, args: query_args }) => {
+            (
+                Self::App { fun, args },
+                TermRef::App {
+                    fun: query_fun,
+                    args: query_args,
+                },
+            ) => {
                 // SAFETY: `args` points into live registry storage.
                 unsafe { *fun == query_fun && args.as_slice() == query_args }
             }
@@ -582,7 +588,9 @@ impl Registry {
             Sort::Bool => SortRef::Bool,
             Sort::Uninterpreted { name } => {
                 // SAFETY: `name` points into `self.storage`.
-                SortRef::Uninterpreted { name: unsafe { name.as_str() } }
+                SortRef::Uninterpreted {
+                    name: unsafe { name.as_str() },
+                }
             }
         }
     }
@@ -928,7 +936,9 @@ impl SearchState {
             }
             self.pending_atom_triggers
                 .truncate(marker.pending_atom_triggers_len);
-            self.pending_atom_qhead = self.pending_atom_qhead.min(self.pending_atom_triggers.len());
+            self.pending_atom_qhead = self
+                .pending_atom_qhead
+                .min(self.pending_atom_triggers.len());
             self.pending_repairs.truncate(marker.pending_repairs_len);
             self.pending_merges.truncate(marker.pending_merges_len);
             self.active_disequalities
@@ -1149,7 +1159,11 @@ impl SearchState {
             let edge_index = parents[current.index()].expect("missing equality explanation path");
             let edge = self.merge_edges[edge_index];
             path_edges.push(edge);
-            current = if edge.lhs == current { edge.rhs } else { edge.lhs };
+            current = if edge.lhs == current {
+                edge.rhs
+            } else {
+                edge.lhs
+            };
         }
         path_edges.reverse();
 
@@ -1160,8 +1174,17 @@ impl SearchState {
                     left_parent,
                     right_parent,
                 } => {
-                    let (TermRef::App { args: left_args, .. }, TermRef::App { args: right_args, .. }) =
-                        (registry.term_ref(left_parent), registry.term_ref(right_parent))
+                    let (
+                        TermRef::App {
+                            args: left_args, ..
+                        },
+                        TermRef::App {
+                            args: right_args, ..
+                        },
+                    ) = (
+                        registry.term_ref(left_parent),
+                        registry.term_ref(right_parent),
+                    )
                     else {
                         continue;
                     };
@@ -1188,11 +1211,7 @@ impl SearchState {
     }
 
     /// Constructs one propagation explanation clause from already collected premises.
-    pub fn explain_propagation(
-        &self,
-        propagated: Lit,
-        support: &[Lit],
-    ) -> ExplanationClause {
+    pub fn explain_propagation(&self, propagated: Lit, support: &[Lit]) -> ExplanationClause {
         ExplanationClause {
             propagated: Some(propagated),
             premises: support.to_vec().into_boxed_slice(),
@@ -1238,12 +1257,9 @@ pub struct ExplanationClause {
 
 impl ExplanationClause {
     /// Converts this explanation into one SAT theory clause.
-    pub fn to_theory_clause(
-        &self,
-        solver: &sat::Solver,
-        kind: TheoryClauseKind,
-    ) -> TheoryClause {
-        let mut lits = Vec::with_capacity(self.premises.len() + usize::from(self.propagated.is_some()));
+    pub fn to_theory_clause(&self, solver: &sat::Solver, kind: TheoryClauseKind) -> TheoryClause {
+        let mut lits =
+            Vec::with_capacity(self.premises.len() + usize::from(self.propagated.is_some()));
         for &premise in &*self.premises {
             lits.push(!premise);
         }
@@ -1320,12 +1336,7 @@ impl EufTheory {
     }
 
     /// Interns one equality atom and binds it to `sat_var`.
-    pub fn intern_equality_atom(
-        &mut self,
-        lhs: TermId,
-        rhs: TermId,
-        sat_var: Var,
-    ) -> TheoryAtomId {
+    pub fn intern_equality_atom(&mut self, lhs: TermId, rhs: TermId, sat_var: Var) -> TheoryAtomId {
         let atom = self.registry.intern_atom(AtomRef::Eq(lhs, rhs));
         if self.theory_atom_to_var.len() <= atom.index() {
             self.theory_atom_to_var.resize(atom.index() + 1, sat_var);
@@ -1508,7 +1519,10 @@ impl EufTheory {
             return;
         }
 
-        let Some(fun) = self.search.fill_congruence_sig_scratch(&self.registry, parent) else {
+        let Some(fun) = self
+            .search
+            .fill_congruence_sig_scratch(&self.registry, parent)
+        else {
             return;
         };
         let owned = self.search.own_current_congruence_sig(fun);
@@ -1733,6 +1747,9 @@ mod tests {
         let _ = sat.add_clause(&[ab]);
         let _ = sat.add_clause(&[not_fafb]);
 
-        assert_eq!(sat.solve_with_assumptions(&[], &mut theory), sat::SatResult::Unsat);
+        assert_eq!(
+            sat.solve_with_assumptions(&[], &mut theory),
+            sat::SatResult::Unsat
+        );
     }
 }

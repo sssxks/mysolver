@@ -649,10 +649,8 @@ mod tests {
             c_lits[c_lits.len() - 1]
         );
 
-        let reused = arena.alloc_irredundant(
-            &[lit(9_000), lit(9_001), lit(9_002)],
-            AssertionLevel::ROOT,
-        );
+        let reused =
+            arena.alloc_irredundant(&[lit(9_000), lit(9_001), lit(9_002)], AssertionLevel::ROOT);
         assert!(matches!(reused.slot(), 0 | 1));
         assert_eq!(reused.generation(), 1);
     }

@@ -192,13 +192,11 @@ impl Driver {
                 );
                 Ok(None)
             }
-            Command::DeclareConst { name, sort } => {
-                self.execute(Command::DeclareFun {
-                    name,
-                    args: Vec::new(),
-                    result: sort,
-                })
-            }
+            Command::DeclareConst { name, sort } => self.execute(Command::DeclareFun {
+                name,
+                args: Vec::new(),
+                result: sort,
+            }),
             Command::Assert(expr) => {
                 let view = self.lower_formula(&expr)?;
                 self.assert_bool_view(view)?;
@@ -216,10 +214,12 @@ impl Driver {
                     .map_err(|error| format!("pop failed: {error:?}"))?;
                 Ok(None)
             }
-            Command::CheckSat => Ok(Some(match self.sat.solve_with_assumptions(&[], &mut self.euf) {
-                SatResult::Sat => "sat".to_owned(),
-                SatResult::Unsat => "unsat".to_owned(),
-            })),
+            Command::CheckSat => Ok(Some(
+                match self.sat.solve_with_assumptions(&[], &mut self.euf) {
+                    SatResult::Sat => "sat".to_owned(),
+                    SatResult::Unsat => "unsat".to_owned(),
+                },
+            )),
             Command::Exit => Ok(None),
         }
     }
@@ -326,7 +326,8 @@ impl Driver {
                             let [_, SExpr::List(bindings), body] = items.as_slice() else {
                                 return Err("malformed let".to_owned());
                             };
-                            return self.with_let_bindings(bindings, |this| this.lower_formula(body));
+                            return self
+                                .with_let_bindings(bindings, |this| this.lower_formula(body));
                         }
                         "ite" => {
                             let [_, cond, then_branch, else_branch] = items.as_slice() else {
@@ -342,7 +343,8 @@ impl Driver {
                     return Ok(view);
                 }
 
-                if let Some(SExpr::Atom(head)) = items.first() && head.as_ref() == "="
+                if let Some(SExpr::Atom(head)) = items.first()
+                    && head.as_ref() == "="
                 {
                     return self.lower_equality_formula(&items[1..]);
                 }
@@ -421,7 +423,10 @@ impl Driver {
         let mut pairwise = Vec::new();
         for left_index in 0..args.len() {
             for right_index in left_index + 1..args.len() {
-                let equal = self.lower_equality_formula(&[args[left_index].clone(), args[right_index].clone()])?;
+                let equal = self.lower_equality_formula(&[
+                    args[left_index].clone(),
+                    args[right_index].clone(),
+                ])?;
                 pairwise.push(negate_view(equal));
             }
         }
@@ -471,16 +476,14 @@ impl Driver {
             {
                 Ok(true)
             }
-            SExpr::List(items)
-                if matches!(items.first(), Some(SExpr::Atom(head)) if head.as_ref() == "let") =>
+            SExpr::List(items) if matches!(items.first(), Some(SExpr::Atom(head)) if head.as_ref() == "let") =>
             {
                 let [_, SExpr::List(bindings), body] = items.as_slice() else {
                     return Err("malformed let".to_owned());
                 };
                 self.with_let_bindings(bindings, |this| this.is_boolean_expr(body))
             }
-            SExpr::List(items)
-                if matches!(items.first(), Some(SExpr::Atom(head)) if head.as_ref() == "ite") =>
+            SExpr::List(items) if matches!(items.first(), Some(SExpr::Atom(head)) if head.as_ref() == "ite") =>
             {
                 let [_, _, then_branch, else_branch] = items.as_slice() else {
                     return Err("`ite` expects exactly three arguments".to_owned());

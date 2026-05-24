@@ -79,13 +79,7 @@ impl Solver {
                     assertion_level,
                 } => {
                     max_assertion_level = max_assertion_level.max(assertion_level);
-                    self.analyze_lit(
-                        false_lit,
-                        resolved,
-                        current_level,
-                        &mut path_count,
-                        learnt,
-                    );
+                    self.analyze_lit(false_lit, resolved, current_level, &mut path_count, learnt);
                     self.analyze_lit(other, resolved, current_level, &mut path_count, learnt);
                 }
                 AnalyzeSource::Clause(cid) => {
@@ -236,9 +230,7 @@ impl Solver {
         let ok = match self.reason[vi] {
             Reason::None => false,
             Reason::Binary {
-                false_lit,
-                other,
-                ..
+                false_lit, other, ..
             } => {
                 self.set_minimize_cache(var, 3);
                 self.reason_literal_is_redundant(var, false_lit)
@@ -395,10 +387,22 @@ mod tests {
     fn analyze_reports_distinct_decision_levels_as_lbd() {
         let mut solver = Solver::with_vars(7);
 
-        assert_eq!(solver.add_clause(&[nlit(0), lit(1)]), AddClauseResult::Added);
-        assert_eq!(solver.add_clause(&[nlit(2), lit(3)]), AddClauseResult::Added);
-        assert_eq!(solver.add_clause(&[nlit(4), lit(5)]), AddClauseResult::Added);
-        assert_eq!(solver.add_clause(&[nlit(4), lit(6)]), AddClauseResult::Added);
+        assert_eq!(
+            solver.add_clause(&[nlit(0), lit(1)]),
+            AddClauseResult::Added
+        );
+        assert_eq!(
+            solver.add_clause(&[nlit(2), lit(3)]),
+            AddClauseResult::Added
+        );
+        assert_eq!(
+            solver.add_clause(&[nlit(4), lit(5)]),
+            AddClauseResult::Added
+        );
+        assert_eq!(
+            solver.add_clause(&[nlit(4), lit(6)]),
+            AddClauseResult::Added
+        );
         assert_eq!(
             solver.add_clause(&[nlit(1), nlit(3), nlit(5), nlit(6)]),
             AddClauseResult::Added

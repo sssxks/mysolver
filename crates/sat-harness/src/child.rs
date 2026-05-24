@@ -49,12 +49,14 @@ fn solve_case_with_optional_telemetry(
         )
     })?;
     let kind = run_qfuf_process(input)?;
-    recorder.finish(sat::telemetry::Gauges::default()).map_err(|error| {
-        format!(
-            "failed to finalize telemetry file {}: {error}",
-            args.telemetry.display()
-        )
-    })?;
+    recorder
+        .finish(sat::telemetry::Gauges::default())
+        .map_err(|error| {
+            format!(
+                "failed to finalize telemetry file {}: {error}",
+                args.telemetry.display()
+            )
+        })?;
     Ok(kind)
 }
 

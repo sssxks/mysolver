@@ -3,9 +3,7 @@ use crate::clause_db::ClauseId;
 use crate::telemetry;
 
 use super::propagate::Watcher;
-use super::{
-    AddClauseResult, ClauseOrigin, Reason, Solver, TheoryClause, TheoryClauseKind,
-};
+use super::{AddClauseResult, ClauseOrigin, Reason, Solver, TheoryClause, TheoryClauseKind};
 use crate::AssertionLevel;
 
 impl Solver {
@@ -16,7 +14,11 @@ impl Solver {
     /// clauses are ignored.
     pub fn add_clause(&mut self, lits: &[Lit]) -> AddClauseResult {
         self.reset_search();
-        self.add_scoped_clause(lits, self.current_clause_assertion_level(lits), ClauseOrigin::Input)
+        self.add_scoped_clause(
+            lits,
+            self.current_clause_assertion_level(lits),
+            ClauseOrigin::Input,
+        )
     }
 
     /// Adds one clause carrying an explicit user-scope level and origin.
@@ -61,7 +63,9 @@ impl Solver {
                     ClauseOrigin::Input | ClauseOrigin::Theory => {
                         self.attach_irredundant_long(&ps, assertion_level);
                     }
-                    ClauseOrigin::Learnt => unreachable!("learned long clauses use add_learnt_clause"),
+                    ClauseOrigin::Learnt => {
+                        unreachable!("learned long clauses use add_learnt_clause")
+                    }
                 }
                 AddClauseResult::Added
             }
@@ -104,12 +108,7 @@ impl Solver {
     }
 
     /// Attaches a binary clause to both of its watch lists.
-    pub(crate) fn attach_binary(
-        &mut self,
-        a: Lit,
-        b: Lit,
-        assertion_level: AssertionLevel,
-    ) {
+    pub(crate) fn attach_binary(&mut self, a: Lit, b: Lit, assertion_level: AssertionLevel) {
         self.watches[a.index()].push(Watcher::Binary {
             other: b,
             assertion_level,
@@ -228,15 +227,10 @@ impl Solver {
     pub(crate) fn add_theory_clause(&mut self, clause: TheoryClause) -> AddClauseResult {
         let assertion_level = match clause.kind {
             TheoryClauseKind::Input | TheoryClauseKind::Lemma => clause.assertion_level,
-            TheoryClauseKind::PropagationExplanation
-            | TheoryClauseKind::ConflictExplanation => {
+            TheoryClauseKind::PropagationExplanation | TheoryClauseKind::ConflictExplanation => {
                 self.explanation_assertion_level(&clause.lits)
             }
         };
-        self.add_scoped_clause(
-            &clause.lits,
-            assertion_level,
-            ClauseOrigin::Theory,
-        )
+        self.add_scoped_clause(&clause.lits, assertion_level, ClauseOrigin::Theory)
     }
 }

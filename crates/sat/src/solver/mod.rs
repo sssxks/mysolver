@@ -610,7 +610,10 @@ impl Solver {
         }
 
         for clause in out.drain(..) {
-            if self.prepare_clause(&clause.lits).is_some_and(|prepared| prepared.is_empty()) {
+            if self
+                .prepare_clause(&clause.lits)
+                .is_some_and(|prepared| prepared.is_empty())
+            {
                 return Some(PendingTheoryConflict {
                     lits: clause.lits,
                     assertion_level: clause.assertion_level,

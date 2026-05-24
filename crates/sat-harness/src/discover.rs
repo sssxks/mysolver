@@ -11,9 +11,7 @@ use bzip2::read::BzDecoder;
 use flate2::read::MultiGzDecoder;
 use walkdir::WalkDir;
 
-use crate::model::{
-    CaseRecord, DiscoveredCase, ExpectationRule, ExpectedQueryResult, QueryAnswer,
-};
+use crate::model::{CaseRecord, DiscoveredCase, ExpectationRule, ExpectedQueryResult, QueryAnswer};
 
 /// The hidden manifest file used to attach expected results to benchmark paths.
 const EXPECTATIONS_FILE: &str = "expectations.tsv";
@@ -222,42 +220,46 @@ fn has_suffix(path: &Path, suffix: &str) -> bool {
 
 /// Extracts the logic and expected query answers from one SMT-LIB trace.
 fn parse_trace_metadata(input: &str) -> Result<TraceMetadata, String> {
-    let tokens = tokenize(input);
-    let (exprs, next) = parse_many(&tokens, 0)?;
-    if next != tokens.len() {
-        return Err("trailing tokens after trace parse".to_owned());
-    }
-
     let mut metadata = TraceMetadata::default();
     let mut pending_status = None;
-    for expr in exprs {
-        let SExpr::List(items) = expr else {
-            continue;
-        };
-        let Some(SExpr::Atom(head)) = items.first() else {
-            continue;
-        };
-        match head.as_ref() {
-            "set-logic" => {
-                if let [_, SExpr::Atom(logic)] = items.as_slice() {
-                    metadata.logic = Some(logic.clone());
-                }
-            }
-            "set-info" => {
-                if let [_, SExpr::Atom(keyword), SExpr::Atom(value)] = items.as_slice()
-                    && keyword.as_ref() == ":status"
+    let mut scanner = MetadataScanner::new(input);
+    let mut depth = 0usize;
+    let mut command = None;
+
+    while let Some(token) = scanner.next_token()? {
+        match token {
+            MetadataToken::OpenParen => {
+                depth += 1;
+                if depth == 1 {
+                    command = Some(TopLevelCommand::default());
+                } else if depth == 2
+                    && let Some(command) = command.as_mut()
                 {
-                    pending_status = Some(QueryAnswer::parse(value)?);
+                    command.has_nested_child = true;
                 }
             }
-            "check-sat" => {
-                metadata.expected_queries.push(ExpectedQueryResult {
-                    query_index: metadata.expected_queries.len(),
-                    expected: pending_status.take().unwrap_or(QueryAnswer::Unknown),
-                });
+            MetadataToken::CloseParen => {
+                let Some(next_depth) = depth.checked_sub(1) else {
+                    return Err("unexpected `)`".to_owned());
+                };
+                if depth == 1
+                    && let Some(command) = command.take()
+                {
+                    apply_top_level_command(command, &mut metadata, &mut pending_status)?;
+                }
+                depth = next_depth;
             }
-            _ => {}
+            MetadataToken::Atom(atom) => {
+                if depth == 1
+                    && let Some(command) = command.as_mut()
+                {
+                    command.direct_atoms.push(atom);
+                }
+            }
         }
+    }
+    if depth != 0 {
+        return Err("missing closing `)`".to_owned());
     }
     Ok(metadata)
 }
@@ -267,82 +269,236 @@ pub(crate) fn query_count(input: &str) -> Result<usize, String> {
     parse_trace_metadata(input).map(|metadata| metadata.expected_queries.len())
 }
 
-/// One parsed S-expression.
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum SExpr {
-    /// One atom token.
-    Atom(Box<str>),
-    /// One list form.
-    List(Vec<SExpr>),
+/// One token relevant to the metadata scanner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MetadataToken<'a> {
+    /// One opening parenthesis.
+    OpenParen,
+    /// One closing parenthesis.
+    CloseParen,
+    /// One atom token borrowed from the input.
+    Atom(&'a str),
 }
 
-/// Tokenizes one SMT-LIB input string into atoms and parentheses.
-fn tokenize(input: &str) -> Vec<Box<str>> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut chars = input.chars().peekable();
+/// The direct children observed inside one top-level SMT-LIB command.
+#[derive(Debug, Default)]
+struct TopLevelCommand<'a> {
+    /// All direct atom children, including the command head.
+    direct_atoms: Vec<&'a str>,
+    /// Whether the command contains any direct nested list child.
+    has_nested_child: bool,
+}
 
-    while let Some(ch) = chars.next() {
-        if ch == ';' {
-            while let Some(next) = chars.peek() {
-                if *next == '\n' {
+/// A lightweight token scanner that borrows atoms from the original input.
+#[derive(Debug)]
+struct MetadataScanner<'a> {
+    /// The UTF-8 bytes of the input being scanned.
+    input: &'a [u8],
+    /// The next unread byte offset.
+    index: usize,
+}
+
+impl<'a> MetadataScanner<'a> {
+    /// Creates a new scanner over one SMT-LIB input string.
+    fn new(input: &'a str) -> Self {
+        Self {
+            input: input.as_bytes(),
+            index: 0,
+        }
+    }
+
+    /// Returns the next token, skipping whitespace and comments.
+    fn next_token(&mut self) -> Result<Option<MetadataToken<'a>>, String> {
+        self.skip_layout();
+        let Some(&byte) = self.input.get(self.index) else {
+            return Ok(None);
+        };
+        match byte {
+            b'(' => {
+                self.index += 1;
+                Ok(Some(MetadataToken::OpenParen))
+            }
+            b')' => {
+                self.index += 1;
+                Ok(Some(MetadataToken::CloseParen))
+            }
+            b'"' => self.scan_quoted_string().map(Some),
+            b'|' => self.scan_quoted_symbol().map(Some),
+            _ => self.scan_bare_atom().map(Some),
+        }
+    }
+
+    /// Skips ASCII whitespace and semicolon comments.
+    fn skip_layout(&mut self) {
+        loop {
+            while self
+                .input
+                .get(self.index)
+                .is_some_and(|byte| byte.is_ascii_whitespace())
+            {
+                self.index += 1;
+            }
+            if self.input.get(self.index) != Some(&b';') {
+                break;
+            }
+            self.index += 1;
+            while let Some(&byte) = self.input.get(self.index) {
+                self.index += 1;
+                if byte == b'\n' {
                     break;
                 }
-                chars.next();
             }
-            continue;
-        }
-        match ch {
-            '(' | ')' => {
-                if !current.is_empty() {
-                    tokens.push(current.clone().into_boxed_str());
-                    current.clear();
-                }
-                tokens.push(ch.to_string().into_boxed_str());
-            }
-            ch if ch.is_whitespace() => {
-                if !current.is_empty() {
-                    tokens.push(current.clone().into_boxed_str());
-                    current.clear();
-                }
-            }
-            _ => current.push(ch),
         }
     }
-    if !current.is_empty() {
-        tokens.push(current.into_boxed_str());
+
+    /// Scans one SMT-LIB quoted string, preserving the borrowed source slice.
+    fn scan_quoted_string(&mut self) -> Result<MetadataToken<'a>, String> {
+        let start = self.index;
+        self.index += 1;
+        while let Some(&byte) = self.input.get(self.index) {
+            self.index += 1;
+            if byte == b'"' {
+                if self.input.get(self.index) == Some(&b'"') {
+                    self.index += 1;
+                    continue;
+                }
+                return self.atom_from_range(start, self.index);
+            }
+        }
+        Err("unterminated string literal".to_owned())
     }
-    tokens
+
+    /// Scans one SMT-LIB quoted symbol, preserving the borrowed source slice.
+    fn scan_quoted_symbol(&mut self) -> Result<MetadataToken<'a>, String> {
+        let start = self.index;
+        self.index += 1;
+        while let Some(&byte) = self.input.get(self.index) {
+            self.index += 1;
+            if byte == b'\\' {
+                if self.input.get(self.index).is_some() {
+                    self.index += 1;
+                }
+                continue;
+            }
+            if byte == b'|' {
+                return self.atom_from_range(start, self.index);
+            }
+        }
+        Err("unterminated quoted symbol".to_owned())
+    }
+
+    /// Scans one non-quoted atom token.
+    fn scan_bare_atom(&mut self) -> Result<MetadataToken<'a>, String> {
+        let start = self.index;
+        while let Some(&byte) = self.input.get(self.index) {
+            if byte.is_ascii_whitespace() || matches!(byte, b'(' | b')' | b';') {
+                break;
+            }
+            self.index += 1;
+        }
+        self.atom_from_range(start, self.index)
+    }
+
+    /// Converts one byte range back into a borrowed UTF-8 atom token.
+    fn atom_from_range(&self, start: usize, end: usize) -> Result<MetadataToken<'a>, String> {
+        let atom = std::str::from_utf8(&self.input[start..end]).map_err(|error| {
+            format!("invalid utf-8 in trace metadata token at byte {start}: {error}")
+        })?;
+        Ok(MetadataToken::Atom(atom))
+    }
 }
 
-/// Parses as many S-expressions as possible starting at `start`.
-fn parse_many(tokens: &[Box<str>], mut start: usize) -> Result<(Vec<SExpr>, usize), String> {
-    let mut exprs = Vec::new();
-    while start < tokens.len() {
-        if tokens[start].as_ref() == ")" {
-            break;
-        }
-        let (expr, next) = parse_one(tokens, start)?;
-        exprs.push(expr);
-        start = next;
+/// Applies one fully scanned top-level command to the running metadata state.
+fn apply_top_level_command(
+    command: TopLevelCommand<'_>,
+    metadata: &mut TraceMetadata,
+    pending_status: &mut Option<QueryAnswer>,
+) -> Result<(), String> {
+    if command.has_nested_child {
+        return Ok(());
     }
-    Ok((exprs, start))
+    match command.direct_atoms.as_slice() {
+        ["set-logic", logic] => {
+            metadata.logic = Some((*logic).into());
+        }
+        ["set-info", ":status", value] => {
+            *pending_status = Some(QueryAnswer::parse(value)?);
+        }
+        ["check-sat"] => {
+            metadata.expected_queries.push(ExpectedQueryResult {
+                query_index: metadata.expected_queries.len(),
+                expected: pending_status.take().unwrap_or(QueryAnswer::Unknown),
+            });
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
-/// Parses one S-expression starting at `start`.
-fn parse_one(tokens: &[Box<str>], start: usize) -> Result<(SExpr, usize), String> {
-    let token = tokens
-        .get(start)
-        .ok_or_else(|| "unexpected end of input".to_owned())?;
-    if token.as_ref() == "(" {
-        let (items, next) = parse_many(tokens, start + 1)?;
-        if tokens.get(next).map(|token| token.as_ref()) != Some(")") {
-            return Err("missing closing `)`".to_owned());
-        }
-        return Ok((SExpr::List(items), next + 1));
+#[cfg(test)]
+mod tests {
+    use super::{TraceMetadata, parse_trace_metadata, query_count};
+    use crate::model::QueryAnswer;
+
+    /// Ensures metadata scanning stays driven by top-level commands only.
+    #[test]
+    fn parse_trace_metadata_tracks_logic_and_pending_status() {
+        let metadata = parse_trace_metadata(
+            r#"
+            ; Ignore comments and nested check-sat text.
+            (set-info :notes "quoted ; comment (check-sat)")
+            (set-logic QF_UF)
+            (push 1)
+            (set-info :status sat)
+            (assert (= |symbol with spaces| |symbol with spaces|))
+            (check-sat)
+            (set-info :status unsat)
+            (check-sat)
+            (check-sat)
+            "#,
+        )
+        .expect("parse metadata");
+        assert_eq!(metadata.logic.as_deref(), Some("QF_UF"));
+        assert_eq!(
+            metadata
+                .expected_queries
+                .iter()
+                .map(|query| query.expected)
+                .collect::<Vec<_>>(),
+            vec![QueryAnswer::Sat, QueryAnswer::Unsat, QueryAnswer::Unknown]
+        );
     }
-    if token.as_ref() == ")" {
-        return Err("unexpected `)`".to_owned());
+
+    /// Ensures nested list children do not get mistaken for simple top-level forms.
+    #[test]
+    fn parse_trace_metadata_ignores_non_flat_top_level_commands() {
+        let metadata =
+            parse_trace_metadata("(set-info (:status sat)) (check-sat)").expect("parse metadata");
+        assert_eq!(metadata.expected_queries.len(), 1);
+        assert_eq!(metadata.expected_queries[0].expected, QueryAnswer::Unknown);
     }
-    Ok((SExpr::Atom(token.clone()), start + 1))
+
+    /// Ensures query counting still reuses the metadata parser behavior.
+    #[test]
+    fn query_count_counts_each_top_level_check_sat() {
+        let count =
+            query_count("(check-sat) foo (check-sat) (assert (check-sat))").expect("count queries");
+        assert_eq!(count, 2);
+    }
+
+    /// Ensures malformed inputs still fail fast instead of silently undercounting.
+    #[test]
+    fn parse_trace_metadata_rejects_unbalanced_or_unterminated_input() {
+        assert!(parse_trace_metadata("(check-sat").is_err());
+        assert!(parse_trace_metadata(r#"(set-info :notes "oops)"#).is_err());
+        assert!(parse_trace_metadata("(check-sat))").is_err());
+    }
+
+    /// Keeps the parser return type referenced so missing-docs applies to the tests too.
+    #[test]
+    fn parse_trace_metadata_returns_default_for_irrelevant_input() {
+        let metadata = parse_trace_metadata("atom-only").expect("parse metadata");
+        assert_eq!(metadata.logic, TraceMetadata::default().logic);
+        assert!(metadata.expected_queries.is_empty());
+    }
 }
