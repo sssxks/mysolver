@@ -1,6 +1,6 @@
-//! Identifier newtypes and canonical EUF objects.
+//! Identifier newtypes and borrowed EUF query views.
 
-use crate::arena::{ArenaSlice, ArenaStr, InternId};
+use crate::arena::InternId;
 
 /// One uninterpreted or built-in sort identifier.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
@@ -108,107 +108,6 @@ impl InternId for TermId {
 impl InternId for TheoryAtomId {
     fn from_index(index: usize) -> Self {
         Self::from_index(index)
-    }
-}
-
-/// One canonical sort object.
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub enum Sort {
-    /// The SMT-LIB built-in `Bool` sort.
-    Bool,
-    /// One uninterpreted sort with a declared name.
-    Uninterpreted {
-        /// Declared sort name.
-        name: ArenaStr,
-    },
-}
-
-impl Sort {
-    /// Returns whether this stored sort matches one borrowed probe.
-    pub(crate) fn matches_ref(&self, sort: SortRef<'_>) -> bool {
-        match (self, sort) {
-            (Self::Bool, SortRef::Bool) => true,
-            (Self::Uninterpreted { name }, SortRef::Uninterpreted { name: query }) => {
-                // SAFETY: `name` points into live registry storage.
-                unsafe { name.as_str() == query }
-            }
-            _ => false,
-        }
-    }
-}
-
-/// One canonical function symbol object.
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub struct Symbol {
-    /// Declared symbol name.
-    pub(crate) name: ArenaStr,
-    /// Declared argument sorts.
-    pub(crate) arg_sorts: ArenaSlice<SortId>,
-    /// Declared result sort.
-    pub(crate) result_sort: SortId,
-}
-
-impl Symbol {
-    /// Returns whether this stored symbol matches one borrowed probe.
-    pub(crate) fn matches_ref(&self, symbol: SymbolRef<'_>) -> bool {
-        // SAFETY: both arena-backed payload handles point into live registry storage.
-        unsafe {
-            self.name.as_str() == symbol.name
-                && self.arg_sorts.as_slice() == symbol.arg_sorts
-                && self.result_sort == symbol.result_sort
-        }
-    }
-}
-
-/// One canonical term object.
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub enum Term {
-    /// One nullary application represented by its symbol.
-    Const(SymbolId),
-    /// One n-ary application node.
-    App {
-        /// The applied symbol.
-        fun: SymbolId,
-        /// Canonical child terms.
-        args: ArenaSlice<TermId>,
-    },
-}
-
-impl Term {
-    /// Returns whether this stored term matches one borrowed probe.
-    pub(crate) fn matches_ref(&self, term: TermRef<'_>) -> bool {
-        match (self, term) {
-            (Self::Const(symbol), TermRef::Const(query)) => *symbol == query,
-            (
-                Self::App { fun, args },
-                TermRef::App {
-                    fun: query_fun,
-                    args: query_args,
-                },
-            ) => {
-                // SAFETY: `args` points into live registry storage.
-                unsafe { *fun == query_fun && args.as_slice() == query_args }
-            }
-            _ => false,
-        }
-    }
-}
-
-/// One canonical theory atom object.
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub enum Atom {
-    /// Equality between two terms.
-    Eq(TermId, TermId),
-}
-
-impl Atom {
-    /// Returns whether this stored atom matches one borrowed probe.
-    pub(crate) fn matches_ref(&self, atom: AtomRef) -> bool {
-        match (*self, atom) {
-            (Self::Eq(lhs, rhs), AtomRef::Eq(query_lhs, query_rhs)) => {
-                lhs == query_lhs && rhs == query_rhs
-            }
-        }
     }
 }
 

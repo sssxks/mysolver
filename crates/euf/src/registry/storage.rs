@@ -1,16 +1,18 @@
-//! Permanent registry of canonical terms, sorts, symbols, and atoms.
+//! Permanent registry implementation.
+//!
+//! This file owns the canonical object tables and the solver-lifetime arena that
+//! backs variable-sized payloads such as names and argument lists.
 
-use crate::arena::{Interner, RegistryStorage, make_hash};
-use crate::ids::{
-    Atom, AtomRef, Sort, SortId, SortRef, Symbol, SymbolId, SymbolRef, Term, TermId, TermRef,
-    TheoryAtomId,
-};
+use crate::arena::{Interner, BumpStorage, make_hash};
+use crate::ids::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId};
+
+use super::object::{Atom, Sort, Symbol, Term};
 
 /// Permanent registry of canonical terms, symbols, sorts, and atoms.
 #[derive(Debug, Default)]
 pub struct Registry {
     /// Solver-lifetime payload storage.
-    storage: RegistryStorage,
+    storage: BumpStorage,
     /// Canonical sort table.
     sorts: Interner<SortId, Sort>,
     /// Canonical symbol table.
@@ -158,7 +160,8 @@ impl Registry {
         match self.sorts.get(id.index()) {
             Sort::Bool => SortRef::Bool,
             Sort::Uninterpreted { name } => {
-                // SAFETY: `name` points into `self.storage`.
+                // SAFETY: `Sort` is registry-private, so `name` can only point into
+                // `self.storage`.
                 SortRef::Uninterpreted {
                     name: unsafe { name.as_str() },
                 }
@@ -170,9 +173,11 @@ impl Registry {
     pub fn symbol_ref(&self, id: SymbolId) -> SymbolRef<'_> {
         let symbol = self.symbols.get(id.index());
         SymbolRef {
-            // SAFETY: every handle stored in this registry points into `self.storage`.
+            // SAFETY: `Symbol` is registry-private, so `name` can only point into
+            // `self.storage`.
             name: unsafe { symbol.name.as_str() },
-            // SAFETY: every handle stored in this registry points into `self.storage`.
+            // SAFETY: `Symbol` is registry-private, so `arg_sorts` can only point
+            // into `self.storage`.
             arg_sorts: unsafe { symbol.arg_sorts.as_slice() },
             result_sort: symbol.result_sort,
         }
@@ -184,7 +189,8 @@ impl Registry {
             Term::Const(symbol) => TermRef::Const(*symbol),
             Term::App { fun, args } => TermRef::App {
                 fun: *fun,
-                // SAFETY: every handle stored in this registry points into `self.storage`.
+                // SAFETY: `Term` is registry-private, so `args` can only point into
+                // `self.storage`.
                 args: unsafe { args.as_slice() },
             },
         }

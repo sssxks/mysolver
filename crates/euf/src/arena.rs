@@ -110,14 +110,14 @@ pub(crate) fn make_hash<S: BuildHasher, T: Hash>(hasher: &S, value: &T) -> u64 {
     hasher.hash_one(value)
 }
 
-/// Solver-lifetime storage for permanent registry payloads.
+/// Storage for permanent DST payloads.
 #[derive(Debug, Default)]
-pub struct RegistryStorage {
+pub struct BumpStorage {
     /// Append-only allocator for names and argument slices.
     bump: Bump,
 }
 
-impl RegistryStorage {
+impl BumpStorage {
     /// Allocates one owned string inside the bump arena.
     pub(crate) fn alloc_str(&self, text: &str) -> ArenaStr {
         ArenaStr {

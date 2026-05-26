@@ -20,11 +20,9 @@ mod search_state;
 /// SAT-facing EUF theory integration.
 mod theory;
 
-pub use arena::{ArenaSlice, ArenaStr, InternId, Interner, RegistryStorage};
 pub use explain::{EqualityExplanation, ExplanationClause};
 pub use ids::{
-    Atom, AtomRef, EClassId, Sort, SortId, SortRef, Symbol, SymbolId, SymbolRef, Term, TermId,
-    TermRef, TheoryAtomId,
+    AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
 };
 pub use registry::Registry;
 pub use search_state::{
