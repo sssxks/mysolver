@@ -6,7 +6,7 @@
 //! into one live [`crate::arena::RegistryStorage`] owned by the enclosing
 //! [`super::Registry`].
 
-use crate::arena::{ArenaSlice, ArenaStr};
+use crate::arena::{ArenaSlice, ArenaStr, MatchesRef};
 use crate::ids::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef};
 
 /// One canonical sort object stored in the permanent registry.
@@ -21,13 +21,15 @@ pub(super) enum Sort {
     },
 }
 
-impl Sort {
+impl MatchesRef for Sort {
+    type Query<'a> = SortRef<'a>;
+
     /// Returns whether this stored sort matches one borrowed probe.
     ///
     /// This method is safe because the `registry` module does not expose constructors
     /// for canonical stored objects. Every `ArenaStr` embedded here therefore comes
     /// from the live registry arena owned by the surrounding [`super::Registry`].
-    pub(crate) fn matches_ref(&self, sort: SortRef<'_>) -> bool {
+    fn matches_ref(&self, sort: Self::Query<'_>) -> bool {
         match (self, sort) {
             (Self::Bool, SortRef::Bool) => true,
             (Self::Uninterpreted { name }, SortRef::Uninterpreted { name: query }) => {
@@ -51,13 +53,15 @@ pub(super) struct Symbol {
     pub(super) result_sort: SortId,
 }
 
-impl Symbol {
+impl MatchesRef for Symbol {
+    type Query<'a> = SymbolRef<'a>;
+
     /// Returns whether this stored symbol matches one borrowed probe.
     ///
-    /// This method is safe for the same reason as [`Sort::matches_ref`]: registry
-    /// privacy prevents outside code from constructing `Symbol` values that carry
-    /// dangling arena handles.
-    pub(crate) fn matches_ref(&self, symbol: SymbolRef<'_>) -> bool {
+    /// This method is safe for the same reason as `Sort`'s borrowed-match logic:
+    /// registry privacy prevents outside code from constructing `Symbol` values that
+    /// carry dangling arena handles.
+    fn matches_ref(&self, symbol: Self::Query<'_>) -> bool {
         // SAFETY: `Symbol` values are registry-private, so both handles can only
         // point into the live arena owned by the enclosing registry.
         unsafe {
@@ -82,13 +86,15 @@ pub(super) enum Term {
     },
 }
 
-impl Term {
+impl MatchesRef for Term {
+    type Query<'a> = TermRef<'a>;
+
     /// Returns whether this stored term matches one borrowed probe.
     ///
     /// This method is safe because `Term` values remain private to `registry`, so the
     /// embedded arena slice can only originate from the surrounding live registry
     /// storage.
-    pub(crate) fn matches_ref(&self, term: TermRef<'_>) -> bool {
+    fn matches_ref(&self, term: Self::Query<'_>) -> bool {
         match (self, term) {
             (Self::Const(symbol), TermRef::Const(query)) => *symbol == query,
             (
@@ -114,9 +120,11 @@ pub(crate) enum Atom {
     Eq(TermId, TermId),
 }
 
-impl Atom {
+impl MatchesRef for Atom {
+    type Query<'a> = AtomRef;
+
     /// Returns whether this stored atom matches one borrowed probe.
-    pub(crate) fn matches_ref(&self, atom: AtomRef) -> bool {
+    fn matches_ref(&self, atom: Self::Query<'_>) -> bool {
         match (*self, atom) {
             (Self::Eq(lhs, rhs), AtomRef::Eq(query_lhs, query_rhs)) => {
                 lhs == query_lhs && rhs == query_rhs

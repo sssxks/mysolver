@@ -3,7 +3,7 @@
 //! This file owns the canonical object tables and the solver-lifetime arena that
 //! backs variable-sized payloads such as names and argument lists.
 
-use crate::arena::{Interner, BumpStorage, make_hash};
+use crate::arena::{BumpStorage, Interned, Interner};
 use crate::ids::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId};
 
 use super::object::{Atom, Sort, Symbol, Term};
@@ -36,16 +36,16 @@ pub struct Registry {
 impl Registry {
     /// Interns one sort.
     pub fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId {
-        if let Some(id) = self.find_sort(sort) {
-            return id;
-        }
-        let owned = match sort {
-            SortRef::Bool => Sort::Bool,
-            SortRef::Uninterpreted { name } => Sort::Uninterpreted {
-                name: self.storage.alloc_str(name),
-            },
-        };
-        let id = self.sorts.intern(owned);
+        let id = self
+            .sorts
+            .intern(sort, || match sort {
+                SortRef::Bool => Sort::Bool,
+                SortRef::Uninterpreted { name } => Sort::Uninterpreted {
+                    name: self.storage.alloc_str(name),
+                },
+            })
+            .id;
+
         if matches!(sort, SortRef::Bool) {
             self.bool_sort = Some(id);
         }
@@ -54,37 +54,36 @@ impl Registry {
 
     /// Interns one symbol.
     pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> SymbolId {
-        if let Some(id) = self.find_symbol(symbol) {
-            return id;
-        }
-        let owned = Symbol {
-            name: self.storage.alloc_str(symbol.name),
-            arg_sorts: self.storage.alloc_slice(symbol.arg_sorts),
-            result_sort: symbol.result_sort,
-        };
-        self.symbols.intern(owned)
+        self.symbols
+            .intern(symbol, || Symbol {
+                name: self.storage.alloc_str(symbol.name),
+                arg_sorts: self.storage.alloc_slice(symbol.arg_sorts),
+                result_sort: symbol.result_sort,
+            })
+            .id
     }
 
     /// Interns one term together with its already-known sort.
     pub fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId {
-        if let Some(id) = self.find_term(term) {
-            return id;
-        }
-        let owned = match term {
+        let interned = self.terms.intern(term, || match term {
             TermRef::Const(symbol) => Term::Const(symbol),
             TermRef::App { fun, args } => Term::App {
                 fun,
                 args: self.storage.alloc_slice(args),
             },
-        };
-        let id = self.terms.intern(owned);
-        self.term_sort.push(sort);
-        self.term_atoms.push(Vec::new());
-        self.parent_apps.push(Vec::new());
+        });
 
-        if let TermRef::App { args, .. } = term {
-            for &arg in args {
-                self.parent_apps[arg.index()].push(id);
+        let Interned { id, is_new } = interned;
+
+        if is_new {
+            self.term_sort.push(sort);
+            self.term_atoms.push(Vec::new());
+            self.parent_apps.push(Vec::new());
+
+            if let TermRef::App { args, .. } = term {
+                for &arg in args {
+                    self.parent_apps[arg.index()].push(id);
+                }
             }
         }
 
@@ -97,48 +96,35 @@ impl Registry {
             AtomRef::Eq(lhs, rhs) if rhs < lhs => Atom::Eq(rhs, lhs),
             AtomRef::Eq(lhs, rhs) => Atom::Eq(lhs, rhs),
         };
-        if let Some(id) = self.find_atom(match normalized {
+        let query = match normalized {
             Atom::Eq(lhs, rhs) => AtomRef::Eq(lhs, rhs),
-        }) {
-            return id;
+        };
+        let Interned { id, is_new } = self.atoms.intern(query, || normalized);
+
+        if is_new {
+            let Atom::Eq(lhs, rhs) = normalized;
+            self.term_atoms[lhs.index()].push(id);
+            if lhs != rhs {
+                self.term_atoms[rhs.index()].push(id);
+            }
         }
-        let id = self.atoms.intern(normalized);
-        let Atom::Eq(lhs, rhs) = normalized;
-        self.term_atoms[lhs.index()].push(id);
-        if lhs != rhs {
-            self.term_atoms[rhs.index()].push(id);
-        }
+
         id
     }
 
     /// Finds one previously interned sort.
     pub fn find_sort(&self, sort: SortRef<'_>) -> Option<SortId> {
-        let hash = make_hash(self.sorts.index.hasher(), &sort);
-        self.sorts
-            .index
-            .raw_entry()
-            .from_hash(hash, |stored| stored.matches_ref(sort))
-            .map(|(_, &id)| id)
+        self.sorts.find_ref(sort)
     }
 
     /// Finds one previously interned symbol.
     pub fn find_symbol(&self, symbol: SymbolRef<'_>) -> Option<SymbolId> {
-        let hash = make_hash(self.symbols.index.hasher(), &symbol);
-        self.symbols
-            .index
-            .raw_entry()
-            .from_hash(hash, |stored| stored.matches_ref(symbol))
-            .map(|(_, &id)| id)
+        self.symbols.find_ref(symbol)
     }
 
     /// Finds one previously interned term.
     pub fn find_term(&self, term: TermRef<'_>) -> Option<TermId> {
-        let hash = make_hash(self.terms.index.hasher(), &term);
-        self.terms
-            .index
-            .raw_entry()
-            .from_hash(hash, |stored| stored.matches_ref(term))
-            .map(|(_, &id)| id)
+        self.terms.find_ref(term)
     }
 
     /// Finds one previously interned atom.
@@ -147,12 +133,7 @@ impl Registry {
             AtomRef::Eq(lhs, rhs) if rhs < lhs => AtomRef::Eq(rhs, lhs),
             other => other,
         };
-        let hash = make_hash(self.atoms.index.hasher(), &atom);
-        self.atoms
-            .index
-            .raw_entry()
-            .from_hash(hash, |stored| stored.matches_ref(atom))
-            .map(|(_, &id)| id)
+        self.atoms.find_ref(atom)
     }
 
     /// Returns one borrowed view over the canonical sort named by `id`.

@@ -140,6 +140,15 @@ pub struct Interner<Id, T> {
     pub(crate) index: HashMap<T, Id>,
 }
 
+/// Result of one interning attempt.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Interned<Id> {
+    /// Identifier of the canonical stored value.
+    pub(crate) id: Id,
+    /// Whether the value was inserted during this call.
+    pub(crate) is_new: bool,
+}
+
 impl<Id, T> Default for Interner<Id, T> {
     fn default() -> Self {
         Self {
@@ -155,16 +164,60 @@ pub trait InternId: Copy {
     fn from_index(index: usize) -> Self;
 }
 
+/// Matches one canonical stored value against its borrowed probe view.
+///
+/// Each canonical object type defines exactly one family of borrowed query views,
+/// optionally parameterized by the borrow lifetime. This keeps interner lookups
+/// tied to the actual probe shape used for that stored type instead of exposing an
+/// unconstrained "any query type" extension point.
+pub(crate) trait MatchesRef {
+    /// Borrowed query view used to probe values of this stored type.
+    type Query<'a>: Copy + Hash
+    where
+        Self: 'a;
+
+    /// Returns whether `self` matches `query`.
+    fn matches_ref(&self, query: Self::Query<'_>) -> bool;
+}
+
 impl<Id: InternId + Eq + Hash, T: Clone + Eq + Hash> Interner<Id, T> {
-    /// Interns `value`, returning the existing identifier when present.
-    pub(crate) fn intern(&mut self, value: T) -> Id {
-        if let Some(&id) = self.index.get(&value) {
-            return id;
+    /// Interns one borrowed probe, constructing the owned value only on miss.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if `make_value()` does not produce a value matching
+    /// `query`. This protects the contract between the borrowed probe and the owned
+    /// value inserted into the canonical table.
+    pub(crate) fn intern<F>(&mut self, query: T::Query<'_>, make_value: F) -> Interned<Id>
+    where
+        T: MatchesRef,
+        F: FnOnce() -> T,
+    {
+        if let Some(id) = self.find_ref(query) {
+            return Interned { id, is_new: false };
         }
+
+        let value = make_value();
+        debug_assert!(
+            value.matches_ref(query),
+            "intern closure must produce a value matching its query"
+        );
+
         let id = Id::from_index(self.values.len());
         self.values.push(value.clone());
         self.index.insert(value, id);
-        id
+        Interned { id, is_new: true }
+    }
+    /// Finds one interned value matching the borrowed `query`.
+    pub(crate) fn find_ref(&self, query: T::Query<'_>) -> Option<Id>
+    where
+        T: MatchesRef,
+    {
+        let hash = make_hash(self.index.hasher(), &query);
+        self.index
+            .raw_entry()
+            .from_hash(hash, |stored| stored.matches_ref(query))
+            .map(|(_, &id)| id)
     }
 
     /// Returns the value named by `id`.
