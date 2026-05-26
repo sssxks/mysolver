@@ -8,10 +8,10 @@
 
 /// Arena-backed storage handles and interning helpers.
 mod arena;
-/// Identifier newtypes and canonical EUF objects.
-mod ids;
 /// Permanent registry of canonical terms, sorts, symbols, and atoms.
 mod registry;
+/// Identifier newtypes and canonical EUF objects.
+mod types;
 
 /// Equality and theory-clause explanation support.
 mod explain;
@@ -21,12 +21,13 @@ mod search_state;
 mod theory;
 
 pub use explain::{EqualityExplanation, ExplanationClause};
-pub use ids::{
-    AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
-};
 pub use registry::Registry;
 pub use search_state::{
     CongruenceSig, CongruenceSigRef, DiseqInput, DisequalityEntry, MergeEdge, MergeInput,
     MergeReason, SatLevelMarker, SearchState, Undo,
 };
-pub use theory::{AtomLiteralKind, EufTheory};
+pub use theory::EufTheory;
+pub use types::{
+    AtomLiteralKind, AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef,
+    TheoryAtomId,
+};

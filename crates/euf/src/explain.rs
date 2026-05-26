@@ -1,10 +1,12 @@
 //! Equality and theory-clause explanation support.
 
+// TODO this module is poorly implemented, needs investigation. performance very bad.
+
 use std::collections::VecDeque;
 
 use sat::{AssertionLevel, Lit, TheoryClause, TheoryClauseKind};
 
-use crate::ids::{TermId, TermRef};
+use crate::types::{TermId, TermRef};
 use crate::registry::Registry;
 use crate::search_state::{DisequalityEntry, MergeReason, SearchState};
 
@@ -112,14 +114,6 @@ impl SearchState {
         out.clear();
         self.collect_equality_explanation(registry, diseq.lhs, diseq.rhs, out);
         out.push(diseq.reason_lit);
-    }
-
-    /// Constructs one propagation explanation clause from already collected premises.
-    pub fn explain_propagation(&self, propagated: Lit, support: &[Lit]) -> ExplanationClause {
-        ExplanationClause {
-            propagated: Some(propagated),
-            premises: support.to_vec().into_boxed_slice(),
-        }
     }
 }
 

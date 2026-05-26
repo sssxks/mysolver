@@ -4,7 +4,7 @@
 //! backs variable-sized payloads such as names and argument lists.
 
 use crate::arena::{BumpStorage, Interned, Interner};
-use crate::ids::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId};
+use crate::types::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId};
 
 use super::object::{Atom, Sort, Symbol, Term};
 

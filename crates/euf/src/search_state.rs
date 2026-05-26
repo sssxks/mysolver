@@ -8,7 +8,7 @@ use hashbrown::HashMap;
 use sat::{Lit, TheoryClause};
 
 use crate::arena::{ArenaSlice, make_hash};
-use crate::ids::{EClassId, SymbolId, TermId, TermRef, TheoryAtomId};
+use crate::types::{EClassId, SymbolId, TermId, TermRef, TheoryAtomId};
 use crate::registry::Registry;
 
 /// One input equality waiting to merge.
@@ -328,21 +328,6 @@ impl SearchState {
         self.class_tail[survivor.index()] = self.class_tail[absorbed.index()];
 
         survivor
-    }
-
-    /// Builds one borrowed congruence signature for `parent`.
-    pub fn make_congruence_sig<'a>(
-        &'a mut self,
-        registry: &Registry,
-        parent: TermId,
-    ) -> CongruenceSigRef<'a> {
-        let Some(fun) = self.fill_congruence_sig_scratch(registry, parent) else {
-            panic!("congruence signatures require application terms");
-        };
-        CongruenceSigRef {
-            fun,
-            arg_reps: &self.congruence_sig_scratch,
-        }
     }
 
     /// Fills `congruence_sig_scratch` with the current signature of `parent`.

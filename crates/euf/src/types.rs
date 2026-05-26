@@ -154,3 +154,17 @@ pub enum AtomRef {
     /// Equality between two terms.
     Eq(TermId, TermId),
 }
+
+/// Kind of theory atom represented by one SAT literal.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum AtomLiteralKind {
+    /// Equality atom over two term endpoints.
+    Eq {
+        /// Left endpoint.
+        lhs: TermId,
+        /// Right endpoint.
+        rhs: TermId,
+        /// Whether the literal is positive.
+        positive: bool,
+    },
+}

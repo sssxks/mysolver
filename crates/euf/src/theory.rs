@@ -4,41 +4,31 @@ use std::collections::VecDeque;
 
 use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
 
-use crate::ids::{
-    AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
-};
+use crate::AtomLiteralKind;
 use crate::registry::Registry;
 use crate::search_state::{
     DiseqInput, DisequalityEntry, MergeEdge, MergeInput, MergeReason, SearchState, Undo,
 };
-
-/// Kind of theory atom represented by one SAT literal.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum AtomLiteralKind {
-    /// Equality atom over two term endpoints.
-    Eq {
-        /// Left endpoint.
-        lhs: TermId,
-        /// Right endpoint.
-        rhs: TermId,
-        /// Whether the literal is positive.
-        positive: bool,
-    },
-}
+use crate::types::{
+    AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
+};
 
 /// The EUF theory module exposed to the SAT engine.
 #[derive(Debug, Default)]
 pub struct EufTheory {
     /// Permanent canonical registry.
     registry: Registry,
+
     /// Search-local congruence closure state.
     search: SearchState,
+
     /// Forward map from theory atoms to SAT variables.
     theory_atom_to_var: Vec<Var>,
     /// Reverse map from SAT variables to theory atoms.
     var_to_theory_atom: Vec<Option<TheoryAtomId>>,
     /// Queue of assigned theory literals not yet processed by EUF.
     pending_assignments: VecDeque<Lit>,
+
     /// Search-local atom assignment cache.
     atom_value: Vec<Option<bool>>,
     /// Search-local assigned atom trail.
@@ -71,6 +61,7 @@ impl EufTheory {
     /// Interns one equality atom and binds it to `sat_var`.
     pub fn intern_equality_atom(&mut self, lhs: TermId, rhs: TermId, sat_var: Var) -> TheoryAtomId {
         let atom = self.registry.intern_atom(AtomRef::Eq(lhs, rhs));
+
         if self.theory_atom_to_var.len() <= atom.index() {
             self.theory_atom_to_var.resize(atom.index() + 1, sat_var);
         }

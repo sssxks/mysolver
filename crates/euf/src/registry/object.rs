@@ -7,7 +7,7 @@
 //! [`super::Registry`].
 
 use crate::arena::{ArenaSlice, ArenaStr, MatchesRef};
-use crate::ids::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef};
+use crate::types::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef};
 
 /// One canonical sort object stored in the permanent registry.
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]

@@ -34,3 +34,13 @@ compare argument="hard" *extra:
 # recipe for perf recording. e.g. run with `timeout ...`, `cargo run ...`. use `--profile perf` to build the harness with perf instrumentation.
 perf *args="":
     samply record --unstable-presymbolicate -- {{ args }}
+
+@dead-pub:
+    # cargo install has to update index, causing a little lag even when installed, seems not very ideal.
+    cargo install cargo-workspace-unused-pub -q
+    # rustup is fine.
+    rustup component add rust-analyzer > /dev/null 2>&1
+    # also the `cargo-workspace-unused-pub` tool is poorly implemented, quite slow.
+    -RUST_LOG=off cargo workspace-unused-pub
+    rm -f index.scip
+    
