@@ -24,11 +24,11 @@ mod theory;
 
 pub use registry::Registry;
 pub use search_state::{
-    CongruenceSig, CongruenceSigRef, DiseqInput, DisequalityEntry, MergeInput, MergeReason,
-    ProofEdge, SatLevelMarker, SearchState, Undo,
+    CongruenceSig, CongruenceSigRef, DiseqInput, DisequalityEntry, MergeEdge, MergeInput,
+    MergeReason, SatLevelMarker, SearchState, Undo,
 };
 pub use theory::EufTheory;
 pub use types::{
-    AtomLiteralKind, AtomRef, EClassId, ProofEdgeId, SortId, SortRef, SymbolId, SymbolRef, TermId,
-    TermRef, TheoryAtomId,
+    AtomLiteralKind, AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef,
+    TheoryAtomId,
 };

@@ -175,8 +175,6 @@ pub struct EufGauges {
     pub active_disequalities: u64,
     /// Number of live congruence-table entries.
     pub congruence_table_entries: u64,
-    /// Number of directed proof edges in the explanation graph.
-    pub proof_edges: u64,
 }
 
 /// Aggregate SAT telemetry derived from one case's sample stream.
@@ -354,7 +352,6 @@ impl EufSummary {
         self.peak_congruence_table_entries = self
             .peak_congruence_table_entries
             .max(gauges.congruence_table_entries);
-        self.peak_proof_edges = self.peak_proof_edges.max(gauges.proof_edges);
     }
 }
 
@@ -837,7 +834,6 @@ mod tests {
                         pending_theory_clauses: 0,
                         active_disequalities: 1,
                         congruence_table_entries: 7,
-                        proof_edges: 6,
                     },
                 },
             },
@@ -884,7 +880,6 @@ mod tests {
                         pending_theory_clauses: 1,
                         active_disequalities: 2,
                         congruence_table_entries: 8,
-                        proof_edges: 10,
                     },
                 },
             },
