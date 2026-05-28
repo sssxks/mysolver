@@ -8,7 +8,7 @@ use sat::Lit;
 
 use crate::registry::Registry;
 use crate::search_state::{DisequalityEntry, MergeReason, SearchState};
-use crate::types::{TermId, TermRef};
+use crate::types::TermId;
 
 impl SearchState {
     /// Explains why `lhs == rhs` currently holds as a multiset of input literals.
@@ -80,20 +80,8 @@ impl SearchState {
                     left_parent,
                     right_parent,
                 } => {
-                    let (
-                        TermRef::App {
-                            args: left_args, ..
-                        },
-                        TermRef::App {
-                            args: right_args, ..
-                        },
-                    ) = (
-                        registry.term_ref(left_parent),
-                        registry.term_ref(right_parent),
-                    )
-                    else {
-                        continue;
-                    };
+                    let left_args = registry.term_ref(left_parent).args;
+                    let right_args = registry.term_ref(right_parent).args;
                     for (&left_arg, &right_arg) in left_args.iter().zip(right_args.iter()) {
                         if self.find(left_arg) == self.find(right_arg) {
                             self.collect_equality_explanation(registry, left_arg, right_arg, out);

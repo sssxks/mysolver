@@ -231,10 +231,10 @@ impl EufTheory {
 
     /// Rechecks one parent application under current child representatives.
     fn repair_parent_app(&mut self, parent: TermId) {
-        let existing = match self.registry.term_ref(parent) {
-            TermRef::Const(_) => return,
-            TermRef::App { .. } => self.search.find_congruent_parent(&self.registry, parent),
-        };
+        if self.registry.term_ref(parent).args.is_empty() {
+            return;
+        }
+        let existing = self.search.find_congruent_parent(&self.registry, parent);
 
         if let Some(existing) = existing {
             if self.search.find(existing) != self.search.find(parent) {
@@ -430,8 +430,8 @@ mod tests {
             arg_sorts: &[],
             result_sort: u_sort,
         });
-        let a = theory.intern_term(TermRef::Const(a_sym), u_sort);
-        let fa = theory.intern_term(TermRef::App { fun: f, args: &[a] }, u_sort);
+        let a = theory.intern_term(TermRef::nullary(a_sym), u_sort);
+        let fa = theory.intern_term(TermRef { fun: f, args: &[a] }, u_sort);
 
         assert_eq!(theory.registry.term_sort(fa), u_sort);
         assert_eq!(theory.registry.bool_sort(), bool_sort);
@@ -461,10 +461,10 @@ mod tests {
             arg_sorts: &[],
             result_sort: u_sort,
         });
-        let a = theory.intern_term(TermRef::Const(a_sym), u_sort);
-        let b = theory.intern_term(TermRef::Const(b_sym), u_sort);
-        let fa = theory.intern_term(TermRef::App { fun: f, args: &[a] }, u_sort);
-        let fb = theory.intern_term(TermRef::App { fun: f, args: &[b] }, u_sort);
+        let a = theory.intern_term(TermRef::nullary(a_sym), u_sort);
+        let b = theory.intern_term(TermRef::nullary(b_sym), u_sort);
+        let fa = theory.intern_term(TermRef { fun: f, args: &[a] }, u_sort);
+        let fb = theory.intern_term(TermRef { fun: f, args: &[b] }, u_sort);
 
         let ab_var = sat.new_var();
         let fafb_var = sat.new_var();

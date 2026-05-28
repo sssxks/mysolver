@@ -65,12 +65,32 @@ impl Registry {
 
     /// Interns one term together with its already-known sort.
     pub fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId {
-        let interned = self.terms.intern(term, || match term {
-            TermRef::Const(symbol) => Term::Const(symbol),
-            TermRef::App { fun, args } => Term::App {
-                fun,
-                args: self.storage.alloc_slice(args),
-            },
+        let symbol = self.symbols.get(term.fun.index());
+        // SAFETY: `Symbol` is registry-private, so `arg_sorts` can only point into
+        // `self.storage`.
+        let expected_arg_sorts = unsafe { symbol.arg_sorts.as_slice() };
+        assert_eq!(
+            expected_arg_sorts.len(),
+            term.args.len(),
+            "term arity must match the declared symbol signature",
+        );
+        assert_eq!(
+            symbol.result_sort, sort,
+            "term sort must match the declared symbol result sort",
+        );
+        for (&arg, &expected_sort) in term.args.iter().zip(expected_arg_sorts.iter()) {
+            let Some(&actual_sort) = self.term_sort.get(arg.index()) else {
+                panic!("term arguments must already be interned");
+            };
+            assert_eq!(
+                actual_sort, expected_sort,
+                "term argument sort must match the declared symbol signature",
+            );
+        }
+
+        let interned = self.terms.intern(term, || Term {
+            fun: term.fun,
+            args: self.storage.alloc_slice(term.args),
         });
 
         let Interned { id, is_new } = interned;
@@ -80,10 +100,8 @@ impl Registry {
             self.term_atoms.push(Vec::new());
             self.parent_apps.push(Vec::new());
 
-            if let TermRef::App { args, .. } = term {
-                for &arg in args {
-                    self.parent_apps[arg.index()].push(id);
-                }
+            for &arg in term.args {
+                self.parent_apps[arg.index()].push(id);
             }
         }
 
@@ -166,14 +184,12 @@ impl Registry {
 
     /// Returns one borrowed view over the canonical term named by `id`.
     pub fn term_ref(&self, id: TermId) -> TermRef<'_> {
-        match self.terms.get(id.index()) {
-            Term::Const(symbol) => TermRef::Const(*symbol),
-            Term::App { fun, args } => TermRef::App {
-                fun: *fun,
-                // SAFETY: `Term` is registry-private, so `args` can only point into
-                // `self.storage`.
-                args: unsafe { args.as_slice() },
-            },
+        let term = self.terms.get(id.index());
+        TermRef {
+            fun: term.fun,
+            // SAFETY: `Term` is registry-private, so `args` can only point into
+            // `self.storage`.
+            args: unsafe { term.args.as_slice() },
         }
     }
 
@@ -228,7 +244,7 @@ impl Registry {
             arg_sorts: &[],
             result_sort: bool_sort,
         });
-        let term = self.intern_term(TermRef::Const(symbol), bool_sort);
+        let term = self.intern_term(TermRef::nullary(symbol), bool_sort);
         self.true_term = Some(term);
         term
     }

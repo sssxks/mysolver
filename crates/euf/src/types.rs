@@ -134,18 +134,29 @@ pub struct SymbolRef<'a> {
     pub result_sort: SortId,
 }
 
-/// Borrowed query view for one term.
+/// Borrowed query view for one canonical EUF term.
+///
+/// Semantically, a term is one application in `Symbol × Vec<TermId>`.
+///
+/// # Encoding
+///
+/// - `(fun, args)` is encoded directly as `Self { fun, args }`.
+/// - Nullary symbols use `args = &[]`; there is no separate constant variant.
+/// - Callers must only intern terms whose argument count and argument sorts match the
+///   declared signature of `fun`.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub enum TermRef<'a> {
-    /// One nullary application.
-    Const(SymbolId),
-    /// One n-ary application.
-    App {
-        /// The applied symbol.
-        fun: SymbolId,
-        /// Borrowed child-term slice.
-        args: &'a [TermId],
-    },
+pub struct TermRef<'a> {
+    /// The applied symbol.
+    pub fun: SymbolId,
+    /// Borrowed child-term slice.
+    pub args: &'a [TermId],
+}
+
+impl<'a> TermRef<'a> {
+    /// Returns one borrowed nullary application view.
+    pub fn nullary(fun: SymbolId) -> Self {
+        Self { fun, args: &[] }
+    }
 }
 
 /// Borrowed query view for one theory atom.

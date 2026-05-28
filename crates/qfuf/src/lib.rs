@@ -91,6 +91,8 @@ enum Command {
 struct FunDecl {
     /// Canonical symbol identifier.
     symbol: SymbolId,
+    /// Declared argument count.
+    arity: u32,
     /// Result sort.
     result_sort: SortId,
 }
@@ -177,6 +179,8 @@ impl Driver {
                     .iter()
                     .map(|arg| self.resolve_sort(arg))
                     .collect::<Result<Vec<_>, _>>()?;
+                let arity = u32::try_from(arg_sorts.len())
+                    .map_err(|_| "function arity exceeds u32".to_owned())?;
                 let result_sort = self.resolve_sort(&result)?;
                 let symbol = self.euf.intern_symbol(SymbolRef {
                     name: &name,
@@ -187,6 +191,7 @@ impl Driver {
                     name,
                     FunDecl {
                         symbol,
+                        arity,
                         result_sort,
                     },
                 );
@@ -514,7 +519,13 @@ impl Driver {
                     .funs
                     .get(atom.as_ref())
                     .ok_or_else(|| format!("unknown symbol: {atom}"))?;
-                Ok(self.intern_term(TermRef::Const(decl.symbol), decl.result_sort))
+                if decl.arity != 0 {
+                    return Err(format!(
+                        "symbol `{atom}` expects {} arguments",
+                        decl.arity
+                    ));
+                }
+                Ok(self.intern_term(TermRef::nullary(decl.symbol), decl.result_sort))
             }
             SExpr::List(items) => {
                 if let Some(SExpr::Atom(head)) = items.first() {
@@ -546,12 +557,19 @@ impl Driver {
                     .funs
                     .get(head.as_ref())
                     .ok_or_else(|| format!("unknown symbol: {head}"))?;
+                let actual_arity = items.len() - 1;
+                if actual_arity != decl.arity as usize {
+                    return Err(format!(
+                        "symbol `{head}` expects {} arguments, got {actual_arity}",
+                        decl.arity
+                    ));
+                }
                 let args = items[1..]
                     .iter()
                     .map(|arg| self.lower_term(arg))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(self.intern_term(
-                    TermRef::App {
+                    TermRef {
                         fun: decl.symbol,
                         args: &args,
                     },
@@ -679,7 +697,7 @@ impl Driver {
             arg_sorts: &[],
             result_sort: bool_sort,
         });
-        let term = self.intern_term_unchecked(TermRef::Const(symbol), bool_sort);
+        let term = self.intern_term_unchecked(TermRef::nullary(symbol), bool_sort);
         self.true_term = Some(term);
         self.ensure_bool_constants_distinct();
         Ok(term)
@@ -696,7 +714,7 @@ impl Driver {
             arg_sorts: &[],
             result_sort: bool_sort,
         });
-        let term = self.intern_term_unchecked(TermRef::Const(symbol), bool_sort);
+        let term = self.intern_term_unchecked(TermRef::nullary(symbol), bool_sort);
         self.false_term = Some(term);
         self.ensure_bool_constants_distinct();
         Ok(term)
@@ -711,7 +729,7 @@ impl Driver {
             arg_sorts: &[],
             result_sort: sort,
         });
-        self.intern_term(TermRef::Const(symbol), sort)
+        self.intern_term(TermRef::nullary(symbol), sort)
     }
 
     /// Asserts the root disequality between the canonical Boolean constants.
@@ -1100,5 +1118,51 @@ mod tests {
             (exit)
         "#;
         assert_eq!(run_script(input).expect("script should run"), "sat\nsat\n");
+    }
+
+    #[test]
+    fn rejects_bare_non_nullary_function_symbols() {
+        let input = r#"
+            (set-logic QF_UF)
+            (declare-sort U 0)
+            (declare-const a U)
+            (declare-fun f (U) U)
+            (assert (= f (f a)))
+            (check-sat)
+            (exit)
+        "#;
+        assert_eq!(
+            run_script(input),
+            Err("symbol `f` expects 1 arguments".to_owned())
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_application_arity() {
+        let input = r#"
+            (set-logic QF_UF)
+            (declare-sort U 0)
+            (declare-const a U)
+            (assert (= a (a a)))
+            (check-sat)
+            (exit)
+        "#;
+        assert_eq!(
+            run_script(input),
+            Err("symbol `a` expects 0 arguments, got 1".to_owned())
+        );
+    }
+
+    #[test]
+    fn treats_nullary_application_lists_as_the_same_term() {
+        let input = r#"
+            (set-logic QF_UF)
+            (declare-sort U 0)
+            (declare-const a U)
+            (assert (not (= a (a))))
+            (check-sat)
+            (exit)
+        "#;
+        assert_eq!(run_script(input).expect("script should run"), "unsat\n");
     }
 }

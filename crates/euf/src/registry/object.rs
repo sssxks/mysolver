@@ -73,17 +73,22 @@ impl MatchesRef for Symbol {
 }
 
 /// One canonical term object stored in the permanent registry.
+///
+/// Semantically, a term is one application in `SymbolId × Vec<TermId>`.
+///
+/// # Encoding
+///
+/// - `(fun, args)` is stored directly in the two fields below.
+/// - Nullary applications use one empty arena slice; there is no distinct constant
+///   encoding.
+/// - The enclosing registry guarantees that `args.len()` and each child term sort
+///   match the declared signature of `fun`.
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
-pub(super) enum Term {
-    /// One nullary application represented by its symbol.
-    Const(SymbolId),
-    /// One n-ary application node.
-    App {
-        /// The applied symbol.
-        fun: SymbolId,
-        /// Canonical child terms stored in registry arena memory.
-        args: ArenaSlice<TermId>,
-    },
+pub(super) struct Term {
+    /// The applied symbol.
+    pub(super) fun: SymbolId,
+    /// Canonical child terms stored in registry arena memory.
+    pub(super) args: ArenaSlice<TermId>,
 }
 
 impl MatchesRef for Term {
@@ -95,21 +100,9 @@ impl MatchesRef for Term {
     /// embedded arena slice can only originate from the surrounding live registry
     /// storage.
     fn matches_ref(&self, term: Self::Query<'_>) -> bool {
-        match (self, term) {
-            (Self::Const(symbol), TermRef::Const(query)) => *symbol == query,
-            (
-                Self::App { fun, args },
-                TermRef::App {
-                    fun: query_fun,
-                    args: query_args,
-                },
-            ) => {
-                // SAFETY: `Term` values are registry-private, so `args` can only point
-                // into the live arena owned by the enclosing registry.
-                unsafe { *fun == query_fun && args.as_slice() == query_args }
-            }
-            _ => false,
-        }
+        // SAFETY: `Term` values are registry-private, so `args` can only point into
+        // the live arena owned by the enclosing registry.
+        unsafe { self.fun == term.fun && self.args.as_slice() == term.args }
     }
 }
 

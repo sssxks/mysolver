@@ -8,8 +8,8 @@ use hashbrown::HashMap;
 use sat::{Lit, TheoryClause};
 
 use crate::arena::{ArenaSlice, make_hash};
-use crate::types::{EClassId, SymbolId, TermId, TermRef, TheoryAtomId};
 use crate::registry::Registry;
+use crate::types::{EClassId, SymbolId, TermId, TheoryAtomId};
 
 /// One input equality waiting to merge.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -165,8 +165,6 @@ pub enum Undo {
 /// Search-local equality engine state.
 #[derive(Debug, Default)]
 pub struct SearchState {
-    /// Search-lifetime arena for owned congruence signatures.
-    congruence_storage: Bump,
     /// Union-find representative for each term.
     parent: Vec<EClassId>,
     /// Rank heuristic for each representative.
@@ -177,6 +175,9 @@ pub struct SearchState {
     class_tail: Vec<TermId>,
     /// Successor link for each term in one class-membership list.
     pub(crate) next_in_class: Vec<Option<TermId>>,
+
+    /// Search-lifetime arena for owned congruence signatures.
+    congruence_storage: Bump,
     /// Congruence table keyed by function symbol and current representative arguments.
     pub(crate) congruence_table: HashMap<CongruenceSig, TermId>,
     /// Scratch buffer used while building borrowed congruence signatures.
@@ -336,16 +337,14 @@ impl SearchState {
         registry: &Registry,
         parent: TermId,
     ) -> Option<SymbolId> {
-        let TermRef::App { fun, args } = registry.term_ref(parent) else {
-            return None;
-        };
+        let term = registry.term_ref(parent);
         let union_find_parent = &self.parent;
         self.congruence_sig_scratch.clear();
-        for &arg in args {
+        for &arg in term.args {
             self.congruence_sig_scratch
                 .push(Self::find_in_parent(union_find_parent, arg));
         }
-        Some(fun)
+        Some(term.fun)
     }
 
     /// Finds one existing congruence-table owner for the current scratch signature.
