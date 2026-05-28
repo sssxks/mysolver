@@ -44,7 +44,7 @@ impl SearchState {
             if current == rhs {
                 break;
             }
-            for (edge_index, edge) in self.merge_edges.iter().enumerate() {
+            for (edge_index, edge) in self.edges.iter().enumerate() {
                 let next = if edge.lhs == current {
                     edge.rhs
                 } else if edge.rhs == current {
@@ -63,7 +63,7 @@ impl SearchState {
         let mut current = rhs;
         while current != lhs {
             let edge_index = parents[current.index()].expect("missing equality explanation path");
-            let edge = self.merge_edges[edge_index];
+            let edge = self.edges[edge_index];
             path_edges.push(edge);
             current = if edge.lhs == current {
                 edge.rhs

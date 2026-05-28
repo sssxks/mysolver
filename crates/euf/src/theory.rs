@@ -169,7 +169,7 @@ impl EufTheory {
             return;
         }
         let merged_root = self.search.union_roots(lhs_root, rhs_root);
-        self.search.merge_edges.push(MergeEdge {
+        self.search.edges.push(MergeEdge {
             lhs: input.lhs,
             rhs: input.rhs,
             reason: MergeReason::InputEq {
@@ -188,7 +188,7 @@ impl EufTheory {
             return;
         }
         let merged_root = self.search.union_roots(lhs_root, rhs_root);
-        self.search.merge_edges.push(MergeEdge {
+        self.search.edges.push(MergeEdge {
             lhs: lhs_parent,
             rhs: rhs_parent,
             reason: MergeReason::Congruence {
@@ -215,7 +215,7 @@ impl EufTheory {
             for &parent in self.registry.parent_apps(term) {
                 self.search.pending_repairs.push_back(parent);
             }
-            term = self.search.next_in_class[term.index()];
+            term = self.search.next[term.index()];
             if term == start {
                 break;
             }
@@ -230,7 +230,7 @@ impl EufTheory {
             for &atom in self.registry.term_atoms(term) {
                 self.search.enqueue_atom_trigger(atom);
             }
-            term = self.search.next_in_class[term.index()];
+            term = self.search.next[term.index()];
             if term == start {
                 break;
             }
@@ -258,8 +258,8 @@ impl EufTheory {
             return;
         };
         let owned = self.search.own_current_congruence_sig(fun);
-        self.search.congruence_insert_log.push(owned.clone());
-        self.search.congruence_table.insert(owned, parent);
+        self.search.signature_log.push(owned.clone());
+        self.search.signatures.insert(owned, parent);
     }
 
     /// Emits conflicts for any active disequality that is now violated.

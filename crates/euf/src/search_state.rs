@@ -153,7 +153,7 @@ pub struct SearchState {
     /// Rank heuristic for each representative.
     rank: Vec<u32>,
     /// Successor link for each term in one circular class-membership list.
-    pub(crate) next_in_class: Vec<TermId>,
+    pub(crate) next: Vec<TermId>,
 
     /// Search-lifetime arena for owned congruence signatures.
     ///
@@ -161,13 +161,13 @@ pub struct SearchState {
     /// simplicity. SAT backtracking removes congruence-table entries via
     /// `congruence_insert_log`, but does not reclaim per-signature payload.
     /// That keeps `CongruenceSig` as one simple hashable slice handle.
-    congruence_storage: Bump,
+    signature_storage: Bump,
     /// Congruence table keyed by function symbol and current representative arguments.
-    pub(crate) congruence_table: HashMap<CongruenceSig, TermId>,
+    pub(crate) signatures: HashMap<CongruenceSig, TermId>,
     /// Congruence-table insertions in insertion order for SAT-level rollback.
-    pub(crate) congruence_insert_log: Vec<CongruenceSig>,
+    pub(crate) signature_log: Vec<CongruenceSig>,
     /// Scratch buffer used while building borrowed congruence signatures.
-    congruence_sig_scratch: Vec<EClassId>,
+    signature_scratch: Vec<EClassId>,
 
     /// Pending input merges still to process.
     pub(crate) pending_merges: VecDeque<MergeInput>,
@@ -183,8 +183,10 @@ pub struct SearchState {
     pub(crate) pending_clauses: Vec<TheoryClause>,
     /// Currently active disequalities.
     pub(crate) active_disequalities: Vec<DisequalityEntry>,
+
     /// Active equality-proof graph.
-    pub(crate) merge_edges: Vec<MergeEdge>,
+    pub(crate) edges: Vec<MergeEdge>,
+
     /// Reversible mutation log.
     pub(crate) undo_log: Vec<Undo>,
     /// One marker per open SAT decision level.
@@ -206,19 +208,19 @@ impl SearchState {
         let nterms = registry.num_terms();
         self.parent.clear();
         self.rank.clear();
-        self.next_in_class.clear();
-        self.congruence_storage.reset();
+        self.next.clear();
+        self.signature_storage.reset();
 
         for index in 0..nterms {
             let term = TermId::from_index(index);
             let rep = EClassId::from_index(index);
             self.parent.push(rep);
             self.rank.push(0);
-            self.next_in_class.push(term);
+            self.next.push(term);
         }
 
-        self.congruence_table.clear();
-        self.congruence_sig_scratch.clear();
+        self.signatures.clear();
+        self.signature_scratch.clear();
         self.pending_merges.clear();
         self.pending_repairs.clear();
         self.pending_atom_triggers.clear();
@@ -227,8 +229,8 @@ impl SearchState {
         self.atom_is_enqueued.resize(registry.num_atoms(), false);
         self.pending_clauses.clear();
         self.active_disequalities.clear();
-        self.merge_edges.clear();
-        self.congruence_insert_log.clear();
+        self.edges.clear();
+        self.signature_log.clear();
         self.undo_log.clear();
         self.level_markers.clear();
     }
@@ -237,8 +239,8 @@ impl SearchState {
     pub fn push_sat_level(&mut self) {
         self.level_markers.push(SatLevelMarker {
             undo_len: self.undo_log.len(),
-            congruence_insert_len: self.congruence_insert_log.len(),
-            merge_edges_len: self.merge_edges.len(),
+            congruence_insert_len: self.signature_log.len(),
+            merge_edges_len: self.edges.len(),
             active_disequalities_len: self.active_disequalities.len(),
             pending_merges_len: self.pending_merges.len(),
             pending_repairs_len: self.pending_repairs.len(),
@@ -264,13 +266,13 @@ impl SearchState {
             self.pending_merges.truncate(marker.pending_merges_len);
             self.active_disequalities
                 .truncate(marker.active_disequalities_len);
-            self.merge_edges.truncate(marker.merge_edges_len);
-            while self.congruence_insert_log.len() > marker.congruence_insert_len {
+            self.edges.truncate(marker.merge_edges_len);
+            while self.signature_log.len() > marker.congruence_insert_len {
                 let key = self
-                    .congruence_insert_log
+                    .signature_log
                     .pop()
                     .expect("checked congruence insert suffix above");
-                self.congruence_table.remove(&key);
+                self.signatures.remove(&key);
             }
             self.rollback_to(marker.undo_len);
         }
@@ -312,15 +314,15 @@ impl SearchState {
         let absorbed_node = TermId::from_index(absorbed.index());
         self.undo_log.push(Undo::ClassNext {
             node: survivor_node,
-            old_next: self.next_in_class[survivor_node.index()],
+            old_next: self.next[survivor_node.index()],
         });
         self.undo_log.push(Undo::ClassNext {
             node: absorbed_node,
-            old_next: self.next_in_class[absorbed_node.index()],
+            old_next: self.next[absorbed_node.index()],
         });
-        let survivor_next = self.next_in_class[survivor_node.index()];
-        self.next_in_class[survivor_node.index()] = self.next_in_class[absorbed_node.index()];
-        self.next_in_class[absorbed_node.index()] = survivor_next;
+        let survivor_next = self.next[survivor_node.index()];
+        self.next[survivor_node.index()] = self.next[absorbed_node.index()];
+        self.next[absorbed_node.index()] = survivor_next;
 
         survivor
     }
@@ -333,9 +335,9 @@ impl SearchState {
     ) -> Option<SymbolId> {
         let term = registry.term_ref(parent);
         let union_find_parent = &self.parent;
-        self.congruence_sig_scratch.clear();
+        self.signature_scratch.clear();
         for &arg in term.args {
-            self.congruence_sig_scratch
+            self.signature_scratch
                 .push(Self::find_in_parent(union_find_parent, arg));
         }
         Some(term.fun)
@@ -345,10 +347,10 @@ impl SearchState {
     fn find_congruent_parent_for_current_sig(&self, fun: SymbolId) -> Option<TermId> {
         let sig = CongruenceSigRef {
             fun,
-            arg_reps: &self.congruence_sig_scratch,
+            arg_reps: &self.signature_scratch,
         };
-        let hash = make_hash(self.congruence_table.hasher(), &sig);
-        self.congruence_table
+        let hash = make_hash(self.signatures.hasher(), &sig);
+        self.signatures
             .raw_entry()
             .from_hash(hash, |stored| stored.matches_ref(sig))
             .map(|(_, &owner)| owner)
@@ -358,7 +360,7 @@ impl SearchState {
     pub(crate) fn own_current_congruence_sig(&self, fun: SymbolId) -> CongruenceSig {
         let sig = CongruenceSigRef {
             fun,
-            arg_reps: &self.congruence_sig_scratch,
+            arg_reps: &self.signature_scratch,
         };
         self.own_congruence_sig(sig)
     }
@@ -407,7 +409,7 @@ impl SearchState {
                     self.rank[root.index()] = old_rank;
                 }
                 Undo::ClassNext { node, old_next } => {
-                    self.next_in_class[node.index()] = old_next;
+                    self.next[node.index()] = old_next;
                 }
             }
         }
@@ -418,7 +420,7 @@ impl SearchState {
         CongruenceSig {
             fun: sig.fun,
             arg_reps: ArenaSlice::from_raw(NonNull::from(
-                self.congruence_storage.alloc_slice_copy(sig.arg_reps),
+                self.signature_storage.alloc_slice_copy(sig.arg_reps),
             )),
         }
     }

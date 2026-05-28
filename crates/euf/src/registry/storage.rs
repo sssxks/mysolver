@@ -13,6 +13,7 @@ use super::object::{Atom, Sort, Symbol, Term};
 pub struct Registry {
     /// Solver-lifetime payload storage.
     storage: BumpStorage,
+
     /// Canonical sort table.
     sorts: Interner<SortId, Sort>,
     /// Canonical symbol table.
@@ -21,12 +22,14 @@ pub struct Registry {
     terms: Interner<TermId, Term>,
     /// Canonical atom table.
     atoms: Interner<TheoryAtomId, Atom>,
+
     /// Derived sort for each interned term.
     term_sort: Vec<SortId>,
     /// Permanent atom incidence lists.
     term_atoms: Vec<Vec<TheoryAtomId>>,
     /// Permanent structural parent use-lists.
     parent_apps: Vec<Vec<TermId>>,
+
     /// Lazily created Boolean sort.
     bool_sort: Option<SortId>,
     /// Lazily created canonical true term.
