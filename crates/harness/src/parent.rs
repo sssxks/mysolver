@@ -235,7 +235,9 @@ fn run_case_subprocess(
         .arg("case")
         .arg(case.absolute_path())
         .arg("--report")
-        .arg(report_file.path());
+        .arg(report_file.path())
+        .arg("--expected-query-count")
+        .arg(case.expected_queries().len().to_string());
     #[cfg(feature = "telemetry")]
     {
         let telemetry_path = telemetry_file

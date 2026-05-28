@@ -16,10 +16,9 @@
 //! thread at safe checkpoints.
 
 use std::cell::{Cell, RefCell};
-use std::env;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
@@ -27,8 +26,6 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-/// Environment variable used by `qfuf` to discover the telemetry JSONL path.
-pub const PATH_ENV_VAR: &str = "MYSOLVER_TELEMETRY_PATH";
 /// Default interval between periodic telemetry samples.
 pub const DEFAULT_SAMPLE_PERIOD: Duration = Duration::from_secs(1);
 
@@ -380,15 +377,6 @@ impl TelemetryRecorder {
     /// Starts writing JSONL telemetry samples to `path`.
     pub fn start(path: &Path) -> io::Result<Self> {
         Self::with_period(path, DEFAULT_SAMPLE_PERIOD)
-    }
-
-    /// Starts writing JSONL telemetry samples to the path named by [`PATH_ENV_VAR`].
-    pub fn start_from_env() -> io::Result<Option<Self>> {
-        let Some(path) = env::var_os(PATH_ENV_VAR) else {
-            return Ok(None);
-        };
-        let path = PathBuf::from(path);
-        Self::start(&path).map(Some)
     }
 
     /// Starts writing JSONL telemetry samples to `path` using a custom period.
@@ -776,6 +764,10 @@ impl LocalSession {
             return;
         }
         if let Err(error) = self.writer.write_all(b"\n") {
+            self.write_error = Some(error);
+            return;
+        }
+        if let Err(error) = self.writer.flush() {
             self.write_error = Some(error);
         }
     }

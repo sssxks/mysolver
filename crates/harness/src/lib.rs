@@ -1,9 +1,9 @@
-//! A subprocess-isolated benchmark harness for the local solver binaries.
+//! A subprocess-isolated benchmark harness for the local solver libraries.
 //!
 //! The parent process discovers benchmark inputs, runs one benchmark per child
 //! process, enforces wall-clock timeouts, and renders a friendly terminal view.
-//! Each child process loads exactly one SMT-LIB trace, runs the `qfuf` binary
-//! over stdin/stdout, and emits a compact JSON report so that panics, signals,
+//! Each child process loads one SMT-LIB trace, calls the `qfuf` solver library
+//! directly, and emits a compact JSON report so that panics, signals,
 //! and out-of-memory kills stay isolated.
 
 mod child;

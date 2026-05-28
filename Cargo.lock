@@ -410,6 +410,7 @@ dependencies = [
  "flate2",
  "humantime",
  "indicatif",
+ "qfuf",
  "serde",
  "serde_json",
  "strum",

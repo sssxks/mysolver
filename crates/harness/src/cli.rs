@@ -123,6 +123,9 @@ pub(crate) struct RunCaseArgs {
     /// The JSON report destination path.
     #[arg(long)]
     pub(crate) report: PathBuf,
+    /// The precomputed number of `check-sat` queries discovered by the parent.
+    #[arg(long, hide = true)]
+    pub(crate) expected_query_count: Option<usize>,
     /// The JSONL telemetry destination path.
     #[cfg(feature = "telemetry")]
     #[arg(long)]
