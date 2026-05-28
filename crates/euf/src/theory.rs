@@ -6,9 +6,7 @@ use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
 
 use crate::AtomLiteralKind;
 use crate::registry::Registry;
-use crate::search_state::{
-    DiseqInput, DisequalityEntry, MergeEdge, MergeInput, MergeReason, SearchState,
-};
+use crate::search_state::{DiseqInput, DisequalityEntry, MergeInput, MergeReason, SearchState};
 use crate::types::{
     AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
 };
@@ -169,13 +167,13 @@ impl EufTheory {
             return;
         }
         let merged_root = self.search.union_roots(lhs_root, rhs_root);
-        self.search.edges.push(MergeEdge {
-            lhs: input.lhs,
-            rhs: input.rhs,
-            reason: MergeReason::InputEq {
+        self.search.add_proof_edge(
+            input.lhs,
+            input.rhs,
+            MergeReason::InputEq {
                 reason_lit: input.reason_lit,
             },
-        });
+        );
         self.enqueue_repairs_for_class(merged_root);
         self.enqueue_atom_triggers_for_class(merged_root);
     }
@@ -188,14 +186,14 @@ impl EufTheory {
             return;
         }
         let merged_root = self.search.union_roots(lhs_root, rhs_root);
-        self.search.edges.push(MergeEdge {
-            lhs: lhs_parent,
-            rhs: rhs_parent,
-            reason: MergeReason::Congruence {
+        self.search.add_proof_edge(
+            lhs_parent,
+            rhs_parent,
+            MergeReason::Congruence {
                 left_parent: lhs_parent,
                 right_parent: rhs_parent,
             },
-        });
+        );
         self.enqueue_repairs_for_class(merged_root);
         self.enqueue_atom_triggers_for_class(merged_root);
     }
@@ -405,7 +403,7 @@ impl Theory for EufTheory {
 
 #[cfg(test)]
 mod tests {
-    use sat::{Lit, Var};
+    use sat::{Lit, Theory, TheoryClauseKind, Var};
 
     use super::EufTheory;
     use crate::{SortRef, SymbolRef, TermRef};
@@ -486,5 +484,54 @@ mod tests {
             sat.solve_with_assumptions(&[], &mut theory),
             sat::SatResult::Unsat
         );
+    }
+
+    #[test]
+    fn theory_deduplicates_repeated_congruence_explanation_premises() {
+        let mut sat = sat::Solver::new();
+        let mut theory = EufTheory::new();
+        let u_sort = theory.intern_sort(SortRef::Uninterpreted { name: "U" });
+        let f = theory.intern_symbol(SymbolRef {
+            name: "f",
+            arg_sorts: &[u_sort, u_sort],
+            result_sort: u_sort,
+        });
+        let a_sym = theory.intern_symbol(SymbolRef {
+            name: "a",
+            arg_sorts: &[],
+            result_sort: u_sort,
+        });
+        let b_sym = theory.intern_symbol(SymbolRef {
+            name: "b",
+            arg_sorts: &[],
+            result_sort: u_sort,
+        });
+        let a = theory.intern_term(TermRef::nullary(a_sym), u_sort);
+        let b = theory.intern_term(TermRef::nullary(b_sym), u_sort);
+        let faa = theory.intern_term(TermRef { fun: f, args: &[a, a] }, u_sort);
+        let fbb = theory.intern_term(TermRef { fun: f, args: &[b, b] }, u_sort);
+
+        let ab_var = sat.new_var();
+        let fafb_var = sat.new_var();
+        let ab = bool_lit(ab_var);
+        let not_fafb = neg_bool_lit(fafb_var);
+        let fafb = bool_lit(fafb_var);
+        theory.intern_equality_atom(a, b, ab_var);
+        theory.intern_equality_atom(faa, fbb, fafb_var);
+
+        theory.notify_search_start();
+        theory.notify_assignment(ab);
+        theory.notify_assignment(not_fafb);
+
+        let mut clauses = Vec::new();
+        theory.final_check(&mut clauses);
+
+        assert!(clauses.iter().any(|clause| {
+            clause.kind == TheoryClauseKind::ConflictExplanation
+                && *clause.lits == [!ab, fafb]
+        }));
+        for clause in &clauses {
+            assert_eq!(*clause.lits, [!ab, fafb]);
+        }
     }
 }

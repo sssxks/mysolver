@@ -22,11 +22,11 @@ mod theory;
 
 pub use registry::Registry;
 pub use search_state::{
-    CongruenceSig, CongruenceSigRef, DiseqInput, DisequalityEntry, MergeEdge, MergeInput,
+    CongruenceSig, CongruenceSigRef, DiseqInput, DisequalityEntry, MergeInput, ProofEdge,
     MergeReason, SatLevelMarker, SearchState, Undo,
 };
 pub use theory::EufTheory;
 pub use types::{
-    AtomLiteralKind, AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef,
-    TheoryAtomId,
+    AtomLiteralKind, AtomRef, EClassId, ProofEdgeId, SortId, SortRef, SymbolId, SymbolRef,
+    TermId, TermRef, TheoryAtomId,
 };

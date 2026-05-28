@@ -70,6 +70,28 @@ impl TheoryAtomId {
     }
 }
 
+/// One directed proof-edge identifier in the search-local explanation graph.
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct ProofEdgeId(u32);
+
+impl ProofEdgeId {
+    /// Returns the zero-based index named by this identifier.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+
+    /// Creates one proof-edge identifier from a zero-based index.
+    pub(crate) fn from_index(index: usize) -> Self {
+        debug_assert!(u32::try_from(index).is_ok());
+        Self(index as u32)
+    }
+
+    /// Returns the reverse direction of this undirected proof-edge pair.
+    pub(crate) fn reverse(self) -> Self {
+        Self(self.0 ^ 1)
+    }
+}
+
 /// One current equivalence-class representative identifier.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
 pub struct EClassId(u32);

@@ -4,12 +4,12 @@ use std::collections::VecDeque;
 use std::ptr::NonNull;
 
 use bumpalo::Bump;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use sat::{Lit, TheoryClause};
 
 use crate::arena::{ArenaSlice, make_hash};
 use crate::registry::Registry;
-use crate::types::{EClassId, SymbolId, TermId, TheoryAtomId};
+use crate::types::{EClassId, ProofEdgeId, SymbolId, TermId, TheoryAtomId};
 
 /// One input equality waiting to merge.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -76,13 +76,13 @@ pub enum MergeReason {
     },
 }
 
-/// One active edge in the equality proof graph.
+/// One active directed edge in the equality explanation graph.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub struct MergeEdge {
-    /// Left endpoint.
-    pub(crate) lhs: TermId,
-    /// Right endpoint.
-    pub(crate) rhs: TermId,
+pub struct ProofEdge {
+    /// Target endpoint.
+    pub(crate) to: TermId,
+    /// Next incident edge for the source endpoint.
+    pub(crate) next: Option<ProofEdgeId>,
     /// Justification for this equality edge.
     pub(crate) reason: MergeReason,
 }
@@ -105,8 +105,8 @@ pub struct SatLevelMarker {
     pub(crate) undo_len: usize,
     /// Congruence-insert log length at level entry.
     pub(crate) congruence_insert_len: usize,
-    /// Merge-edge length at level entry.
-    pub(crate) merge_edges_len: usize,
+    /// Explanation-edge length at level entry.
+    pub(crate) proof_edges_len: usize,
     /// Active-disequality length at level entry.
     pub(crate) active_disequalities_len: usize,
     /// Pending-merge queue length at level entry.
@@ -159,7 +159,7 @@ pub struct SearchState {
     ///
     /// Currently, this is implemented as search-lifetime bump arena for
     /// simplicity. SAT backtracking removes congruence-table entries via
-    /// `congruence_insert_log`, but does not reclaim per-signature payload.
+    /// `signature_log`, but does not reclaim per-signature payload.
     /// That keeps `CongruenceSig` as one simple hashable slice handle.
     signature_storage: Bump,
     /// Congruence table keyed by function symbol and current representative arguments.
@@ -184,8 +184,26 @@ pub struct SearchState {
     /// Currently active disequalities.
     pub(crate) active_disequalities: Vec<DisequalityEntry>,
 
-    /// Active equality-proof graph.
-    pub(crate) edges: Vec<MergeEdge>,
+    /// Per-term adjacency-list heads into `proof_edges`.
+    pub(crate) proof_edge_head: Vec<Option<ProofEdgeId>>,
+    /// Active equality explanation graph as directed adjacency entries.
+    pub(crate) proof_edges: Vec<ProofEdge>,
+    /// Search-local visitation stamps for one explanation BFS.
+    pub(crate) explain_seen_stamp: Vec<u32>,
+    /// Predecessor edge for each term visited in the current explanation BFS.
+    pub(crate) explain_pred_edge: Vec<Option<ProofEdgeId>>,
+    /// Allocation-free BFS queue reused across explanation queries.
+    pub(crate) explain_queue: Vec<TermId>,
+    /// Read cursor into `explain_queue`.
+    pub(crate) explain_queue_head: usize,
+    /// Monotonic epoch used by `explain_seen_stamp`.
+    pub(crate) explain_epoch: u32,
+    /// Pair cache for one top-level explanation query.
+    pub(crate) explain_pair_cache: HashSet<(TermId, TermId)>,
+    /// Premise deduplication for one top-level explanation query.
+    pub(crate) explain_output_seen: HashSet<Lit>,
+    /// Scratch path used while reconstructing one explanation chain.
+    pub(crate) explain_path_scratch: Vec<ProofEdgeId>,
 
     /// Reversible mutation log.
     pub(crate) undo_log: Vec<Undo>,
@@ -209,6 +227,7 @@ impl SearchState {
         self.parent.clear();
         self.rank.clear();
         self.next.clear();
+        self.proof_edge_head.clear();
         self.signature_storage.reset();
 
         for index in 0..nterms {
@@ -217,6 +236,7 @@ impl SearchState {
             self.parent.push(rep);
             self.rank.push(0);
             self.next.push(term);
+            self.proof_edge_head.push(None);
         }
 
         self.signatures.clear();
@@ -229,7 +249,17 @@ impl SearchState {
         self.atom_is_enqueued.resize(registry.num_atoms(), false);
         self.pending_clauses.clear();
         self.active_disequalities.clear();
-        self.edges.clear();
+        self.proof_edges.clear();
+        self.explain_seen_stamp.clear();
+        self.explain_seen_stamp.resize(nterms, 0);
+        self.explain_pred_edge.clear();
+        self.explain_pred_edge.resize(nterms, None);
+        self.explain_queue.clear();
+        self.explain_queue_head = 0;
+        self.explain_epoch = 0;
+        self.explain_pair_cache.clear();
+        self.explain_output_seen.clear();
+        self.explain_path_scratch.clear();
         self.signature_log.clear();
         self.undo_log.clear();
         self.level_markers.clear();
@@ -240,7 +270,7 @@ impl SearchState {
         self.level_markers.push(SatLevelMarker {
             undo_len: self.undo_log.len(),
             congruence_insert_len: self.signature_log.len(),
-            merge_edges_len: self.edges.len(),
+            proof_edges_len: self.proof_edges.len(),
             active_disequalities_len: self.active_disequalities.len(),
             pending_merges_len: self.pending_merges.len(),
             pending_repairs_len: self.pending_repairs.len(),
@@ -266,7 +296,7 @@ impl SearchState {
             self.pending_merges.truncate(marker.pending_merges_len);
             self.active_disequalities
                 .truncate(marker.active_disequalities_len);
-            self.edges.truncate(marker.merge_edges_len);
+            self.rollback_proof_edges_to(marker.proof_edges_len);
             while self.signature_log.len() > marker.congruence_insert_len {
                 let key = self
                     .signature_log
@@ -398,6 +428,26 @@ impl SearchState {
         });
     }
 
+    /// Appends one undirected proof edge as two directed adjacency entries.
+    pub fn add_proof_edge(&mut self, lhs: TermId, rhs: TermId, reason: MergeReason) {
+        let lhs_head = self.proof_edge_head[lhs.index()];
+        let rhs_head = self.proof_edge_head[rhs.index()];
+        let forward = ProofEdgeId::from_index(self.proof_edges.len());
+        let reverse = ProofEdgeId::from_index(self.proof_edges.len() + 1);
+        self.proof_edges.push(ProofEdge {
+            to: rhs,
+            next: lhs_head,
+            reason,
+        });
+        self.proof_edges.push(ProofEdge {
+            to: lhs,
+            next: rhs_head,
+            reason,
+        });
+        self.proof_edge_head[lhs.index()] = Some(forward);
+        self.proof_edge_head[rhs.index()] = Some(reverse);
+    }
+
     /// Rolls back all reversible mutations down to `undo_len`.
     pub fn rollback_to(&mut self, undo_len: usize) {
         while self.undo_log.len() > undo_len {
@@ -422,6 +472,25 @@ impl SearchState {
             arg_reps: ArenaSlice::from_raw(NonNull::from(
                 self.signature_storage.alloc_slice_copy(sig.arg_reps),
             )),
+        }
+    }
+
+    /// Rolls back the explanation graph to the requested edge prefix length.
+    fn rollback_proof_edges_to(&mut self, proof_edges_len: usize) {
+        while self.proof_edges.len() > proof_edges_len {
+            let reverse_index = self.proof_edges.len() - 1;
+            let forward_index = reverse_index - 1;
+            let forward = self.proof_edges[forward_index];
+            let reverse = self.proof_edges[reverse_index];
+            let forward_id = ProofEdgeId::from_index(forward_index);
+            let reverse_id = ProofEdgeId::from_index(reverse_index);
+            let forward_source = reverse.to;
+            let reverse_source = forward.to;
+            debug_assert_eq!(self.proof_edge_head[forward_source.index()], Some(forward_id));
+            debug_assert_eq!(self.proof_edge_head[reverse_source.index()], Some(reverse_id));
+            self.proof_edge_head[forward_source.index()] = forward.next;
+            self.proof_edge_head[reverse_source.index()] = reverse.next;
+            self.proof_edges.truncate(forward_index);
         }
     }
 }
