@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use console::style;
 use indicatif::{HumanCount, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use sat::telemetry::Summary;
+use qfuf_telemetry::Summary;
 
 use crate::model::{CaseOutcome, OutcomeCategory, OutcomeStats};
 use crate::util::{format_compact_duration, truncate_display_path};
@@ -99,15 +99,17 @@ pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
 /// Formats one compact telemetry summary for a per-case outcome line.
 fn format_telemetry_summary(summary: &Summary) -> String {
     format!(
-        "conf {} prop {} dec {} rst {} red {} peak-lvl {} peak-assign {} final-learnt {}",
-        HumanCount(summary.total_conflicts),
-        HumanCount(summary.total_propagations),
-        HumanCount(summary.total_decisions),
-        HumanCount(summary.total_restarts),
-        HumanCount(summary.total_reductions),
-        HumanCount(summary.peak_decision_level),
-        HumanCount(summary.peak_assigned_vars),
-        HumanCount(summary.final_live_learnt_clauses),
+        "sat conf {} prop {} dec {} | euf eq {} cong {} tprop {} tconf {} | peak-lvl {} peak-assign {} peak-terms {}",
+        HumanCount(summary.sat.total_conflicts),
+        HumanCount(summary.sat.total_propagations),
+        HumanCount(summary.sat.total_decisions),
+        HumanCount(summary.euf.total_input_equalities),
+        HumanCount(summary.euf.total_congruence_merges),
+        HumanCount(summary.euf.total_theory_propagations),
+        HumanCount(summary.euf.total_theory_conflicts),
+        HumanCount(summary.sat.peak_decision_level),
+        HumanCount(summary.sat.peak_assigned_vars),
+        HumanCount(summary.euf.peak_registry_terms),
     )
 }
 
@@ -167,7 +169,7 @@ mod tests {
 
     use super::{format_outcome, progress_message};
     use crate::model::{CaseOutcome, CaseRecord, CaseTelemetry, OutcomeCategory, OutcomeStats};
-    use sat::telemetry::Summary;
+    use qfuf_telemetry::{EufSummary, SatSummary, Summary};
 
     /// Ensures the live message exposes worker activity even before any case finishes.
     #[test]
@@ -254,27 +256,24 @@ mod tests {
             telemetry: Some(CaseTelemetry {
                 summary: Summary {
                     sample_count: 1,
-                    total_conflicts: 7,
-                    total_propagations: 42,
-                    total_decisions: 3,
-                    total_restarts: 1,
-                    total_reductions: 0,
-                    total_learnt_clauses: 0,
-                    total_deleted_clauses: 0,
-                    peak_decision_level: 5,
-                    peak_assigned_vars: 11,
-                    peak_trail_len: 0,
-                    peak_pending_propagations: 0,
-                    peak_live_irredundant_clauses: 0,
-                    peak_live_learnt_clauses: 0,
-                    peak_watcher_entries: 0,
-                    peak_clause_words: 0,
-                    peak_wasted_clause_words: 0,
-                    final_decision_level: 0,
-                    final_assigned_vars: 0,
-                    final_trail_len: 0,
-                    final_live_learnt_clauses: 9,
-                    final_live_irredundant_clauses: 0,
+                    sat: SatSummary {
+                        total_conflicts: 7,
+                        total_propagations: 42,
+                        total_decisions: 3,
+                        total_restarts: 1,
+                        peak_decision_level: 5,
+                        peak_assigned_vars: 11,
+                        final_live_learnt_clauses: 9,
+                        ..SatSummary::default()
+                    },
+                    euf: EufSummary {
+                        total_input_equalities: 4,
+                        total_congruence_merges: 2,
+                        total_theory_propagations: 1,
+                        total_theory_conflicts: 0,
+                        peak_registry_terms: 12,
+                        ..EufSummary::default()
+                    },
                 },
                 samples: Vec::new(),
             }),
@@ -282,7 +281,8 @@ mod tests {
 
         let rendered = format_outcome(&outcome);
         assert!(rendered.contains("conf 7"));
+        assert!(rendered.contains("eq 4"));
         assert!(rendered.contains("peak-lvl 5"));
-        assert!(rendered.contains("final-learnt 9"));
+        assert!(rendered.contains("peak-terms 12"));
     }
 }

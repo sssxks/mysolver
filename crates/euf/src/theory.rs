@@ -7,6 +7,7 @@ use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
 use crate::AtomLiteralKind;
 use crate::registry::Registry;
 use crate::search_state::{DiseqInput, DisequalityEntry, MergeInput, MergeReason, SearchState};
+use crate::telemetry;
 use crate::types::{
     AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
 };
@@ -115,6 +116,7 @@ impl EufTheory {
                     rhs,
                     positive: true,
                 }) => {
+                    telemetry::record_input_equality();
                     self.search.enqueue_input_equality(MergeInput {
                         lhs,
                         rhs,
@@ -127,6 +129,7 @@ impl EufTheory {
                     rhs,
                     positive: false,
                 }) => {
+                    telemetry::record_input_disequality();
                     self.search.enqueue_input_disequality(DiseqInput {
                         lhs,
                         rhs,
@@ -185,6 +188,7 @@ impl EufTheory {
         if lhs_root == rhs_root {
             return;
         }
+        telemetry::record_congruence_merge();
         let merged_root = self.search.union_roots(lhs_root, rhs_root);
         self.search.add_proof_edge(
             lhs_parent,
@@ -269,6 +273,7 @@ impl EufTheory {
             }
             self.search
                 .explain_conflict(&self.registry, diseq, &mut explanation);
+            telemetry::record_theory_conflict();
             self.search.pending_clauses.push(self.build_theory_clause(
                 &explanation,
                 None,
@@ -302,6 +307,7 @@ impl EufTheory {
             let mut support = Vec::new();
             self.search
                 .explain_equality(&self.registry, lhs, rhs, &mut support);
+            telemetry::record_theory_propagation();
             self.search.pending_clauses.push(self.build_theory_clause(
                 &support,
                 Some(lit),
@@ -318,6 +324,7 @@ impl EufTheory {
             let mut support = Vec::new();
             self.search
                 .explain_conflict(&self.registry, diseq, &mut support);
+            telemetry::record_theory_conflict();
             self.search.pending_clauses.push(self.build_theory_clause(
                 &support,
                 None,
@@ -344,6 +351,29 @@ impl EufTheory {
             lits: lits.into_boxed_slice(),
             assertion_level: AssertionLevel::ROOT,
             kind,
+        }
+    }
+
+    /// Captures the current EUF gauges for one telemetry sample boundary.
+    #[cfg(feature = "telemetry")]
+    pub fn telemetry_gauges(&self) -> telemetry::Gauges {
+        telemetry::Gauges {
+            registry_terms: self.registry.num_terms() as u64,
+            registry_atoms: self.registry.num_atoms() as u64,
+            pending_assignments: self.pending_assignments.len() as u64,
+            assigned_atoms: self.atom_trail.len() as u64,
+            pending_merges: self.search.pending_merges.len() as u64,
+            pending_repairs: self.search.pending_repairs.len() as u64,
+            pending_atom_triggers: self
+                .search
+                .pending_atom_triggers
+                .len()
+                .saturating_sub(self.search.pending_atom_qhead)
+                as u64,
+            pending_theory_clauses: self.search.pending_clauses.len() as u64,
+            active_disequalities: self.search.active_disequalities.len() as u64,
+            congruence_table_entries: self.search.signatures.len() as u64,
+            proof_edges: self.search.proof_edges.len() as u64,
         }
     }
 }
@@ -398,6 +428,11 @@ impl Theory for EufTheory {
             || !self.search.pending_merges.is_empty()
             || !self.search.pending_repairs.is_empty()
             || self.search.pending_atom_qhead < self.search.pending_atom_triggers.len()
+    }
+
+    #[cfg(feature = "telemetry")]
+    fn maybe_emit_telemetry_sample(&self, sat_gauges: sat::telemetry::Gauges) {
+        telemetry::maybe_emit_sample(sat_gauges, self.telemetry_gauges());
     }
 }
 
@@ -508,8 +543,20 @@ mod tests {
         });
         let a = theory.intern_term(TermRef::nullary(a_sym), u_sort);
         let b = theory.intern_term(TermRef::nullary(b_sym), u_sort);
-        let faa = theory.intern_term(TermRef { fun: f, args: &[a, a] }, u_sort);
-        let fbb = theory.intern_term(TermRef { fun: f, args: &[b, b] }, u_sort);
+        let faa = theory.intern_term(
+            TermRef {
+                fun: f,
+                args: &[a, a],
+            },
+            u_sort,
+        );
+        let fbb = theory.intern_term(
+            TermRef {
+                fun: f,
+                args: &[b, b],
+            },
+            u_sort,
+        );
 
         let ab_var = sat.new_var();
         let fafb_var = sat.new_var();
@@ -527,8 +574,7 @@ mod tests {
         theory.final_check(&mut clauses);
 
         assert!(clauses.iter().any(|clause| {
-            clause.kind == TheoryClauseKind::ConflictExplanation
-                && *clause.lits == [!ab, fafb]
+            clause.kind == TheoryClauseKind::ConflictExplanation && *clause.lits == [!ab, fafb]
         }));
         for clause in &clauses {
             assert_eq!(*clause.lits, [!ab, fafb]);

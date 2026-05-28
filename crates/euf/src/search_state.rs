@@ -486,8 +486,14 @@ impl SearchState {
             let reverse_id = ProofEdgeId::from_index(reverse_index);
             let forward_source = reverse.to;
             let reverse_source = forward.to;
-            debug_assert_eq!(self.proof_edge_head[forward_source.index()], Some(forward_id));
-            debug_assert_eq!(self.proof_edge_head[reverse_source.index()], Some(reverse_id));
+            debug_assert_eq!(
+                self.proof_edge_head[forward_source.index()],
+                Some(forward_id)
+            );
+            debug_assert_eq!(
+                self.proof_edge_head[reverse_source.index()],
+                Some(reverse_id)
+            );
             self.proof_edge_head[forward_source.index()] = forward.next;
             self.proof_edge_head[reverse_source.index()] = reverse.next;
             self.proof_edges.truncate(forward_index);

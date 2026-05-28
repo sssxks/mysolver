@@ -128,6 +128,15 @@ pub trait Theory {
 
     /// Returns whether the theory still has pending work to flush into SAT.
     fn has_pending_work(&self) -> bool;
+
+    /// Emits one telemetry sample when SAT reaches a safe checkpoint.
+    #[cfg(feature = "telemetry")]
+    fn maybe_emit_telemetry_sample(&self, sat_gauges: Gauges) {
+        telemetry::maybe_emit_sample(|| telemetry::CombinedGauges {
+            sat: sat_gauges,
+            euf: telemetry::EufGauges::default(),
+        });
+    }
 }
 
 /// Clause origin classification used while inserting scoped clauses.
@@ -414,7 +423,7 @@ impl Solver {
                 if self.decision_level() == 0 {
                     self.ok = false;
                     self.inconsistent_assertion_level = Some(conflict.assertion_level);
-                    self.maybe_emit_telemetry_sample();
+                    self.maybe_emit_telemetry_sample(theory);
                     return SatResult::Unsat;
                 }
 
@@ -438,7 +447,7 @@ impl Solver {
                     next_reduce += 2_000;
                 }
 
-                self.maybe_emit_telemetry_sample();
+                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
@@ -450,7 +459,7 @@ impl Solver {
                 if self.decision_level() == 0 {
                     self.ok = false;
                     self.inconsistent_assertion_level = Some(self.assertion_level);
-                    self.maybe_emit_telemetry_sample();
+                    self.maybe_emit_telemetry_sample(theory);
                     return SatResult::Unsat;
                 }
 
@@ -466,7 +475,7 @@ impl Solver {
                     next_reduce += 2_000;
                 }
 
-                self.maybe_emit_telemetry_sample();
+                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
@@ -475,7 +484,7 @@ impl Solver {
                 if self.decision_level() == 0 {
                     self.ok = false;
                     self.inconsistent_assertion_level = Some(conflict.assertion_level);
-                    self.maybe_emit_telemetry_sample();
+                    self.maybe_emit_telemetry_sample(theory);
                     return SatResult::Unsat;
                 }
 
@@ -499,7 +508,7 @@ impl Solver {
                     next_reduce += 2_000;
                 }
 
-                self.maybe_emit_telemetry_sample();
+                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
@@ -510,7 +519,7 @@ impl Solver {
                         continue;
                     }
                     LBool::False => {
-                        self.maybe_emit_telemetry_sample();
+                        self.maybe_emit_telemetry_sample(theory);
                         return SatResult::Unsat;
                     }
                     LBool::Undef => {
@@ -519,14 +528,14 @@ impl Solver {
                         telemetry::record_decision();
                         let _ = self.enqueue(assumption, Reason::None);
                         assumption_cursor += 1;
-                        self.maybe_emit_telemetry_sample();
+                        self.maybe_emit_telemetry_sample(theory);
                         continue;
                     }
                 }
             }
 
             if self.assigned_count == self.nvars {
-                self.maybe_emit_telemetry_sample();
+                self.maybe_emit_telemetry_sample(theory);
                 return SatResult::Sat;
             }
 
@@ -536,19 +545,19 @@ impl Solver {
                 theory.notify_backtrack(0);
                 restart_conflicts = 0;
                 restart_limit = ((restart_limit as f64) * 1.5) as usize + 1;
-                self.maybe_emit_telemetry_sample();
+                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
             let Some(next) = self.pick_branch_lit() else {
-                self.maybe_emit_telemetry_sample();
+                self.maybe_emit_telemetry_sample(theory);
                 return SatResult::Sat;
             };
             self.new_decision_level();
             theory.notify_new_decision_level();
             telemetry::record_decision();
             let _ = self.enqueue(next, Reason::None);
-            self.maybe_emit_telemetry_sample();
+            self.maybe_emit_telemetry_sample(theory);
         }
     }
 
@@ -577,14 +586,14 @@ impl Solver {
 
     /// Emits one periodic telemetry sample when the timer thread requested it.
     #[cfg(feature = "telemetry")]
-    fn maybe_emit_telemetry_sample(&self) {
-        telemetry::maybe_emit_sample(|| self.telemetry_gauges());
+    fn maybe_emit_telemetry_sample<T: Theory>(&self, theory: &T) {
+        theory.maybe_emit_telemetry_sample(self.telemetry_gauges());
     }
 
     /// Compiles to a no-op when solver telemetry instrumentation is disabled.
     #[cfg(not(feature = "telemetry"))]
     #[inline(always)]
-    fn maybe_emit_telemetry_sample(&self) {}
+    fn maybe_emit_telemetry_sample<T: Theory>(&self, _theory: &T) {}
 
     /// Notifies one theory about every SAT assignment not yet reported this search.
     fn notify_theory_assignments<T: Theory>(&mut self, theory: &mut T) {

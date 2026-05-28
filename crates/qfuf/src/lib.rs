@@ -4,23 +4,21 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 
 use euf::{EufTheory, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef};
+#[cfg(feature = "telemetry")]
+use qfuf_telemetry::{Gauges, TelemetryRecorder};
 use sat::{AddClauseResult, Lit, SatResult, Solver};
 
 /// Runs the solver over one complete SMT-LIB input string and returns the textual
 /// responses produced by query commands.
 pub fn run_script(input: &str) -> Result<String, String> {
     let mut driver = Driver::new();
-    let commands = parse_commands(input)?;
-    let mut output = String::new();
-
-    for command in commands {
-        if let Some(line) = driver.execute(command)? {
-            output.push_str(&line);
-            output.push('\n');
-        }
-    }
-
-    Ok(output)
+    #[cfg(feature = "telemetry")]
+    let recorder = start_telemetry_recorder_from_env()?;
+    let result = run_script_with_driver(&mut driver, input);
+    #[cfg(feature = "telemetry")]
+    return finalize_telemetry_result(recorder, driver.telemetry_gauges(), result);
+    #[cfg(not(feature = "telemetry"))]
+    result
 }
 
 /// Runs the solver over stdin and writes responses to stdout.
@@ -35,6 +33,51 @@ pub fn run_stdio() -> Result<(), String> {
     stdout
         .flush()
         .map_err(|error| format!("failed to flush stdout: {error}"))
+}
+
+/// Runs the script using one preallocated driver.
+fn run_script_with_driver(driver: &mut Driver, input: &str) -> Result<String, String> {
+    let commands = parse_commands(input)?;
+    let mut output = String::new();
+
+    for command in commands {
+        if let Some(line) = driver.execute(command)? {
+            output.push_str(&line);
+            output.push('\n');
+        }
+    }
+
+    Ok(output)
+}
+
+/// Starts the optional telemetry recorder configured through the environment.
+#[cfg(feature = "telemetry")]
+fn start_telemetry_recorder_from_env() -> Result<Option<TelemetryRecorder>, String> {
+    TelemetryRecorder::start_from_env()
+        .map_err(|error| format!("failed to start telemetry recorder from env: {error}"))
+}
+
+/// Finalizes the optional telemetry recorder without losing the primary solver result.
+#[cfg(feature = "telemetry")]
+fn finalize_telemetry_result(
+    recorder: Option<TelemetryRecorder>,
+    gauges: Gauges,
+    result: Result<String, String>,
+) -> Result<String, String> {
+    let finish_result = recorder
+        .map(|recorder| {
+            recorder
+                .finish(gauges)
+                .map_err(|error| format!("failed to finalize telemetry recorder: {error}"))
+        })
+        .transpose()
+        .map(|_| ());
+    match (result, finish_result) {
+        (Ok(output), Ok(())) => Ok(output),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(finish_error)) => Err(format!("{error}; {finish_error}")),
+    }
 }
 
 /// One parsed S-expression.
@@ -157,6 +200,15 @@ impl Driver {
     /// Creates one empty QF-UF driver.
     fn new() -> Self {
         Self::default()
+    }
+
+    /// Captures the current combined SAT+EUF gauges for one telemetry sample boundary.
+    #[cfg(feature = "telemetry")]
+    fn telemetry_gauges(&self) -> Gauges {
+        Gauges {
+            sat: self.sat.telemetry_gauges(),
+            euf: self.euf.telemetry_gauges(),
+        }
     }
 
     /// Executes one parsed command and optionally returns one output line.
@@ -520,10 +572,7 @@ impl Driver {
                     .get(atom.as_ref())
                     .ok_or_else(|| format!("unknown symbol: {atom}"))?;
                 if decl.arity != 0 {
-                    return Err(format!(
-                        "symbol `{atom}` expects {} arguments",
-                        decl.arity
-                    ));
+                    return Err(format!("symbol `{atom}` expects {} arguments", decl.arity));
                 }
                 Ok(self.intern_term(TermRef::nullary(decl.symbol), decl.result_sort))
             }

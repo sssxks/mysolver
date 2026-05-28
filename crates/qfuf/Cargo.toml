@@ -3,9 +3,14 @@ name = "qfuf"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["telemetry"]
+telemetry = ["dep:qfuf-telemetry", "euf/telemetry", "sat/telemetry"]
+
 [dependencies]
-euf = { path = "../euf" }
-sat = { path = "../sat" }
+euf = { path = "../euf", default-features = false }
+qfuf-telemetry = { path = "../qfuf-telemetry", optional = true }
+sat = { path = "../sat", default-features = false }
 
 [lints.clippy]
 dbg_macro = "warn"

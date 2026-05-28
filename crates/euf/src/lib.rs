@@ -10,6 +10,8 @@
 mod arena;
 /// Permanent registry of canonical terms, sorts, symbols, and atoms.
 mod registry;
+/// EUF-local telemetry adapters.
+mod telemetry;
 /// Identifier newtypes and canonical EUF objects.
 mod types;
 
@@ -22,11 +24,11 @@ mod theory;
 
 pub use registry::Registry;
 pub use search_state::{
-    CongruenceSig, CongruenceSigRef, DiseqInput, DisequalityEntry, MergeInput, ProofEdge,
-    MergeReason, SatLevelMarker, SearchState, Undo,
+    CongruenceSig, CongruenceSigRef, DiseqInput, DisequalityEntry, MergeInput, MergeReason,
+    ProofEdge, SatLevelMarker, SearchState, Undo,
 };
 pub use theory::EufTheory;
 pub use types::{
-    AtomLiteralKind, AtomRef, EClassId, ProofEdgeId, SortId, SortRef, SymbolId, SymbolRef,
-    TermId, TermRef, TheoryAtomId,
+    AtomLiteralKind, AtomRef, EClassId, ProofEdgeId, SortId, SortRef, SymbolId, SymbolRef, TermId,
+    TermRef, TheoryAtomId,
 };

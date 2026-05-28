@@ -1,6 +1,7 @@
 //! Child-process execution for isolated benchmark runs.
 
 use std::env;
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use std::process::{Command, Stdio};
 use bzip2::read::BzDecoder;
 use flate2::read::MultiGzDecoder;
 #[cfg(feature = "telemetry")]
-use sat::telemetry::TelemetryRecorder;
+use qfuf_telemetry::PATH_ENV_VAR;
 
 use crate::cli::RunCaseArgs;
 use crate::discover::query_count;
@@ -42,22 +43,7 @@ fn solve_case_with_optional_telemetry(
     input: &str,
     args: &RunCaseArgs,
 ) -> Result<ChildReportKind, String> {
-    let recorder = TelemetryRecorder::start(&args.telemetry).map_err(|error| {
-        format!(
-            "failed to start telemetry recorder {}: {error}",
-            args.telemetry.display()
-        )
-    })?;
-    let kind = run_qfuf_process(input)?;
-    recorder
-        .finish(sat::telemetry::Gauges::default())
-        .map_err(|error| {
-            format!(
-                "failed to finalize telemetry file {}: {error}",
-                args.telemetry.display()
-            )
-        })?;
-    Ok(kind)
+    run_qfuf_process(input, Some(&args.telemetry))
 }
 
 /// Solves one case without compiling in telemetry instrumentation.
@@ -66,25 +52,31 @@ fn solve_case_with_optional_telemetry(
     input: &str,
     _args: &RunCaseArgs,
 ) -> Result<ChildReportKind, String> {
-    run_qfuf_process(input)
+    run_qfuf_process(input, None)
 }
 
 /// Executes the `qfuf` solver binary over stdin/stdout for one whole trace.
-fn run_qfuf_process(input: &str) -> Result<ChildReportKind, String> {
+fn run_qfuf_process(input: &str, telemetry_path: Option<&Path>) -> Result<ChildReportKind, String> {
     let expected_queries = match query_count(input) {
         Ok(count) => count,
         Err(error) => return Ok(ChildReportKind::ParseError(error)),
     };
+    #[cfg(not(feature = "telemetry"))]
+    let _ = telemetry_path;
     let current_exe = env::current_exe()
         .map_err(|error| format!("failed to locate current executable: {error}"))?;
-    let qfuf_exe = sibling_solver_path(&current_exe);
+    let mut command = qfuf_command(&current_exe);
+    #[cfg(feature = "telemetry")]
+    if let Some(telemetry_path) = telemetry_path {
+        command.env(PATH_ENV_VAR, telemetry_path);
+    }
 
-    let mut child = Command::new(&qfuf_exe)
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("failed to spawn {}: {error}", qfuf_exe.display()))?;
+        .map_err(|error| format!("failed to spawn qfuf through cargo: {error}"))?;
 
     {
         let stdin = child
@@ -132,9 +124,67 @@ fn run_qfuf_process(input: &str) -> Result<ChildReportKind, String> {
     }))
 }
 
-/// Returns the sibling solver-binary path located beside `current_exe`.
-fn sibling_solver_path(current_exe: &Path) -> PathBuf {
-    current_exe.with_file_name("qfuf")
+/// Builds the stable `cargo run` command used to compile and execute `qfuf`.
+fn qfuf_command(current_exe: &Path) -> Command {
+    let mut command = Command::new("cargo");
+    command.arg("run").arg("--quiet");
+    append_inferred_cargo_profile(&mut command, current_exe);
+    command
+        .arg("--manifest-path")
+        .arg(qfuf_manifest_path())
+        .arg("--bin")
+        .arg("qfuf");
+    command
+}
+
+/// Appends the cargo profile that matches the currently running harness binary.
+fn append_inferred_cargo_profile(command: &mut Command, current_exe: &Path) {
+    match infer_cargo_profile(current_exe) {
+        Some(CargoProfile::Release) => {
+            command.arg("--release");
+        }
+        Some(CargoProfile::Named(profile)) => {
+            command.arg("--profile").arg(profile.as_ref());
+        }
+        Some(CargoProfile::Dev) | None => {}
+    }
+}
+
+/// Resolves the solver manifest path relative to this crate's manifest.
+fn qfuf_manifest_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../qfuf")
+        .join("Cargo.toml")
+}
+
+/// The cargo profile to reuse when spawning `qfuf`.
+#[derive(Debug, Eq, PartialEq)]
+enum CargoProfile {
+    /// The default development profile stored under `target/debug`.
+    Dev,
+    /// The built-in optimized profile stored under `target/release`.
+    Release,
+    /// Any custom named profile, such as `perf`.
+    Named(Box<str>),
+}
+
+/// Infers the cargo profile from the harness executable's location under `target/`.
+fn infer_cargo_profile(current_exe: &Path) -> Option<CargoProfile> {
+    let executable_dir = current_exe.parent()?;
+    let profile_dir = if executable_dir.file_name() == Some(OsStr::new("deps")) {
+        executable_dir.parent()?
+    } else {
+        executable_dir
+    };
+    if profile_dir.parent()?.file_name() != Some(OsStr::new("target")) {
+        return None;
+    }
+    let profile_name = profile_dir.file_name()?.to_str()?;
+    match profile_name {
+        "debug" => Some(CargoProfile::Dev),
+        "release" => Some(CargoProfile::Release),
+        other => Some(CargoProfile::Named(other.into())),
+    }
 }
 
 /// Reads one benchmark file, transparently decompressing gzip and bzip2 inputs.
@@ -168,4 +218,58 @@ fn has_suffix(path: &Path, suffix: &str) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.ends_with(suffix))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{CargoProfile, infer_cargo_profile, qfuf_command, qfuf_manifest_path};
+
+    /// Reuses Cargo's default dev profile for binaries under `target/debug`.
+    #[test]
+    fn infers_dev_profile_from_debug_binary() {
+        let profile = infer_cargo_profile(Path::new("/tmp/mysolver/target/debug/my-harness"));
+        assert_eq!(profile, Some(CargoProfile::Dev));
+    }
+
+    /// Reuses Cargo's optimized release profile for binaries under `target/release`.
+    #[test]
+    fn infers_release_profile_from_release_binary() {
+        let profile = infer_cargo_profile(Path::new("/tmp/mysolver/target/release/my-harness"));
+        assert_eq!(profile, Some(CargoProfile::Release));
+    }
+
+    /// Preserves custom named profiles such as `perf`.
+    #[test]
+    fn infers_named_profile_from_custom_binary() {
+        let profile = infer_cargo_profile(Path::new("/tmp/mysolver/target/perf/my-harness"));
+        assert_eq!(profile, Some(CargoProfile::Named("perf".into())));
+    }
+
+    /// Ignores paths that are not cargo target outputs.
+    #[test]
+    fn rejects_non_target_binaries() {
+        let profile = infer_cargo_profile(Path::new("/usr/local/bin/my-harness"));
+        assert_eq!(profile, None);
+    }
+
+    /// Builds `cargo run` against the solver manifest instead of guessing a sibling binary.
+    #[test]
+    fn qfuf_command_uses_manifest_path() {
+        let command = qfuf_command(Path::new("/tmp/mysolver/target/release/my-harness"));
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.starts_with(&[
+            "run".to_string(),
+            "--quiet".to_string(),
+            "--release".to_string(),
+            "--manifest-path".to_string(),
+            qfuf_manifest_path().display().to_string(),
+            "--bin".to_string(),
+            "qfuf".to_string(),
+        ]));
+    }
 }

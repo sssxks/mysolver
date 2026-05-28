@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/euf", "crates/qfuf", "crates/sat", "crates/sat-harness"]
+members = [
+    "crates/euf",
+    "crates/qfuf",
+    "crates/qfuf-telemetry",
+    "crates/sat",
+    "crates/sat-harness",
+]
 # exclude for experimental packages, otherwise cargo will not allowing building these packages separately
 exclude = ["play/arena", "play/bitsum"]
 resolver = "3"

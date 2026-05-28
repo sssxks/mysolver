@@ -11,7 +11,7 @@ mod dimacs;
 mod heap;
 /// CDCL solver state and search algorithms.
 mod solver;
-/// Low-overhead telemetry collection and sample formats.
+/// Low-overhead telemetry adapters shared with the standalone telemetry crate.
 pub mod telemetry;
 /// Core SAT value types.
 mod types;

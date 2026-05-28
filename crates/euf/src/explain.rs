@@ -101,8 +101,8 @@ impl SearchState {
         self.explain_path_scratch.clear();
         let mut current = rhs;
         while current != lhs {
-            let edge_id = self.explain_pred_edge[current.index()]
-                .expect("missing equality explanation path");
+            let edge_id =
+                self.explain_pred_edge[current.index()].expect("missing equality explanation path");
             self.explain_path_scratch.push(edge_id);
             current = self.proof_edge_source(edge_id);
         }
