@@ -20,7 +20,6 @@ mod search_state;
 /// SAT-facing EUF theory integration.
 mod theory;
 
-pub use explain::{EqualityExplanation, ExplanationClause};
 pub use registry::Registry;
 pub use search_state::{
     CongruenceSig, CongruenceSigRef, DiseqInput, DisequalityEntry, MergeEdge, MergeInput,

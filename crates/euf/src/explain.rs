@@ -4,11 +4,11 @@
 
 use std::collections::VecDeque;
 
-use sat::{AssertionLevel, Lit, TheoryClause, TheoryClauseKind};
+use sat::Lit;
 
-use crate::types::{TermId, TermRef};
 use crate::registry::Registry;
 use crate::search_state::{DisequalityEntry, MergeReason, SearchState};
+use crate::types::{TermId, TermRef};
 
 impl SearchState {
     /// Explains why `lhs == rhs` currently holds as a multiset of input literals.
@@ -114,54 +114,5 @@ impl SearchState {
         out.clear();
         self.collect_equality_explanation(registry, diseq.lhs, diseq.rhs, out);
         out.push(diseq.reason_lit);
-    }
-}
-
-/// One recursive equality explanation node.
-#[derive(Clone, Debug)]
-pub enum EqualityExplanation {
-    /// One asserted equality literal.
-    InputLiteral(Lit),
-    /// One congruence step between two parent applications.
-    Congruence {
-        /// Left parent application.
-        left_parent: TermId,
-        /// Right parent application.
-        right_parent: TermId,
-        /// Child pairs that were recursively equal.
-        child_pairs: Box<[(TermId, TermId)]>,
-    },
-}
-
-/// One clause explanation reconstructed by the theory.
-#[derive(Clone, Debug)]
-pub struct ExplanationClause {
-    /// Propagated literal, when this is one propagation rather than one conflict.
-    propagated: Option<Lit>,
-    /// Premise literals whose negation form the explanation antecedent.
-    premises: Box<[Lit]>,
-}
-
-impl ExplanationClause {
-    /// Converts this explanation into one SAT theory clause.
-    pub fn to_theory_clause(&self, solver: &sat::Solver, kind: TheoryClauseKind) -> TheoryClause {
-        let mut lits =
-            Vec::with_capacity(self.premises.len() + usize::from(self.propagated.is_some()));
-        for &premise in &*self.premises {
-            lits.push(!premise);
-        }
-        if let Some(propagated) = self.propagated {
-            lits.push(propagated);
-        }
-        let assertion_level = lits
-            .iter()
-            .map(|lit| solver.intro_level_of(lit.var()))
-            .max()
-            .unwrap_or(AssertionLevel::ROOT);
-        TheoryClause {
-            lits: lits.into_boxed_slice(),
-            assertion_level,
-            kind,
-        }
     }
 }

@@ -35,6 +35,7 @@ compare argument="hard" *extra:
 perf *args="":
     samply record --unstable-presymbolicate -- {{ args }}
 
+# This tool seems can not detect dead type definitions.
 @dead-pub:
     # cargo install has to update index, causing a little lag even when installed, seems not very ideal.
     cargo install cargo-workspace-unused-pub -q
