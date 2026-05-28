@@ -2,9 +2,9 @@
 members = [
     "crates/euf",
     "crates/qfuf",
-    "crates/qfuf-telemetry",
+    "crates/telemetry",
     "crates/sat",
-    "crates/sat-harness",
+    "crates/harness",
 ]
 # exclude for experimental packages, otherwise cargo will not allowing building these packages separately
 exclude = ["play/arena", "play/bitsum"]

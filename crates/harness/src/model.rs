@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use console::{StyledObject, style};
-use qfuf_telemetry::{Sample, Summary};
+use telemetry::{Sample, Summary};
 use serde::{Deserialize, Serialize};
 
 use strum::VariantArray as _;

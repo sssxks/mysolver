@@ -5,12 +5,12 @@ edition = "2024"
 
 [features]
 default = ["telemetry"]
-telemetry = ["sat/telemetry", "dep:qfuf-telemetry"]
+telemetry = ["sat/telemetry", "dep:telemetry"]
 
 [dependencies]
 bumpalo = "3"
 hashbrown = "0.16"
-qfuf-telemetry = { path = "../qfuf-telemetry", optional = true }
+telemetry = { path = "../telemetry", optional = true }
 sat = { path = "../sat", default-features = false }
 
 [lints.clippy]

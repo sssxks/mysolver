@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use euf::{EufTheory, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef};
 #[cfg(feature = "telemetry")]
-use qfuf_telemetry::{Gauges, TelemetryRecorder};
+use telemetry::{Gauges, TelemetryRecorder};
 use sat::{AddClauseResult, Lit, SatResult, Solver};
 
 /// Runs the solver over one complete SMT-LIB input string and returns the textual

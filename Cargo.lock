@@ -192,8 +192,8 @@ version = "0.1.0"
 dependencies = [
  "bumpalo",
  "hashbrown 0.16.1",
- "qfuf-telemetry",
  "sat",
+ "telemetry",
 ]
 
 [[package]]
@@ -410,10 +410,10 @@ dependencies = [
  "flate2",
  "humantime",
  "indicatif",
- "qfuf-telemetry",
  "serde",
  "serde_json",
  "strum",
+ "telemetry",
  "tempfile",
  "walkdir",
 ]
@@ -466,16 +466,8 @@ name = "qfuf"
 version = "0.1.0"
 dependencies = [
  "euf",
- "qfuf-telemetry",
  "sat",
-]
-
-[[package]]
-name = "qfuf-telemetry"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
+ "telemetry",
 ]
 
 [[package]]
@@ -525,9 +517,9 @@ dependencies = [
 name = "sat"
 version = "0.1.0"
 dependencies = [
- "qfuf-telemetry",
  "serde",
  "serde_json",
+ "telemetry",
 ]
 
 [[package]]
@@ -627,6 +619,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "telemetry"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

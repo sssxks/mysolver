@@ -3,7 +3,7 @@
 use sat::telemetry::Gauges as SatGauges;
 
 #[cfg(feature = "telemetry")]
-pub(crate) use qfuf_telemetry::EufGauges as Gauges;
+pub(crate) use telemetry::EufGauges as Gauges;
 
 #[cfg(not(feature = "telemetry"))]
 /// Placeholder EUF gauge type used when telemetry instrumentation is disabled.
@@ -14,7 +14,7 @@ pub(crate) struct Gauges;
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_input_equality() {
-    qfuf_telemetry::record_euf_input_equality();
+    telemetry::record_euf_input_equality();
 }
 
 /// Records one asserted input equality.
@@ -26,7 +26,7 @@ pub(crate) fn record_input_equality() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_input_disequality() {
-    qfuf_telemetry::record_euf_input_disequality();
+    telemetry::record_euf_input_disequality();
 }
 
 /// Records one asserted input disequality.
@@ -38,7 +38,7 @@ pub(crate) fn record_input_disequality() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_congruence_merge() {
-    qfuf_telemetry::record_euf_congruence_merge();
+    telemetry::record_euf_congruence_merge();
 }
 
 /// Records one congruence-driven merge.
@@ -50,7 +50,7 @@ pub(crate) fn record_congruence_merge() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_theory_propagation() {
-    qfuf_telemetry::record_euf_theory_propagation();
+    telemetry::record_euf_theory_propagation();
 }
 
 /// Records one theory propagation clause.
@@ -62,7 +62,7 @@ pub(crate) fn record_theory_propagation() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_theory_conflict() {
-    qfuf_telemetry::record_euf_theory_conflict();
+    telemetry::record_euf_theory_conflict();
 }
 
 /// Records one theory conflict clause.
@@ -74,7 +74,7 @@ pub(crate) fn record_theory_conflict() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn maybe_emit_sample(sat: SatGauges, euf: Gauges) {
-    qfuf_telemetry::maybe_emit_sample(|| qfuf_telemetry::Gauges { sat, euf });
+    telemetry::maybe_emit_sample(|| telemetry::Gauges { sat, euf });
 }
 
 /// Emits one combined SAT+EUF sample.

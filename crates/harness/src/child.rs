@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use bzip2::read::BzDecoder;
 use flate2::read::MultiGzDecoder;
 #[cfg(feature = "telemetry")]
-use qfuf_telemetry::PATH_ENV_VAR;
+use telemetry::PATH_ENV_VAR;
 
 use crate::cli::RunCaseArgs;
 use crate::discover::query_count;

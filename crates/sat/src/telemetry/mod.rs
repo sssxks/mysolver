@@ -5,7 +5,7 @@
 //! hot-path API compact and feature-gated.
 
 #[cfg(feature = "telemetry")]
-pub use qfuf_telemetry::{EufGauges, Gauges as CombinedGauges, SatGauges as Gauges};
+pub use telemetry::{EufGauges, Gauges as CombinedGauges, SatGauges as Gauges};
 
 #[cfg(not(feature = "telemetry"))]
 /// Placeholder SAT gauge type used when telemetry instrumentation is disabled.
@@ -26,7 +26,7 @@ pub struct CombinedGauges;
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn initialize_solver_gauges(live_irredundant_clauses: usize, watcher_entries: usize) {
-    qfuf_telemetry::initialize_sat_solver_gauges(live_irredundant_clauses, watcher_entries);
+    telemetry::initialize_sat_solver_gauges(live_irredundant_clauses, watcher_entries);
 }
 
 /// Initializes the SAT current-value gauges for one solver run.
@@ -38,7 +38,7 @@ pub(crate) fn initialize_solver_gauges(_live_irredundant_clauses: usize, _watche
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_added_watchers(count: usize) {
-    qfuf_telemetry::record_sat_added_watchers(count);
+    telemetry::record_sat_added_watchers(count);
 }
 
 /// Increments the watcher-entry gauge by `count`.
@@ -50,7 +50,7 @@ pub(crate) fn record_added_watchers(_count: usize) {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_removed_watchers(count: usize) {
-    qfuf_telemetry::record_sat_removed_watchers(count);
+    telemetry::record_sat_removed_watchers(count);
 }
 
 /// Decrements the watcher-entry gauge by `count`.
@@ -62,7 +62,7 @@ pub(crate) fn record_removed_watchers(_count: usize) {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_conflict() {
-    qfuf_telemetry::record_sat_conflict();
+    telemetry::record_sat_conflict();
 }
 
 /// Records one SAT conflict event.
@@ -74,7 +74,7 @@ pub(crate) fn record_conflict() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_propagation() {
-    qfuf_telemetry::record_sat_propagation();
+    telemetry::record_sat_propagation();
 }
 
 /// Records one SAT propagated assignment.
@@ -86,7 +86,7 @@ pub(crate) fn record_propagation() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_decision() {
-    qfuf_telemetry::record_sat_decision();
+    telemetry::record_sat_decision();
 }
 
 /// Records one SAT branching decision.
@@ -98,7 +98,7 @@ pub(crate) fn record_decision() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_restart() {
-    qfuf_telemetry::record_sat_restart();
+    telemetry::record_sat_restart();
 }
 
 /// Records one SAT restart event.
@@ -110,7 +110,7 @@ pub(crate) fn record_restart() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_reduction() {
-    qfuf_telemetry::record_sat_reduction();
+    telemetry::record_sat_reduction();
 }
 
 /// Records one SAT learned-database reduction.
@@ -122,7 +122,7 @@ pub(crate) fn record_reduction() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_learnt_clause() {
-    qfuf_telemetry::record_sat_learnt_clause();
+    telemetry::record_sat_learnt_clause();
 }
 
 /// Records one learned clause insertion.
@@ -134,7 +134,7 @@ pub(crate) fn record_learnt_clause() {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn record_deleted_clauses(count: usize) {
-    qfuf_telemetry::record_sat_deleted_clauses(count);
+    telemetry::record_sat_deleted_clauses(count);
 }
 
 /// Records `count` deleted learned clauses.
@@ -146,7 +146,7 @@ pub(crate) fn record_deleted_clauses(_count: usize) {}
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn live_irredundant_clauses() -> u64 {
-    qfuf_telemetry::sat_live_irredundant_clauses()
+    telemetry::sat_live_irredundant_clauses()
 }
 
 /// Returns the current irredundant-clause gauge.
@@ -160,7 +160,7 @@ pub(crate) fn live_irredundant_clauses() -> u64 {
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn watcher_entries() -> u64 {
-    qfuf_telemetry::sat_watcher_entries()
+    telemetry::sat_watcher_entries()
 }
 
 /// Returns the current watcher-entry gauge.
@@ -174,7 +174,7 @@ pub(crate) fn watcher_entries() -> u64 {
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn maybe_emit_sample<F: FnOnce() -> CombinedGauges>(gauges: F) {
-    qfuf_telemetry::maybe_emit_sample(gauges);
+    telemetry::maybe_emit_sample(gauges);
 }
 
 /// Emits one combined SAT-plus-theory sample when a timer tick is pending.

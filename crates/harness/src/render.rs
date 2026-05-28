@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use console::style;
 use indicatif::{HumanCount, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use qfuf_telemetry::Summary;
+use telemetry::Summary;
 
 use crate::model::{CaseOutcome, OutcomeCategory, OutcomeStats};
 use crate::util::{format_compact_duration, truncate_display_path};
@@ -169,7 +169,7 @@ mod tests {
 
     use super::{format_outcome, progress_message};
     use crate::model::{CaseOutcome, CaseRecord, CaseTelemetry, OutcomeCategory, OutcomeStats};
-    use qfuf_telemetry::{EufSummary, SatSummary, Summary};
+    use telemetry::{EufSummary, SatSummary, Summary};
 
     /// Ensures the live message exposes worker activity even before any case finishes.
     #[test]

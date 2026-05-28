@@ -1,5 +1,5 @@
 [package]
-name = "qfuf-telemetry"
+name = "telemetry"
 version.workspace = true
 edition.workspace = true
 

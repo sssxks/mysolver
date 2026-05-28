@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use indicatif::{HumanCount, HumanDuration};
 #[cfg(feature = "telemetry")]
-use qfuf_telemetry::{Sample, Summary};
+use telemetry::{Sample, Summary};
 use tempfile::NamedTempFile;
 
 use crate::cli::{OutputMode, RunArgs};

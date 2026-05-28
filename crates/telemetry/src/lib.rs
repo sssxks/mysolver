@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 /// Environment variable used by `qfuf` to discover the telemetry JSONL path.
-pub const PATH_ENV_VAR: &str = "MYSOLVER_QFUF_TELEMETRY_PATH";
+pub const PATH_ENV_VAR: &str = "MYSOLVER_TELEMETRY_PATH";
 /// Default interval between periodic telemetry samples.
 pub const DEFAULT_SAMPLE_PERIOD: Duration = Duration::from_secs(1);
 
