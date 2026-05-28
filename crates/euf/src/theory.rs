@@ -7,7 +7,7 @@ use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
 use crate::AtomLiteralKind;
 use crate::registry::Registry;
 use crate::search_state::{
-    DiseqInput, DisequalityEntry, MergeEdge, MergeInput, MergeReason, SearchState, Undo,
+    DiseqInput, DisequalityEntry, MergeEdge, MergeInput, MergeReason, SearchState,
 };
 use crate::types::{
     AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
@@ -209,23 +209,31 @@ impl EufTheory {
 
     /// Enqueues parent applications of one changed class.
     fn enqueue_repairs_for_class(&mut self, root: EClassId) {
-        let mut current = Some(self.search.class_head[root.index()]);
-        while let Some(term) = current {
+        let start = TermId::from_index(root.index());
+        let mut term = start;
+        loop {
             for &parent in self.registry.parent_apps(term) {
                 self.search.pending_repairs.push_back(parent);
             }
-            current = self.search.next_in_class[term.index()];
+            term = self.search.next_in_class[term.index()];
+            if term == start {
+                break;
+            }
         }
     }
 
     /// Enqueues atom triggers attached to one changed class.
     fn enqueue_atom_triggers_for_class(&mut self, root: EClassId) {
-        let mut current = Some(self.search.class_head[root.index()]);
-        while let Some(term) = current {
+        let start = TermId::from_index(root.index());
+        let mut term = start;
+        loop {
             for &atom in self.registry.term_atoms(term) {
                 self.search.enqueue_atom_trigger(atom);
             }
-            current = self.search.next_in_class[term.index()];
+            term = self.search.next_in_class[term.index()];
+            if term == start {
+                break;
+            }
         }
     }
 
@@ -250,9 +258,7 @@ impl EufTheory {
             return;
         };
         let owned = self.search.own_current_congruence_sig(fun);
-        self.search
-            .undo_log
-            .push(Undo::CongruenceInsert { key: owned.clone() });
+        self.search.congruence_insert_log.push(owned.clone());
         self.search.congruence_table.insert(owned, parent);
     }
 

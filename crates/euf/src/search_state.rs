@@ -103,6 +103,8 @@ pub struct DisequalityEntry {
 pub struct SatLevelMarker {
     /// Undo-log length at level entry.
     pub(crate) undo_len: usize,
+    /// Congruence-insert log length at level entry.
+    pub(crate) congruence_insert_len: usize,
     /// Merge-edge length at level entry.
     pub(crate) merge_edges_len: usize,
     /// Active-disequality length at level entry.
@@ -134,31 +136,12 @@ pub enum Undo {
         /// Previous rank value.
         old_rank: u32,
     },
-    /// Class-head pointer update.
-    ClassHead {
-        /// Root updated in `class_head`.
-        root: EClassId,
-        /// Previous head value.
-        old_head: TermId,
-    },
-    /// Class-tail pointer update.
-    ClassTail {
-        /// Root updated in `class_tail`.
-        root: EClassId,
-        /// Previous tail value.
-        old_tail: TermId,
-    },
-    /// Linked-list successor change.
+    /// Circular class-membership successor change.
     ClassNext {
         /// Node updated in `next_in_class`.
         node: TermId,
         /// Previous successor value.
-        old_next: Option<TermId>,
-    },
-    /// Congruence-table insertion to remove on rollback.
-    CongruenceInsert {
-        /// Inserted owned key.
-        key: CongruenceSig,
+        old_next: TermId,
     },
 }
 
@@ -169,19 +152,23 @@ pub struct SearchState {
     parent: Vec<EClassId>,
     /// Rank heuristic for each representative.
     rank: Vec<u32>,
-    /// Head of each class-membership linked list.
-    pub(crate) class_head: Vec<TermId>,
-    /// Tail of each class-membership linked list.
-    class_tail: Vec<TermId>,
-    /// Successor link for each term in one class-membership list.
-    pub(crate) next_in_class: Vec<Option<TermId>>,
+    /// Successor link for each term in one circular class-membership list.
+    pub(crate) next_in_class: Vec<TermId>,
 
     /// Search-lifetime arena for owned congruence signatures.
+    ///
+    /// Currently, this is implemented as search-lifetime bump arena for
+    /// simplicity. SAT backtracking removes congruence-table entries via
+    /// `congruence_insert_log`, but does not reclaim per-signature payload.
+    /// That keeps `CongruenceSig` as one simple hashable slice handle.
     congruence_storage: Bump,
     /// Congruence table keyed by function symbol and current representative arguments.
     pub(crate) congruence_table: HashMap<CongruenceSig, TermId>,
+    /// Congruence-table insertions in insertion order for SAT-level rollback.
+    pub(crate) congruence_insert_log: Vec<CongruenceSig>,
     /// Scratch buffer used while building borrowed congruence signatures.
     congruence_sig_scratch: Vec<EClassId>,
+
     /// Pending input merges still to process.
     pub(crate) pending_merges: VecDeque<MergeInput>,
     /// Parent applications that must be reconsidered.
@@ -219,8 +206,6 @@ impl SearchState {
         let nterms = registry.num_terms();
         self.parent.clear();
         self.rank.clear();
-        self.class_head.clear();
-        self.class_tail.clear();
         self.next_in_class.clear();
         self.congruence_storage.reset();
 
@@ -229,9 +214,7 @@ impl SearchState {
             let rep = EClassId::from_index(index);
             self.parent.push(rep);
             self.rank.push(0);
-            self.class_head.push(term);
-            self.class_tail.push(term);
-            self.next_in_class.push(None);
+            self.next_in_class.push(term);
         }
 
         self.congruence_table.clear();
@@ -245,6 +228,7 @@ impl SearchState {
         self.pending_clauses.clear();
         self.active_disequalities.clear();
         self.merge_edges.clear();
+        self.congruence_insert_log.clear();
         self.undo_log.clear();
         self.level_markers.clear();
     }
@@ -253,6 +237,7 @@ impl SearchState {
     pub fn push_sat_level(&mut self) {
         self.level_markers.push(SatLevelMarker {
             undo_len: self.undo_log.len(),
+            congruence_insert_len: self.congruence_insert_log.len(),
             merge_edges_len: self.merge_edges.len(),
             active_disequalities_len: self.active_disequalities.len(),
             pending_merges_len: self.pending_merges.len(),
@@ -280,6 +265,13 @@ impl SearchState {
             self.active_disequalities
                 .truncate(marker.active_disequalities_len);
             self.merge_edges.truncate(marker.merge_edges_len);
+            while self.congruence_insert_log.len() > marker.congruence_insert_len {
+                let key = self
+                    .congruence_insert_log
+                    .pop()
+                    .expect("checked congruence insert suffix above");
+                self.congruence_table.remove(&key);
+            }
             self.rollback_to(marker.undo_len);
         }
     }
@@ -316,17 +308,19 @@ impl SearchState {
             self.rank[survivor.index()] += 1;
         }
 
-        self.undo_log.push(Undo::ClassTail {
-            root: survivor,
-            old_tail: self.class_tail[survivor.index()],
+        let survivor_node = TermId::from_index(survivor.index());
+        let absorbed_node = TermId::from_index(absorbed.index());
+        self.undo_log.push(Undo::ClassNext {
+            node: survivor_node,
+            old_next: self.next_in_class[survivor_node.index()],
         });
         self.undo_log.push(Undo::ClassNext {
-            node: self.class_tail[survivor.index()],
-            old_next: self.next_in_class[self.class_tail[survivor.index()].index()],
+            node: absorbed_node,
+            old_next: self.next_in_class[absorbed_node.index()],
         });
-        self.next_in_class[self.class_tail[survivor.index()].index()] =
-            Some(self.class_head[absorbed.index()]);
-        self.class_tail[survivor.index()] = self.class_tail[absorbed.index()];
+        let survivor_next = self.next_in_class[survivor_node.index()];
+        self.next_in_class[survivor_node.index()] = self.next_in_class[absorbed_node.index()];
+        self.next_in_class[absorbed_node.index()] = survivor_next;
 
         survivor
     }
@@ -412,17 +406,8 @@ impl SearchState {
                 Undo::Rank { root, old_rank } => {
                     self.rank[root.index()] = old_rank;
                 }
-                Undo::ClassHead { root, old_head } => {
-                    self.class_head[root.index()] = old_head;
-                }
-                Undo::ClassTail { root, old_tail } => {
-                    self.class_tail[root.index()] = old_tail;
-                }
                 Undo::ClassNext { node, old_next } => {
                     self.next_in_class[node.index()] = old_next;
-                }
-                Undo::CongruenceInsert { key } => {
-                    self.congruence_table.remove(&key);
                 }
             }
         }

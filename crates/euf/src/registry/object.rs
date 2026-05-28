@@ -74,7 +74,7 @@ impl MatchesRef for Symbol {
 
 /// One canonical term object stored in the permanent registry.
 ///
-/// Semantically, a term is one application in `SymbolId × Vec<TermId>`.
+/// Semantically, a term is one application in `SymbolId × TermId*`.
 ///
 /// # Encoding
 ///
