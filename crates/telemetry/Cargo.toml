@@ -3,6 +3,10 @@ name = "telemetry"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+backend-cooperative = []
+
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"

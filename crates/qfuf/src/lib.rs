@@ -53,7 +53,9 @@ fn run_script_with_driver(driver: &mut Driver, input: &str) -> Result<String, St
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 fn maybe_emit_progress_sample(driver: &Driver) {
-    telemetry::maybe_emit_sample(|| driver.telemetry_gauges());
+    let gauges = driver.telemetry_gauges();
+    telemetry::publish_gauges(gauges);
+    telemetry::maybe_emit_sample(|| gauges);
 }
 
 /// Compiles to a no-op when telemetry instrumentation is disabled.

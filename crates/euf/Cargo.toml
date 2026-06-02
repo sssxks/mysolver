@@ -4,13 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["telemetry"]
+default = ["telemetry-atomic"]
 telemetry = ["sat/telemetry", "dep:telemetry"]
+telemetry-atomic = ["telemetry", "sat/telemetry-atomic"]
+telemetry-cooperative = ["telemetry", "sat/telemetry-cooperative", "telemetry/backend-cooperative"]
 
 [dependencies]
 bumpalo = "3"
 hashbrown = "0.16"
-telemetry = { path = "../telemetry", optional = true }
+telemetry = { path = "../telemetry", optional = true, default-features = false }
 sat = { path = "../sat", default-features = false }
 
 [lints.clippy]

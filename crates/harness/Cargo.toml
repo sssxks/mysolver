@@ -4,8 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["telemetry"]
-telemetry = []
+default = ["telemetry-atomic"]
+telemetry = ["qfuf/telemetry"]
+telemetry-atomic = ["telemetry", "qfuf/telemetry-atomic"]
+telemetry-cooperative = ["telemetry", "qfuf/telemetry-cooperative", "telemetry/backend-cooperative"]
 
 [dependencies]
 bzip2 = "0.6.1"
@@ -14,8 +16,8 @@ console = "0.16"
 flate2 = "1.1.5"
 humantime = "2.3.0"
 indicatif = "0.18.2"
-qfuf = { path = "../qfuf" }
-telemetry = { path = "../telemetry" }
+qfuf = { path = "../qfuf", default-features = false }
+telemetry = { path = "../telemetry", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 strum = { version = "0.28.0", features = ["derive"] }

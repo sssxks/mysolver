@@ -4,11 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["telemetry"]
+default = ["telemetry-atomic"]
 telemetry = ["dep:telemetry"]
+telemetry-atomic = ["telemetry"]
+telemetry-cooperative = ["telemetry", "telemetry/backend-cooperative"]
 
 [dependencies]
-telemetry = { path = "../telemetry", optional = true }
+telemetry = { path = "../telemetry", optional = true, default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 

@@ -4,12 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["telemetry"]
+default = ["telemetry-atomic"]
 telemetry = ["dep:telemetry", "euf/telemetry", "sat/telemetry"]
+telemetry-atomic = ["telemetry", "euf/telemetry-atomic", "sat/telemetry-atomic"]
+telemetry-cooperative = ["telemetry", "euf/telemetry-cooperative", "sat/telemetry-cooperative", "telemetry/backend-cooperative"]
 
 [dependencies]
 euf = { path = "../euf", default-features = false }
-telemetry = { path = "../telemetry", optional = true }
+telemetry = { path = "../telemetry", optional = true, default-features = false }
 sat = { path = "../sat", default-features = false }
 
 [lints]
