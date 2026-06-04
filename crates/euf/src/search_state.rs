@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::ptr::NonNull;
 
 use bumpalo::Bump;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use sat::{Lit, TheoryClause};
 
 use crate::arena::{ArenaSlice, make_hash};
@@ -85,6 +85,49 @@ pub struct MergeEdge {
     pub(crate) rhs: TermId,
     /// Justification for this equality edge.
     pub(crate) reason: MergeReason,
+}
+
+impl MergeEdge {
+    /// Returns the endpoint opposite `term` on this undirected merge edge.
+    #[inline(always)]
+    pub(crate) fn other_endpoint(self, term: TermId) -> TermId {
+        if self.lhs == term {
+            return self.rhs;
+        }
+        debug_assert_eq!(self.rhs, term);
+        self.lhs
+    }
+}
+
+/// One directed adjacency entry in the equality explanation graph.
+///
+/// Semantically, this is one half-edge in `TermId -> TermId`, pointing back to
+/// the undirected `MergeEdge` that justifies the adjacency.
+///
+/// # Encoding
+///
+/// - `target` is the neighboring term.
+/// - `edge` indexes `SearchState::edges`.
+/// - `next` links to the previous directed edge for the same source term.
+/// - Invariants: directed edges are appended in pairs. For merge edge `i`,
+///   directed edges `2*i` and `2*i + 1` are its two orientations.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub(crate) struct DirectedMergeEdge {
+    /// Target endpoint of this directed edge.
+    pub(crate) target: TermId,
+    /// Undirected merge edge carrying the reason.
+    pub(crate) edge: usize,
+    /// Previous adjacency-list head for the source endpoint.
+    pub(crate) next: Option<usize>,
+}
+
+/// One visited-node record for an explanation BFS.
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub(crate) struct ExplainVisit {
+    /// BFS epoch in which this record is live.
+    pub(crate) epoch: u32,
+    /// Incoming undirected edge on the discovered BFS tree.
+    pub(crate) parent_edge: usize,
 }
 
 /// One active disequality fact.
@@ -186,6 +229,19 @@ pub struct SearchState {
 
     /// Active equality-proof graph.
     pub(crate) edges: Vec<MergeEdge>,
+    /// Per-term head of the directed equality-proof adjacency list.
+    pub(crate) graph_heads: Vec<Option<usize>>,
+    /// Directed adjacency entries for `edges`.
+    pub(crate) directed_edges: Vec<DirectedMergeEdge>,
+
+    /// Reusable visited records for equality explanation BFS.
+    pub(crate) explain_visits: Vec<ExplainVisit>,
+    /// Current nonzero BFS epoch.
+    pub(crate) explain_epoch: u32,
+    /// Reusable FIFO storage for equality explanation BFS.
+    pub(crate) explain_queue: Vec<TermId>,
+    /// Pair cache for one recursive equality explanation.
+    pub(crate) explain_cache: HashSet<(TermId, TermId)>,
 
     /// Reversible mutation log.
     pub(crate) undo_log: Vec<Undo>,
@@ -230,6 +286,13 @@ impl SearchState {
         self.pending_clauses.clear();
         self.active_disequalities.clear();
         self.edges.clear();
+        self.graph_heads.clear();
+        self.graph_heads.resize(nterms, None);
+        self.directed_edges.clear();
+        self.explain_visits.clear();
+        self.explain_epoch = 0;
+        self.explain_queue.clear();
+        self.explain_cache.clear();
         self.signature_log.clear();
         self.undo_log.clear();
         self.level_markers.clear();
@@ -266,7 +329,7 @@ impl SearchState {
             self.pending_merges.truncate(marker.pending_merges_len);
             self.active_disequalities
                 .truncate(marker.active_disequalities_len);
-            self.edges.truncate(marker.merge_edges_len);
+            self.truncate_merge_edges(marker.merge_edges_len);
             while self.signature_log.len() > marker.congruence_insert_len {
                 let key = self
                     .signature_log
@@ -412,6 +475,49 @@ impl SearchState {
                     self.next[node.index()] = old_next;
                 }
             }
+        }
+    }
+
+    /// Appends one undirected merge edge and its two directed adjacency entries.
+    #[inline(always)]
+    pub(crate) fn push_merge_edge(&mut self, edge: MergeEdge) {
+        let edge_index = self.edges.len();
+        self.edges.push(edge);
+
+        let lhs_head = self.graph_heads[edge.lhs.index()];
+        self.directed_edges.push(DirectedMergeEdge {
+            target: edge.rhs,
+            edge: edge_index,
+            next: lhs_head,
+        });
+        self.graph_heads[edge.lhs.index()] = Some(edge_index * 2);
+
+        let rhs_head = self.graph_heads[edge.rhs.index()];
+        self.directed_edges.push(DirectedMergeEdge {
+            target: edge.lhs,
+            edge: edge_index,
+            next: rhs_head,
+        });
+        self.graph_heads[edge.rhs.index()] = Some(edge_index * 2 + 1);
+    }
+
+    /// Truncates merge edges while maintaining adjacency-list heads.
+    fn truncate_merge_edges(&mut self, keep_len: usize) {
+        while self.edges.len() > keep_len {
+            let edge_index = self.edges.len() - 1;
+            let edge = self.edges[edge_index];
+            let lhs_directed = edge_index * 2;
+            let rhs_directed = lhs_directed + 1;
+            debug_assert_eq!(self.directed_edges.len(), rhs_directed + 1);
+            debug_assert_eq!(self.graph_heads[edge.lhs.index()], Some(lhs_directed));
+            debug_assert_eq!(self.graph_heads[edge.rhs.index()], Some(rhs_directed));
+            debug_assert_eq!(self.directed_edges[lhs_directed].target, edge.rhs);
+            debug_assert_eq!(self.directed_edges[rhs_directed].target, edge.lhs);
+
+            self.graph_heads[edge.lhs.index()] = self.directed_edges[lhs_directed].next;
+            self.graph_heads[edge.rhs.index()] = self.directed_edges[rhs_directed].next;
+            self.directed_edges.truncate(lhs_directed);
+            self.edges.pop();
         }
     }
 

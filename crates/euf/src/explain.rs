@@ -1,9 +1,5 @@
 //! Equality and theory-clause explanation support.
 
-// TODO this module is poorly implemented, needs investigation. performance very bad.
-
-use std::collections::VecDeque;
-
 use sat::Lit;
 
 use crate::registry::Registry;
@@ -13,20 +9,21 @@ use crate::types::TermId;
 impl SearchState {
     /// Explains why `lhs == rhs` currently holds as a multiset of input literals.
     pub fn explain_equality(
-        &self,
+        &mut self,
         registry: &Registry,
         lhs: TermId,
         rhs: TermId,
         out: &mut Vec<Lit>,
     ) {
         out.clear();
+        self.explain_cache.clear();
         self.collect_equality_explanation(registry, lhs, rhs, out);
     }
 
     /// Recursively appends one equality explanation without discarding already
     /// collected premises from the caller.
     fn collect_equality_explanation(
-        &self,
+        &mut self,
         registry: &Registry,
         lhs: TermId,
         rhs: TermId,
@@ -35,42 +32,16 @@ impl SearchState {
         if lhs == rhs {
             return;
         }
-        let mut parents = vec![None; registry.num_terms()];
-        let mut queue = VecDeque::new();
-        queue.push_back(lhs);
-        parents[lhs.index()] = Some(usize::MAX);
 
-        while let Some(current) = queue.pop_front() {
-            if current == rhs {
-                break;
-            }
-            for (edge_index, edge) in self.edges.iter().enumerate() {
-                let next = if edge.lhs == current {
-                    edge.rhs
-                } else if edge.rhs == current {
-                    edge.lhs
-                } else {
-                    continue;
-                };
-                if parents[next.index()].is_none() {
-                    parents[next.index()] = Some(edge_index);
-                    queue.push_back(next);
-                }
-            }
+        let key = if lhs <= rhs { (lhs, rhs) } else { (rhs, lhs) };
+        if !self.explain_cache.insert(key) {
+            return;
         }
 
-        let mut path_edges = Vec::new();
-        let mut current = rhs;
-        while current != lhs {
-            let edge_index = parents[current.index()].expect("missing equality explanation path");
-            let edge = self.edges[edge_index];
-            path_edges.push(edge);
-            current = if edge.lhs == current {
-                edge.rhs
-            } else {
-                edge.lhs
-            };
-        }
+        let mut path_edges = match self.find_equality_explanation_path(registry, lhs, rhs) {
+            Some(path_edges) => path_edges,
+            None => panic!("missing equality explanation path"),
+        };
         path_edges.reverse();
 
         for edge in path_edges {
@@ -92,14 +63,97 @@ impl SearchState {
         }
     }
 
+    /// Finds one active proof-graph path from `lhs` to `rhs`.
+    fn find_equality_explanation_path(
+        &mut self,
+        registry: &Registry,
+        lhs: TermId,
+        rhs: TermId,
+    ) -> Option<Vec<crate::search_state::MergeEdge>> {
+        self.prepare_explanation_bfs(registry.num_terms());
+
+        let epoch = self.explain_epoch;
+        self.explain_queue.clear();
+        self.explain_queue.push(lhs);
+        self.explain_visits[lhs.index()] = crate::search_state::ExplainVisit {
+            epoch,
+            parent_edge: usize::MAX,
+        };
+
+        let mut qhead = 0;
+        let mut found = lhs == rhs;
+        while qhead < self.explain_queue.len() && !found {
+            let current = self.explain_queue[qhead];
+            qhead += 1;
+
+            let mut directed = self.graph_heads[current.index()];
+            while let Some(directed_index) = directed {
+                let edge = self.directed_edges[directed_index];
+                let next = edge.target;
+                if self.explain_visits[next.index()].epoch != epoch {
+                    self.explain_visits[next.index()] = crate::search_state::ExplainVisit {
+                        epoch,
+                        parent_edge: edge.edge,
+                    };
+                    if next == rhs {
+                        found = true;
+                        break;
+                    }
+                    self.explain_queue.push(next);
+                }
+                directed = edge.next;
+            }
+        }
+
+        if !found {
+            return None;
+        }
+
+        let mut path_edges = Vec::new();
+        let mut current = rhs;
+        while current != lhs {
+            let parent_edge = self.explain_visits[current.index()].parent_edge;
+            if parent_edge == usize::MAX {
+                return None;
+            }
+            let edge = self.edges[parent_edge];
+            path_edges.push(edge);
+            current = edge.other_endpoint(current);
+        }
+
+        Some(path_edges)
+    }
+
+    /// Starts a new BFS epoch and grows scratch storage to the current term count.
+    fn prepare_explanation_bfs(&mut self, num_terms: usize) {
+        self.explain_visits.resize(
+            num_terms,
+            crate::search_state::ExplainVisit {
+                epoch: 0,
+                parent_edge: usize::MAX,
+            },
+        );
+
+        if self.explain_epoch == u32::MAX {
+            for visit in &mut self.explain_visits {
+                visit.epoch = 0;
+            }
+            self.explain_epoch = 1;
+            return;
+        }
+
+        self.explain_epoch += 1;
+    }
+
     /// Explains one disequality conflict as its supporting input literals.
     pub fn explain_conflict(
-        &self,
+        &mut self,
         registry: &Registry,
         diseq: DisequalityEntry,
         out: &mut Vec<Lit>,
     ) {
         out.clear();
+        self.explain_cache.clear();
         self.collect_equality_explanation(registry, diseq.lhs, diseq.rhs, out);
         out.push(diseq.reason_lit);
     }

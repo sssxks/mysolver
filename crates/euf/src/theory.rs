@@ -4,7 +4,6 @@ use std::collections::VecDeque;
 
 use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
 
-use crate::{AtomLiteralKind, telemetry};
 use crate::registry::Registry;
 use crate::search_state::{
     DiseqInput, DisequalityEntry, MergeEdge, MergeInput, MergeReason, SearchState,
@@ -12,6 +11,7 @@ use crate::search_state::{
 use crate::types::{
     AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
 };
+use crate::{AtomLiteralKind, telemetry};
 
 /// The EUF theory module exposed to the SAT engine.
 #[derive(Debug, Default)]
@@ -171,7 +171,7 @@ impl EufTheory {
             return;
         }
         let merged_root = self.search.union_roots(lhs_root, rhs_root);
-        self.search.edges.push(MergeEdge {
+        self.search.push_merge_edge(MergeEdge {
             lhs: input.lhs,
             rhs: input.rhs,
             reason: MergeReason::InputEq {
@@ -191,7 +191,7 @@ impl EufTheory {
         }
         telemetry::record_congruence_merge();
         let merged_root = self.search.union_roots(lhs_root, rhs_root);
-        self.search.edges.push(MergeEdge {
+        self.search.push_merge_edge(MergeEdge {
             lhs: lhs_parent,
             rhs: rhs_parent,
             reason: MergeReason::Congruence {
