@@ -211,6 +211,19 @@ pub struct DisequalityEntry {
     pub(crate) reason_lit: Lit,
 }
 
+/// The result of merging two distinct equality classes.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub(crate) struct ClassMerge {
+    /// Representative that remains live after the merge.
+    pub(crate) survivor: EClassId,
+    /// Representative whose class was absorbed.
+    pub(crate) absorbed: EClassId,
+    /// Violated active disequality found while scanning the absorbed class.
+    ///
+    /// The caller must add the merge's proof edge before explaining this conflict.
+    pub(crate) disequality_conflict: Option<DisequalityEntry>,
+}
+
 /// One SAT-decision-level rollback marker.
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub struct SatLevelMarker {
@@ -222,6 +235,8 @@ pub struct SatLevelMarker {
     pub(crate) merge_edges_len: usize,
     /// Active-disequality length at level entry.
     pub(crate) active_disequalities_len: usize,
+    /// Disequality incidence-log length at level entry.
+    pub(crate) disequality_incident_log_len: usize,
     /// Pending-merge queue length at level entry.
     pub(crate) pending_merges_len: usize,
     /// Pending-repair queue length at level entry.
@@ -242,12 +257,12 @@ pub enum Undo {
         /// Previous parent value.
         old_parent: EClassId,
     },
-    /// Rank update for a surviving root.
-    Rank {
-        /// Root updated in `rank`.
+    /// Class-size update for a surviving root.
+    ClassSize {
+        /// Root updated in `class_size`.
         root: EClassId,
-        /// Previous rank value.
-        old_rank: u32,
+        /// Previous class size.
+        old_size: u32,
     },
     /// Circular class-membership successor change.
     ClassNext {
@@ -263,8 +278,8 @@ pub enum Undo {
 pub struct SearchState {
     /// Union-find representative for each term.
     parent: Vec<EClassId>,
-    /// Rank heuristic for each representative.
-    rank: Vec<u32>,
+    /// Number of terms in each current representative class.
+    class_size: Vec<u32>,
     /// Successor link for each term in one circular class-membership list.
     pub(crate) next: Vec<TermId>,
 
@@ -296,6 +311,10 @@ pub struct SearchState {
     pub(crate) pending_clauses: Vec<TheoryClause>,
     /// Currently active disequalities.
     pub(crate) active_disequalities: Vec<DisequalityEntry>,
+    /// Active disequality ids incident to each term.
+    term_disequalities: Vec<Vec<usize>>,
+    /// Rollback log for entries appended to `term_disequalities`.
+    disequality_incident_log: Vec<(TermId, usize)>,
 
     /// Active equality-proof graph.
     pub(crate) edges: Vec<MergeEdge>,
@@ -331,7 +350,7 @@ impl SearchState {
     pub fn reset_for_registry(&mut self, registry: &Registry) {
         let nterms = registry.num_terms();
         self.parent.clear();
-        self.rank.clear();
+        self.class_size.clear();
         self.next.clear();
         self.signature_storage.reset();
 
@@ -339,12 +358,14 @@ impl SearchState {
             let term = TermId::from_index(index);
             let rep = EClassId::from_index(index);
             self.parent.push(rep);
-            self.rank.push(0);
+            self.class_size.push(1);
             self.next.push(term);
         }
 
         self.signatures.clear();
         self.signature_scratch.clear();
+        self.signature_log.clear();
+        self.initialize_congruence_table(registry);
         self.pending_merges.clear();
         self.pending_repairs.clear();
         self.pending_atom_triggers.clear();
@@ -353,6 +374,9 @@ impl SearchState {
         self.atom_is_enqueued.resize(registry.num_atoms(), false);
         self.pending_clauses.clear();
         self.active_disequalities.clear();
+        self.term_disequalities.clear();
+        self.term_disequalities.resize(nterms, Vec::new());
+        self.disequality_incident_log.clear();
         self.edges.clear();
         self.graph_heads.clear();
         self.graph_heads.resize(nterms, DirectedMergeEdgeId::NONE);
@@ -360,7 +384,6 @@ impl SearchState {
         self.explain_epoch = 0;
         self.explain_queue.clear();
         self.explain_cache.clear();
-        self.signature_log.clear();
         self.undo_log.clear();
         self.level_markers.clear();
     }
@@ -372,6 +395,7 @@ impl SearchState {
             congruence_insert_len: self.signature_log.len(),
             merge_edges_len: self.edges.len(),
             active_disequalities_len: self.active_disequalities.len(),
+            disequality_incident_log_len: self.disequality_incident_log.len(),
             pending_merges_len: self.pending_merges.len(),
             pending_repairs_len: self.pending_repairs.len(),
             pending_atom_triggers_len: self.pending_atom_triggers.len(),
@@ -396,6 +420,18 @@ impl SearchState {
             self.pending_merges.truncate(marker.pending_merges_len);
             self.active_disequalities
                 .truncate(marker.active_disequalities_len);
+            while self.disequality_incident_log.len() > marker.disequality_incident_log_len {
+                let Some((term, id)) = self.disequality_incident_log.pop() else {
+                    panic!("checked disequality incidence suffix above");
+                };
+                let Some(last) = self.term_disequalities[term.index()].pop() else {
+                    panic!("disequality incidence list must contain logged suffix");
+                };
+                assert_eq!(
+                    last, id,
+                    "disequality incidence rollback must be stack-like"
+                );
+            }
             self.truncate_merge_edges(marker.merge_edges_len);
             while self.signature_log.len() > marker.congruence_insert_len {
                 let key = self
@@ -417,14 +453,20 @@ impl SearchState {
         current
     }
 
-    /// Merges two distinct roots and returns the surviving root.
-    pub fn union_roots(&mut self, lhs_root: EClassId, rhs_root: EClassId) -> EClassId {
+    /// Merges two distinct roots and enqueues work for the absorbed class.
+    pub(crate) fn union_roots(
+        &mut self,
+        registry: &Registry,
+        lhs_root: EClassId,
+        rhs_root: EClassId,
+    ) -> ClassMerge {
         debug_assert_ne!(lhs_root, rhs_root);
-        let (survivor, absorbed) = if self.rank[lhs_root.index()] < self.rank[rhs_root.index()] {
-            (rhs_root, lhs_root)
-        } else {
-            (lhs_root, rhs_root)
-        };
+        let (survivor, absorbed) =
+            if self.class_size[lhs_root.index()] < self.class_size[rhs_root.index()] {
+                (rhs_root, lhs_root)
+            } else {
+                (lhs_root, rhs_root)
+            };
 
         self.undo_log.push(Undo::Parent {
             node: TermId::from_index(absorbed.index()),
@@ -432,12 +474,30 @@ impl SearchState {
         });
         self.parent[absorbed.index()] = survivor;
 
-        if self.rank[lhs_root.index()] == self.rank[rhs_root.index()] {
-            self.undo_log.push(Undo::Rank {
-                root: survivor,
-                old_rank: self.rank[survivor.index()],
-            });
-            self.rank[survivor.index()] += 1;
+        self.undo_log.push(Undo::ClassSize {
+            root: survivor,
+            old_size: self.class_size[survivor.index()],
+        });
+        self.class_size[survivor.index()] += self.class_size[absorbed.index()];
+
+        let absorbed_start = TermId::from_index(absorbed.index());
+        let mut term = absorbed_start;
+        let mut disequality_conflict = None;
+        loop {
+            for &parent in registry.parent_apps(term) {
+                self.pending_repairs.push_back(parent);
+            }
+            for &atom in registry.term_atoms(term) {
+                self.enqueue_atom_trigger(atom);
+            }
+            if disequality_conflict.is_none() {
+                disequality_conflict = self.incident_disequality_conflict(term);
+            }
+
+            term = self.next[term.index()];
+            if term == absorbed_start {
+                break;
+            }
         }
 
         let survivor_node = TermId::from_index(survivor.index());
@@ -454,7 +514,31 @@ impl SearchState {
         self.next[survivor_node.index()] = self.next[absorbed_node.index()];
         self.next[absorbed_node.index()] = survivor_next;
 
-        survivor
+        ClassMerge {
+            survivor,
+            absorbed,
+            disequality_conflict,
+        }
+    }
+
+    /// Initializes the congruence table for every registered application term.
+    fn initialize_congruence_table(&mut self, registry: &Registry) {
+        for index in 0..registry.num_terms() {
+            let parent = TermId::from_index(index);
+            if registry.term_ref(parent).args.is_empty() {
+                continue;
+            }
+            let Some(fun) = self.fill_congruence_sig_scratch(registry, parent) else {
+                continue;
+            };
+            debug_assert!(
+                self.find_congruent_parent_for_current_sig(fun).is_none(),
+                "canonical registry must not contain duplicate initial application signatures",
+            );
+            let owned = self.own_current_congruence_sig(fun);
+            self.signature_log.push(owned.clone());
+            self.signatures.insert(owned, parent);
+        }
     }
 
     /// Fills `congruence_sig_scratch` with the current signature of `parent`.
@@ -506,12 +590,25 @@ impl SearchState {
     }
 
     /// Enqueues one atom trigger at most once.
-    pub fn enqueue_atom_trigger(&mut self, atom: TheoryAtomId) {
+    fn enqueue_atom_trigger(&mut self, atom: TheoryAtomId) {
         if self.atom_is_enqueued[atom.index()] {
             return;
         }
         self.atom_is_enqueued[atom.index()] = true;
         self.pending_atom_triggers.push(atom);
+    }
+
+    /// Finds one violated active disequality incident to `term`.
+    fn incident_disequality_conflict(&self, term: TermId) -> Option<DisequalityEntry> {
+        for &diseq_id in &self.term_disequalities[term.index()] {
+            let Some(&diseq) = self.active_disequalities.get(diseq_id) else {
+                panic!("active disequality incidence id must name a live entry");
+            };
+            if self.find(diseq.lhs) == self.find(diseq.rhs) {
+                return Some(diseq);
+            }
+        }
+        None
     }
 
     /// Enqueues one input equality merge.
@@ -520,12 +617,21 @@ impl SearchState {
     }
 
     /// Activates one input disequality.
-    pub fn enqueue_input_disequality(&mut self, input: DiseqInput) {
-        self.active_disequalities.push(DisequalityEntry {
+    pub fn enqueue_input_disequality(&mut self, input: DiseqInput) -> DisequalityEntry {
+        let entry = DisequalityEntry {
             lhs: input.lhs,
             rhs: input.rhs,
             reason_lit: input.reason_lit,
-        });
+        };
+        let id = self.active_disequalities.len();
+        self.active_disequalities.push(entry);
+        self.term_disequalities[input.lhs.index()].push(id);
+        self.disequality_incident_log.push((input.lhs, id));
+        if input.lhs != input.rhs {
+            self.term_disequalities[input.rhs.index()].push(id);
+            self.disequality_incident_log.push((input.rhs, id));
+        }
+        entry
     }
 
     /// Rolls back all reversible mutations down to `undo_len`.
@@ -535,8 +641,8 @@ impl SearchState {
                 Undo::Parent { node, old_parent } => {
                     self.parent[node.index()] = old_parent;
                 }
-                Undo::Rank { root, old_rank } => {
-                    self.rank[root.index()] = old_rank;
+                Undo::ClassSize { root, old_size } => {
+                    self.class_size[root.index()] = old_size;
                 }
                 Undo::ClassNext { node, old_next } => {
                     self.next[node.index()] = old_next;

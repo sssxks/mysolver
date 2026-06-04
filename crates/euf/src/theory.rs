@@ -5,10 +5,10 @@ use std::collections::VecDeque;
 use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
 
 use crate::registry::Registry;
-use crate::search_state::{DiseqInput, DisequalityEntry, MergeInput, MergeReason, SearchState};
-use crate::types::{
-    AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
+use crate::search_state::{
+    ClassMerge, DiseqInput, DisequalityEntry, MergeInput, MergeReason, SearchState,
 };
+use crate::types::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId};
 use crate::{AtomLiteralKind, telemetry};
 
 /// The EUF theory module exposed to the SAT engine.
@@ -121,7 +121,6 @@ impl EufTheory {
                         rhs,
                         reason_lit: lit,
                     });
-                    self.saturate();
                 }
                 Some(AtomLiteralKind::Eq {
                     lhs,
@@ -129,12 +128,12 @@ impl EufTheory {
                     positive: false,
                 }) => {
                     telemetry::record_input_disequality();
-                    self.search.enqueue_input_disequality(DiseqInput {
+                    let diseq = self.search.enqueue_input_disequality(DiseqInput {
                         lhs,
                         rhs,
                         reason_lit: lit,
                     });
-                    self.check_active_disequalities();
+                    self.check_disequality(diseq);
                 }
                 None => {}
             }
@@ -147,7 +146,6 @@ impl EufTheory {
             while let Some(input) = self.search.pending_merges.pop_front() {
                 self.merge_input(input);
                 self.repair_congruence();
-                self.check_active_disequalities();
             }
 
             self.process_pending_atom_triggers();
@@ -168,7 +166,7 @@ impl EufTheory {
         if lhs_root == rhs_root {
             return;
         }
-        let merged_root = self.search.union_roots(lhs_root, rhs_root);
+        let merge = self.search.union_roots(&self.registry, lhs_root, rhs_root);
         self.search.push_merge_edge(
             input.lhs,
             input.rhs,
@@ -176,8 +174,7 @@ impl EufTheory {
                 reason_lit: input.reason_lit,
             },
         );
-        self.enqueue_repairs_for_class(merged_root);
-        self.enqueue_atom_triggers_for_class(merged_root);
+        self.after_class_merge(merge);
     }
 
     /// Applies one congruence-driven merge.
@@ -188,7 +185,7 @@ impl EufTheory {
             return;
         }
         telemetry::record_congruence_merge();
-        let merged_root = self.search.union_roots(lhs_root, rhs_root);
+        let merge = self.search.union_roots(&self.registry, lhs_root, rhs_root);
         self.search.push_merge_edge(
             lhs_parent,
             rhs_parent,
@@ -197,44 +194,24 @@ impl EufTheory {
                 right_parent: rhs_parent,
             },
         );
-        self.enqueue_repairs_for_class(merged_root);
-        self.enqueue_atom_triggers_for_class(merged_root);
+        self.after_class_merge(merge);
+    }
+
+    /// Emits any conflict found while queueing work for one successful merge.
+    fn after_class_merge(&mut self, merge: ClassMerge) {
+        debug_assert_eq!(
+            self.search.find(TermId::from_index(merge.absorbed.index())),
+            merge.survivor,
+        );
+        if let Some(diseq) = merge.disequality_conflict {
+            self.emit_disequality_conflict(diseq);
+        }
     }
 
     /// Repairs congruence closure after recent merges.
     fn repair_congruence(&mut self) {
         while let Some(parent) = self.search.pending_repairs.pop_front() {
             self.repair_parent_app(parent);
-        }
-    }
-
-    /// Enqueues parent applications of one changed class.
-    fn enqueue_repairs_for_class(&mut self, root: EClassId) {
-        let start = TermId::from_index(root.index());
-        let mut term = start;
-        loop {
-            for &parent in self.registry.parent_apps(term) {
-                self.search.pending_repairs.push_back(parent);
-            }
-            term = self.search.next[term.index()];
-            if term == start {
-                break;
-            }
-        }
-    }
-
-    /// Enqueues atom triggers attached to one changed class.
-    fn enqueue_atom_triggers_for_class(&mut self, root: EClassId) {
-        let start = TermId::from_index(root.index());
-        let mut term = start;
-        loop {
-            for &atom in self.registry.term_atoms(term) {
-                self.search.enqueue_atom_trigger(atom);
-            }
-            term = self.search.next[term.index()];
-            if term == start {
-                break;
-            }
         }
     }
 
@@ -263,23 +240,24 @@ impl EufTheory {
         self.search.signatures.insert(owned, parent);
     }
 
-    /// Emits conflicts for any active disequality that is now violated.
-    fn check_active_disequalities(&mut self) {
-        let mut explanation = Vec::new();
-        for &diseq in &self.search.active_disequalities {
-            if self.search.find(diseq.lhs) != self.search.find(diseq.rhs) {
-                continue;
-            }
-            self.search
-                .explain_conflict(&self.registry, diseq, &mut explanation);
-            telemetry::record_theory_conflict();
-            self.search.pending_clauses.push(self.build_theory_clause(
-                &explanation,
-                None,
-                TheoryClauseKind::ConflictExplanation,
-            ));
-            break;
+    /// Emits a conflict if one active disequality is currently violated.
+    fn check_disequality(&mut self, diseq: DisequalityEntry) {
+        if self.search.find(diseq.lhs) == self.search.find(diseq.rhs) {
+            self.emit_disequality_conflict(diseq);
         }
+    }
+
+    /// Emits one conflict clause for a violated disequality.
+    fn emit_disequality_conflict(&mut self, diseq: DisequalityEntry) {
+        let mut explanation = Vec::new();
+        self.search
+            .explain_conflict(&self.registry, diseq, &mut explanation);
+        telemetry::record_theory_conflict();
+        self.search.pending_clauses.push(self.build_theory_clause(
+            &explanation,
+            None,
+            TheoryClauseKind::ConflictExplanation,
+        ));
     }
 
     /// Processes every affected atom trigger.
@@ -512,6 +490,57 @@ mod tests {
 
         let _ = sat.add_clause(&[ab]);
         let _ = sat.add_clause(&[not_fafb]);
+
+        assert_eq!(
+            sat.solve_with_assumptions(&[], &mut theory),
+            sat::SatResult::Unsat
+        );
+    }
+
+    #[test]
+    fn theory_repairs_congruence_through_transitive_input_merges() {
+        let mut sat = sat::Solver::new();
+        let mut theory = EufTheory::new();
+        let u_sort = theory.intern_sort(SortRef::Uninterpreted { name: "U" });
+        let f = theory.intern_symbol(SymbolRef {
+            name: "f",
+            arg_sorts: &[u_sort],
+            result_sort: u_sort,
+        });
+        let a_sym = theory.intern_symbol(SymbolRef {
+            name: "a",
+            arg_sorts: &[],
+            result_sort: u_sort,
+        });
+        let b_sym = theory.intern_symbol(SymbolRef {
+            name: "b",
+            arg_sorts: &[],
+            result_sort: u_sort,
+        });
+        let c_sym = theory.intern_symbol(SymbolRef {
+            name: "c",
+            arg_sorts: &[],
+            result_sort: u_sort,
+        });
+        let a = theory.intern_term(TermRef::nullary(a_sym), u_sort);
+        let b = theory.intern_term(TermRef::nullary(b_sym), u_sort);
+        let c = theory.intern_term(TermRef::nullary(c_sym), u_sort);
+        let fa = theory.intern_term(TermRef { fun: f, args: &[a] }, u_sort);
+        let fc = theory.intern_term(TermRef { fun: f, args: &[c] }, u_sort);
+
+        let ab_var = sat.new_var();
+        let bc_var = sat.new_var();
+        let fafc_var = sat.new_var();
+        let ab = bool_lit(ab_var);
+        let bc = bool_lit(bc_var);
+        let not_fafc = neg_bool_lit(fafc_var);
+        theory.intern_equality_atom(a, b, ab_var);
+        theory.intern_equality_atom(b, c, bc_var);
+        theory.intern_equality_atom(fa, fc, fafc_var);
+
+        let _ = sat.add_clause(&[ab]);
+        let _ = sat.add_clause(&[bc]);
+        let _ = sat.add_clause(&[not_fafc]);
 
         assert_eq!(
             sat.solve_with_assumptions(&[], &mut theory),
