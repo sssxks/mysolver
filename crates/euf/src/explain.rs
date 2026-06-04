@@ -3,7 +3,7 @@
 use sat::Lit;
 
 use crate::registry::Registry;
-use crate::search_state::{DisequalityEntry, MergeReason, SearchState};
+use crate::search_state::{DisequalityEntry, MergeEdgeId, MergeReason, SearchState};
 use crate::types::TermId;
 
 impl SearchState {
@@ -77,7 +77,7 @@ impl SearchState {
         self.explain_queue.push(lhs);
         self.explain_visits[lhs.index()] = crate::search_state::ExplainVisit {
             epoch,
-            parent_edge: usize::MAX,
+            parent_edge: MergeEdgeId::NONE,
         };
 
         let mut qhead = 0;
@@ -87,8 +87,8 @@ impl SearchState {
             qhead += 1;
 
             let mut directed = self.graph_heads[current.index()];
-            while let Some(directed_index) = directed {
-                let edge = self.directed_edges[directed_index];
+            while !directed.is_none() {
+                let edge = self.directed_edges[directed.index()];
                 let next = edge.target;
                 if self.explain_visits[next.index()].epoch != epoch {
                     self.explain_visits[next.index()] = crate::search_state::ExplainVisit {
@@ -113,10 +113,10 @@ impl SearchState {
         let mut current = rhs;
         while current != lhs {
             let parent_edge = self.explain_visits[current.index()].parent_edge;
-            if parent_edge == usize::MAX {
+            if parent_edge.is_none() {
                 return None;
             }
-            let edge = self.edges[parent_edge];
+            let edge = self.edges[parent_edge.index()];
             path_edges.push(edge);
             current = edge.other_endpoint(current);
         }
@@ -130,7 +130,7 @@ impl SearchState {
             num_terms,
             crate::search_state::ExplainVisit {
                 epoch: 0,
-                parent_edge: usize::MAX,
+                parent_edge: MergeEdgeId::NONE,
             },
         );
 

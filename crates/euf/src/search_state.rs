@@ -99,6 +99,95 @@ impl MergeEdge {
     }
 }
 
+/// Identifier for one active undirected merge edge.
+///
+/// Semantically, this indexes `SearchState::edges`.
+///
+/// # Encoding
+///
+/// - Valid edge ids are encoded as their zero-based index.
+/// - `u32::MAX` is reserved as a sentinel for "no edge".
+/// - Invariants: live ids are strictly smaller than `u32::MAX`.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub(crate) struct MergeEdgeId(u32);
+
+impl MergeEdgeId {
+    /// Sentinel for no merge edge.
+    pub(crate) const NONE: Self = Self(u32::MAX);
+
+    /// Creates one edge id from a zero-based index.
+    #[inline(always)]
+    pub(crate) fn from_index(index: usize) -> Self {
+        assert!(index < u32::MAX as usize, "merge edge id space exhausted");
+        Self(index as u32)
+    }
+
+    /// Returns the zero-based index named by this identifier.
+    #[inline(always)]
+    pub(crate) fn index(self) -> usize {
+        debug_assert_ne!(self, Self::NONE);
+        self.0 as usize
+    }
+
+    /// Returns whether this is the sentinel value.
+    #[inline(always)]
+    pub(crate) fn is_none(self) -> bool {
+        self == Self::NONE
+    }
+}
+
+impl Default for MergeEdgeId {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// Identifier for one directed adjacency entry.
+///
+/// Semantically, this indexes `SearchState::directed_edges`.
+///
+/// # Encoding
+///
+/// - Valid directed edge ids are encoded as their zero-based index.
+/// - `u32::MAX` is reserved as the null adjacency-list terminator.
+/// - Invariants: live ids are strictly smaller than `u32::MAX`.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub(crate) struct DirectedMergeEdgeId(u32);
+
+impl DirectedMergeEdgeId {
+    /// Sentinel for the end of one adjacency list.
+    pub(crate) const NONE: Self = Self(u32::MAX);
+
+    /// Creates one directed edge id from a zero-based index.
+    #[inline(always)]
+    pub(crate) fn from_index(index: usize) -> Self {
+        assert!(
+            index < u32::MAX as usize,
+            "directed merge edge id space exhausted"
+        );
+        Self(index as u32)
+    }
+
+    /// Returns the zero-based index named by this identifier.
+    #[inline(always)]
+    pub(crate) fn index(self) -> usize {
+        debug_assert_ne!(self, Self::NONE);
+        self.0 as usize
+    }
+
+    /// Returns whether this is the sentinel value.
+    #[inline(always)]
+    pub(crate) fn is_none(self) -> bool {
+        self == Self::NONE
+    }
+}
+
+impl Default for DirectedMergeEdgeId {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 /// One directed adjacency entry in the equality explanation graph.
 ///
 /// Semantically, this is one half-edge in `TermId -> TermId`, pointing back to
@@ -116,9 +205,9 @@ pub(crate) struct DirectedMergeEdge {
     /// Target endpoint of this directed edge.
     pub(crate) target: TermId,
     /// Undirected merge edge carrying the reason.
-    pub(crate) edge: usize,
+    pub(crate) edge: MergeEdgeId,
     /// Previous adjacency-list head for the source endpoint.
-    pub(crate) next: Option<usize>,
+    pub(crate) next: DirectedMergeEdgeId,
 }
 
 /// One visited-node record for an explanation BFS.
@@ -127,7 +216,7 @@ pub(crate) struct ExplainVisit {
     /// BFS epoch in which this record is live.
     pub(crate) epoch: u32,
     /// Incoming undirected edge on the discovered BFS tree.
-    pub(crate) parent_edge: usize,
+    pub(crate) parent_edge: MergeEdgeId,
 }
 
 /// One active disequality fact.
@@ -230,7 +319,7 @@ pub struct SearchState {
     /// Active equality-proof graph.
     pub(crate) edges: Vec<MergeEdge>,
     /// Per-term head of the directed equality-proof adjacency list.
-    pub(crate) graph_heads: Vec<Option<usize>>,
+    pub(crate) graph_heads: Vec<DirectedMergeEdgeId>,
     /// Directed adjacency entries for `edges`.
     pub(crate) directed_edges: Vec<DirectedMergeEdge>,
 
@@ -287,7 +376,7 @@ impl SearchState {
         self.active_disequalities.clear();
         self.edges.clear();
         self.graph_heads.clear();
-        self.graph_heads.resize(nterms, None);
+        self.graph_heads.resize(nterms, DirectedMergeEdgeId::NONE);
         self.directed_edges.clear();
         self.explain_visits.clear();
         self.explain_epoch = 0;
@@ -481,24 +570,26 @@ impl SearchState {
     /// Appends one undirected merge edge and its two directed adjacency entries.
     #[inline(always)]
     pub(crate) fn push_merge_edge(&mut self, edge: MergeEdge) {
-        let edge_index = self.edges.len();
+        let edge_id = MergeEdgeId::from_index(self.edges.len());
         self.edges.push(edge);
 
         let lhs_head = self.graph_heads[edge.lhs.index()];
+        let lhs_directed = DirectedMergeEdgeId::from_index(self.directed_edges.len());
         self.directed_edges.push(DirectedMergeEdge {
             target: edge.rhs,
-            edge: edge_index,
+            edge: edge_id,
             next: lhs_head,
         });
-        self.graph_heads[edge.lhs.index()] = Some(edge_index * 2);
+        self.graph_heads[edge.lhs.index()] = lhs_directed;
 
         let rhs_head = self.graph_heads[edge.rhs.index()];
+        let rhs_directed = DirectedMergeEdgeId::from_index(self.directed_edges.len());
         self.directed_edges.push(DirectedMergeEdge {
             target: edge.lhs,
-            edge: edge_index,
+            edge: edge_id,
             next: rhs_head,
         });
-        self.graph_heads[edge.rhs.index()] = Some(edge_index * 2 + 1);
+        self.graph_heads[edge.rhs.index()] = rhs_directed;
     }
 
     /// Truncates merge edges while maintaining adjacency-list heads.
@@ -506,17 +597,18 @@ impl SearchState {
         while self.edges.len() > keep_len {
             let edge_index = self.edges.len() - 1;
             let edge = self.edges[edge_index];
-            let lhs_directed = edge_index * 2;
-            let rhs_directed = lhs_directed + 1;
-            debug_assert_eq!(self.directed_edges.len(), rhs_directed + 1);
-            debug_assert_eq!(self.graph_heads[edge.lhs.index()], Some(lhs_directed));
-            debug_assert_eq!(self.graph_heads[edge.rhs.index()], Some(rhs_directed));
-            debug_assert_eq!(self.directed_edges[lhs_directed].target, edge.rhs);
-            debug_assert_eq!(self.directed_edges[rhs_directed].target, edge.lhs);
+            let rhs_directed_index = self.directed_edges.len() - 1;
+            let lhs_directed_index = rhs_directed_index - 1;
+            let lhs_directed = DirectedMergeEdgeId::from_index(lhs_directed_index);
+            let rhs_directed = DirectedMergeEdgeId::from_index(rhs_directed_index);
+            debug_assert_eq!(self.graph_heads[edge.lhs.index()], lhs_directed);
+            debug_assert_eq!(self.graph_heads[edge.rhs.index()], rhs_directed);
+            debug_assert_eq!(self.directed_edges[lhs_directed.index()].target, edge.rhs);
+            debug_assert_eq!(self.directed_edges[rhs_directed.index()].target, edge.lhs);
 
-            self.graph_heads[edge.lhs.index()] = self.directed_edges[lhs_directed].next;
-            self.graph_heads[edge.rhs.index()] = self.directed_edges[rhs_directed].next;
-            self.directed_edges.truncate(lhs_directed);
+            self.graph_heads[edge.lhs.index()] = self.directed_edges[lhs_directed.index()].next;
+            self.graph_heads[edge.rhs.index()] = self.directed_edges[rhs_directed.index()].next;
+            self.directed_edges.truncate(lhs_directed_index);
             self.edges.pop();
         }
     }
