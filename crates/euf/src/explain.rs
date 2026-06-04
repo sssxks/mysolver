@@ -3,7 +3,7 @@
 use sat::Lit;
 
 use crate::registry::Registry;
-use crate::search_state::{DisequalityEntry, MergeEdgeId, MergeReason, SearchState};
+use crate::search_state::{DirectedMergeEdgeId, DisequalityEntry, MergeReason, SearchState};
 use crate::types::TermId;
 
 impl SearchState {
@@ -77,7 +77,7 @@ impl SearchState {
         self.explain_queue.push(lhs);
         self.explain_visits[lhs.index()] = crate::search_state::ExplainVisit {
             epoch,
-            parent_edge: MergeEdgeId::NONE,
+            parent_edge: DirectedMergeEdgeId::NONE,
         };
 
         let mut qhead = 0;
@@ -88,12 +88,12 @@ impl SearchState {
 
             let mut directed = self.graph_heads[current.index()];
             while !directed.is_none() {
-                let edge = self.directed_edges[directed.index()];
-                let next = edge.target;
+                let edge = self.edges[directed.edge_index()];
+                let next = edge.target(directed);
                 if self.explain_visits[next.index()].epoch != epoch {
                     self.explain_visits[next.index()] = crate::search_state::ExplainVisit {
                         epoch,
-                        parent_edge: edge.edge,
+                        parent_edge: directed,
                     };
                     if next == rhs {
                         found = true;
@@ -101,7 +101,7 @@ impl SearchState {
                     }
                     self.explain_queue.push(next);
                 }
-                directed = edge.next;
+                directed = edge.next(directed);
             }
         }
 
@@ -116,7 +116,7 @@ impl SearchState {
             if parent_edge.is_none() {
                 return None;
             }
-            let edge = self.edges[parent_edge.index()];
+            let edge = self.edges[parent_edge.edge_index()];
             path_edges.push(edge);
             current = edge.other_endpoint(current);
         }
@@ -130,7 +130,7 @@ impl SearchState {
             num_terms,
             crate::search_state::ExplainVisit {
                 epoch: 0,
-                parent_edge: MergeEdgeId::NONE,
+                parent_edge: DirectedMergeEdgeId::NONE,
             },
         );
 

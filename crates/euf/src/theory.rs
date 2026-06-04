@@ -5,9 +5,7 @@ use std::collections::VecDeque;
 use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
 
 use crate::registry::Registry;
-use crate::search_state::{
-    DiseqInput, DisequalityEntry, MergeEdge, MergeInput, MergeReason, SearchState,
-};
+use crate::search_state::{DiseqInput, DisequalityEntry, MergeInput, MergeReason, SearchState};
 use crate::types::{
     AtomRef, EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
 };
@@ -171,13 +169,13 @@ impl EufTheory {
             return;
         }
         let merged_root = self.search.union_roots(lhs_root, rhs_root);
-        self.search.push_merge_edge(MergeEdge {
-            lhs: input.lhs,
-            rhs: input.rhs,
-            reason: MergeReason::InputEq {
+        self.search.push_merge_edge(
+            input.lhs,
+            input.rhs,
+            MergeReason::InputEq {
                 reason_lit: input.reason_lit,
             },
-        });
+        );
         self.enqueue_repairs_for_class(merged_root);
         self.enqueue_atom_triggers_for_class(merged_root);
     }
@@ -191,14 +189,14 @@ impl EufTheory {
         }
         telemetry::record_congruence_merge();
         let merged_root = self.search.union_roots(lhs_root, rhs_root);
-        self.search.push_merge_edge(MergeEdge {
-            lhs: lhs_parent,
-            rhs: rhs_parent,
-            reason: MergeReason::Congruence {
+        self.search.push_merge_edge(
+            lhs_parent,
+            rhs_parent,
+            MergeReason::Congruence {
                 left_parent: lhs_parent,
                 right_parent: rhs_parent,
             },
-        });
+        );
         self.enqueue_repairs_for_class(merged_root);
         self.enqueue_atom_triggers_for_class(merged_root);
     }
