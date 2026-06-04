@@ -24,8 +24,5 @@ missing_docs = "warn"
 
 [profile.release]
 panic = "abort"
-
-[profile.perf]
-inherits = "release"
 debug = true
 strip = false

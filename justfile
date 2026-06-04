@@ -31,7 +31,7 @@ bench preset="hard" *extra:\
 compare argument="hard" *extra:
     @./scripts/bench_compare_stash.py --preset {{ argument }} {{ extra }}
 
-# recipe for perf recording. e.g. run with `timeout ...`, `cargo run ...`. use `--profile perf` to build the harness with perf instrumentation.
+# recipe for perf recording. e.g. run with `just bench`, `timeout ...`, `cargo run ...`.
 perf *args="":
     samply record --unstable-presymbolicate -- {{ args }}
 
