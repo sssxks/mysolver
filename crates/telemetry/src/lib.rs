@@ -33,18 +33,18 @@ mod backend_atomic;
 #[cfg(feature = "backend-cooperative")]
 mod backend_cooperative;
 
-#[cfg(feature = "backend-cooperative")]
-use backend_cooperative as backend;
 #[cfg(not(feature = "backend-cooperative"))]
 use backend_atomic as backend;
+#[cfg(feature = "backend-cooperative")]
+use backend_cooperative as backend;
 
 pub use backend::{
     TelemetryRecorder, initialize_sat_solver_gauges, maybe_emit_sample, publish_gauges,
     record_euf_congruence_merge, record_euf_input_disequality, record_euf_input_equality,
     record_euf_theory_conflict, record_euf_theory_propagation, record_sat_added_watchers,
     record_sat_conflict, record_sat_decision, record_sat_deleted_clauses, record_sat_learnt_clause,
-    record_sat_propagation, record_sat_reduction, record_sat_removed_watchers,
-    record_sat_restart, sat_live_irredundant_clauses, sat_watcher_entries,
+    record_sat_propagation, record_sat_reduction, record_sat_removed_watchers, record_sat_restart,
+    sat_live_irredundant_clauses, sat_watcher_entries,
 };
 
 /// Default interval between periodic telemetry samples.

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use console::{StyledObject, style};
-use telemetry::{Sample, Summary};
 use serde::{Deserialize, Serialize};
+use telemetry::{Sample, Summary};
 
 use strum::VariantArray as _;
 

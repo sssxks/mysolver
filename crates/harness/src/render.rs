@@ -9,7 +9,7 @@ use indicatif::{HumanCount, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use telemetry::Summary;
 
 use crate::model::{CaseOutcome, OutcomeCategory, OutcomeStats};
-use crate::util::{format_compact_duration, truncate_display_path};
+use crate::util::format_compact_duration;
 
 /// The interactive refresh cadence used while waiting for the next completed case.
 pub(crate) const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
@@ -75,7 +75,7 @@ pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let label = outcome.category.styled_label();
     let width = OutcomeCategory::LABEL_WIDTH;
     let elapsed = format_compact_duration(outcome.total_elapsed);
-    let path = truncate_display_path(outcome.case.comparison_key());
+    let path = outcome.case.comparison_key();
 
     let detail = if let Some(detail) = outcome.detail.as_deref() {
         format!(" :: {}", detail)
@@ -218,9 +218,9 @@ mod tests {
         assert!(rendered.contains("fixture/example.cnf"));
     }
 
-    /// Ensures rendered output truncates long paths instead of persisting a separate field.
+    /// Ensures rendered output preserves the complete case path.
     #[test]
-    fn format_outcome_truncates_long_paths_when_rendering() {
+    fn format_outcome_renders_complete_long_paths() {
         let outcome = CaseOutcome {
             case: CaseRecord {
                 key: "cases/satlib/instance-group/very-long-case-name.cnf.gz".into(),
@@ -236,7 +236,7 @@ mod tests {
         };
 
         let rendered = format_outcome(&outcome);
-        assert!(rendered.contains("cases/satl..ery-long-case-name.cnf.gz"));
+        assert!(rendered.contains("cases/satlib/instance-group/very-long-case-name.cnf.gz"));
     }
 
     /// Ensures rendered outcome lines append compact telemetry when available.

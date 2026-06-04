@@ -1,9 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use euf::{EufTheory, SortRef, SymbolRef, TermRef};
+use sat::{AddClauseResult, Lit, SatResult, Solver};
 #[cfg(feature = "telemetry")]
 use telemetry::Gauges;
-use sat::{AddClauseResult, Lit, SatResult, Solver};
 
 use crate::types::{BoolView, Command, FunDecl, LocalBinding, SExpr, negate_view};
 

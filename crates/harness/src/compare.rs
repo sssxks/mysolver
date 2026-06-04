@@ -9,7 +9,7 @@ use indicatif::HumanCount;
 
 use crate::cli::CompareArgs;
 use crate::model::{CaseOutcome, OutcomeCategory, RunSummary};
-use crate::util::{format_compact_duration, truncate_display_path};
+use crate::util::format_compact_duration;
 
 /// The maximum number of entries printed for any one difference section.
 const MAX_PRINTED_CASES_PER_SECTION: usize = 20;
@@ -247,7 +247,7 @@ fn print_case_section<T>(title: &str, entries: &[T], format_entry: fn(&T) -> Str
 fn format_missing_case(outcome: &CaseOutcome) -> String {
     let width = OutcomeCategory::LABEL_WIDTH;
     let detail = format_case_detail(outcome.detail.as_deref());
-    let path = truncate_display_path(outcome.case.comparison_key());
+    let path = outcome.case.comparison_key();
     format!(
         "    {:<width$} {:>6} {}{detail}",
         outcome.category.styled_label(),
@@ -265,8 +265,7 @@ fn format_changed_case(change: &ChangedCase) -> String {
         change.left.detail.as_deref(),
         change.right.detail.as_deref(),
     );
-    let path = truncate_display_path(&change.key);
-    format!("    {label} {elapsed} {path}{detail}",)
+    format!("    {label} {elapsed} {}{detail}", change.key)
 }
 
 /// Formats one optional missing-case detail suffix.
@@ -389,9 +388,9 @@ mod tests {
         assert!(!comparison.is_match());
     }
 
-    /// Ensures missing-case output truncates long paths and prints detail only when present.
+    /// Ensures missing-case output preserves long paths and prints detail only when present.
     #[test]
-    fn format_missing_case_truncates_paths_and_omits_empty_detail_separator() {
+    fn format_missing_case_renders_complete_paths_and_omits_empty_detail_separator() {
         let outcome = sample_outcome(
             "cases/satlib/instance-group/very-long-case-name.cnf.gz",
             OutcomeCategory::WrongAnswer,
@@ -400,7 +399,7 @@ mod tests {
         );
 
         let rendered = format_missing_case(&outcome);
-        assert!(rendered.contains("cases/satl..ery-long-case-name.cnf.gz"));
+        assert!(rendered.contains("cases/satlib/instance-group/very-long-case-name.cnf.gz"));
         assert!(!rendered.contains("::"));
     }
 

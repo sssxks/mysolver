@@ -35,32 +35,6 @@ pub(crate) fn format_compact_duration(duration: Duration) -> String {
     }
 }
 
-/// Truncates a rendered case path by keeping the first 10 and last 25 characters.
-pub(crate) fn truncate_display_path(display_path: &str) -> String {
-    const DISPLAY_PATH_HEAD_CHARS: usize = 10;
-    const DISPLAY_PATH_TAIL_CHARS: usize = 25;
-
-    let total_chars = display_path.chars().count();
-    if total_chars <= DISPLAY_PATH_HEAD_CHARS + DISPLAY_PATH_TAIL_CHARS {
-        return display_path.to_owned();
-    }
-
-    let head_end = char_boundary_at(display_path, DISPLAY_PATH_HEAD_CHARS);
-    let tail_start = char_boundary_at(display_path, total_chars - DISPLAY_PATH_TAIL_CHARS);
-    format!(
-        "{}..{}",
-        &display_path[..head_end],
-        &display_path[tail_start..]
-    )
-}
-
-/// Returns the byte boundary at the requested character index.
-fn char_boundary_at(text: &str, char_index: usize) -> usize {
-    text.char_indices()
-        .nth(char_index)
-        .map_or(text.len(), |(index, _)| index)
-}
-
 /// Returns the terminating Unix signal for a child process, when available.
 pub(crate) fn exit_signal(status: ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;

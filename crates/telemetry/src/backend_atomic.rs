@@ -9,8 +9,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use crate::{
-    Counters, DEFAULT_SAMPLE_PERIOD, EufCounters, EufGauges, Gauges, Sample, SatCounters,
-    SatGauges,
+    Counters, DEFAULT_SAMPLE_PERIOD, EufCounters, EufGauges, Gauges, Sample, SatCounters, SatGauges,
 };
 
 thread_local! {
@@ -42,9 +41,8 @@ impl TelemetryRecorder {
         install_session(Arc::clone(&core))?;
         let (control_sender, control_receiver) = mpsc::channel();
 
-        let timer_thread = thread::spawn(move || {
-            run_timer_thread(core, writer, period, control_receiver)
-        });
+        let timer_thread =
+            thread::spawn(move || run_timer_thread(core, writer, period, control_receiver));
 
         Ok(Self {
             control_sender: Some(control_sender),
@@ -85,7 +83,10 @@ pub fn record_sat_conflict() {
 #[inline(always)]
 pub fn record_sat_propagation() {
     with_active_session(|core| {
-        core.counters.sat.propagations.fetch_add(1, Ordering::Relaxed);
+        core.counters
+            .sat
+            .propagations
+            .fetch_add(1, Ordering::Relaxed);
     });
 }
 
@@ -117,7 +118,10 @@ pub fn record_sat_reduction() {
 #[inline(always)]
 pub fn record_sat_learnt_clause() {
     with_active_session(|core| {
-        core.counters.sat.learnt_clauses.fetch_add(1, Ordering::Relaxed);
+        core.counters
+            .sat
+            .learnt_clauses
+            .fetch_add(1, Ordering::Relaxed);
     });
 }
 
@@ -526,7 +530,8 @@ impl AtomicSatGauges {
             .store(gauges.live_learnt_clauses, Ordering::Relaxed);
         self.watcher_entries
             .store(gauges.watcher_entries, Ordering::Relaxed);
-        self.clause_words.store(gauges.clause_words, Ordering::Relaxed);
+        self.clause_words
+            .store(gauges.clause_words, Ordering::Relaxed);
         self.wasted_clause_words
             .store(gauges.wasted_clause_words, Ordering::Relaxed);
     }
