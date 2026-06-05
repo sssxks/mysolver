@@ -106,9 +106,9 @@ impl Solver {
                 }
                 AnalyzeSource::TheoryReason(id) => {
                     let reason = self.theory_reasons[id];
-                    let lits = self.theory_reason_lits[reason.range()].to_vec();
                     max_assertion_level = max_assertion_level.max(reason.assertion_level);
-                    for &q in lits.iter() {
+                    for i in reason.range() {
+                        let q = self.theory_reason_lits[i];
                         self.analyze_lit(q, resolved, current_level, &mut path_count, learnt);
                     }
                 }
@@ -275,9 +275,9 @@ impl Solver {
             Reason::Theory(id) => {
                 self.set_minimize_cache(var, 3);
                 let reason = self.theory_reasons[id];
-                let lits = self.theory_reason_lits[reason.range()].to_vec();
                 let mut ok = true;
-                for &q in lits.iter() {
+                for i in reason.range() {
+                    let q = self.theory_reason_lits[i];
                     if !self.reason_literal_is_redundant(var, q) {
                         ok = false;
                         break;
