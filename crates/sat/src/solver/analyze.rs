@@ -27,6 +27,9 @@ enum AnalyzeSource<'a> {
         /// User scope carried by the theory explanation.
         assertion_level: AssertionLevel,
     },
+    /// Treat one transient theory reason stored by the solver as an analysis
+    /// source.
+    TheoryReason(usize),
 }
 
 impl Solver {
@@ -101,9 +104,28 @@ impl Solver {
                         self.analyze_lit(q, resolved, current_level, &mut path_count, learnt);
                     }
                 }
+                AnalyzeSource::TheoryReason(id) => {
+                    let reason = self.theory_reasons[id];
+                    let lits = self.theory_reason_lits[reason.range()].to_vec();
+                    max_assertion_level = max_assertion_level.max(reason.assertion_level);
+                    for &q in lits.iter() {
+                        self.analyze_lit(q, resolved, current_level, &mut path_count, learnt);
+                    }
+                }
             }
 
             let p = loop {
+                if trail_idx == 0 {
+                    trail_idx = self.trail.len();
+                    let Some(index) = (0..trail_idx)
+                        .rev()
+                        .find(|&index| self.seen[self.trail[index].var().index()])
+                    else {
+                        panic!("conflict analysis lost all marked current-level literals");
+                    };
+                    trail_idx = index;
+                    break self.trail[index];
+                }
                 trail_idx -= 1;
                 let p = self.trail[trail_idx];
                 if self.seen[p.var().index()] {
@@ -132,6 +154,7 @@ impl Solver {
                     assertion_level,
                 },
                 Reason::Clause(cid) => AnalyzeSource::Clause(cid),
+                Reason::Theory(id) => AnalyzeSource::TheoryReason(id),
                 Reason::None => {
                     learnt[0] = !p;
                     break;
@@ -242,6 +265,19 @@ impl Solver {
                 let mut ok = true;
                 for i in 0..len {
                     let q = self.clauses.clause(cid).lit(i);
+                    if !self.reason_literal_is_redundant(var, q) {
+                        ok = false;
+                        break;
+                    }
+                }
+                ok
+            }
+            Reason::Theory(id) => {
+                self.set_minimize_cache(var, 3);
+                let reason = self.theory_reasons[id];
+                let lits = self.theory_reason_lits[reason.range()].to_vec();
+                let mut ok = true;
+                for &q in lits.iter() {
                     if !self.reason_literal_is_redundant(var, q) {
                         ok = false;
                         break;

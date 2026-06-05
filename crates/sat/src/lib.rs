@@ -16,10 +16,10 @@ pub mod telemetry;
 /// Core SAT value types.
 mod types;
 
-
 pub use dimacs::parse_dimacs;
 pub use solver::{
-    AddClauseResult, PopError, SatResult, Solver, Theory, TheoryClause, TheoryClauseKind, NullTheory
+    AddClauseResult, NullTheory, PopError, SatResult, Solver, Theory, TheoryClause,
+    TheoryClauseKind,
 };
 pub use types::{AssertionLevel, Lit, Var};
 
@@ -45,6 +45,64 @@ mod tests {
 
         fn has_pending_work(&self) -> bool {
             false
+        }
+    }
+
+    struct ImplicationConflictTheory {
+        premise: Lit,
+        propagated: Lit,
+        saw_premise: bool,
+        emitted_implication: bool,
+        emitted_conflict: bool,
+    }
+
+    impl Theory for ImplicationConflictTheory {
+        fn notify_search_start(&mut self) {
+            self.saw_premise = false;
+            self.emitted_implication = false;
+            self.emitted_conflict = false;
+        }
+
+        fn notify_new_decision_level(&mut self) {}
+
+        fn notify_assignment(&mut self, lit: Lit) {
+            if lit == self.premise {
+                self.saw_premise = true;
+            }
+        }
+
+        fn notify_backtrack(&mut self, level: usize) {
+            if level == 0 {
+                self.saw_premise = false;
+                self.emitted_implication = false;
+                self.emitted_conflict = false;
+            }
+        }
+
+        fn drain_clauses(&mut self, out: &mut Vec<TheoryClause>) {
+            if self.saw_premise && !self.emitted_implication {
+                self.emitted_implication = true;
+                out.push(TheoryClause {
+                    lits: Box::from([!self.premise, self.propagated]),
+                    assertion_level: AssertionLevel::ROOT,
+                    kind: TheoryClauseKind::PropagationExplanation,
+                });
+            }
+        }
+
+        fn final_check(&mut self, out: &mut Vec<TheoryClause>) {
+            if self.saw_premise && self.emitted_implication && !self.emitted_conflict {
+                self.emitted_conflict = true;
+                out.push(TheoryClause {
+                    lits: Box::from([!self.propagated]),
+                    assertion_level: AssertionLevel::ROOT,
+                    kind: TheoryClauseKind::ConflictExplanation,
+                });
+            }
+        }
+
+        fn has_pending_work(&self) -> bool {
+            self.saw_premise && !self.emitted_implication
         }
     }
 
@@ -141,5 +199,22 @@ mod tests {
 
         assert_eq!(s.add_clause(&[opposite_x]), AddClauseResult::Added);
         assert_eq!(s.solve(), SatResult::Sat);
+    }
+
+    #[test]
+    fn unit_theory_propagation_keeps_its_reason_clause() {
+        let mut s = Solver::new();
+        let premise = lit(s.new_var());
+        let propagated = lit(s.new_var());
+        let mut theory = ImplicationConflictTheory {
+            premise,
+            propagated,
+            saw_premise: false,
+            emitted_implication: false,
+            emitted_conflict: false,
+        };
+
+        assert_eq!(s.solve_with_assumptions(&[], &mut theory), SatResult::Sat);
+        assert_eq!(s.value_lit_public(premise), Some(false));
     }
 }

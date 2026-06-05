@@ -43,6 +43,30 @@ pub(crate) enum Reason {
     },
     /// The assignment came from a long clause stored in the clause arena.
     Clause(ClauseId),
+    /// The assignment came from one unit theory clause kept only as an
+    /// implication-graph reason.
+    Theory(usize),
+}
+
+/// One transient theory reason stored in a shared literal arena.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub(crate) struct TheoryReason {
+    /// Start offset in `Solver::theory_reason_lits`.
+    start: u32,
+    /// Number of literals in this reason clause.
+    len: u32,
+    /// User scope carried by the theory explanation.
+    assertion_level: AssertionLevel,
+}
+
+impl TheoryReason {
+    /// Returns the literal range backing this transient reason.
+    #[inline(always)]
+    pub(crate) fn range(self) -> std::ops::Range<usize> {
+        let start = self.start as usize;
+        let len = self.len as usize;
+        start..start + len
+    }
 }
 
 /// The outcome of a SAT solve attempt.
@@ -215,6 +239,10 @@ pub struct Solver {
     learnts: Vec<ClauseId>,
     /// Arena storing all long clauses.
     clauses: ClauseArena,
+    /// Transient theory clauses used as reasons for unit theory propagations.
+    theory_reason_lits: Vec<Lit>,
+    /// Ranges into `theory_reason_lits`.
+    theory_reasons: Vec<TheoryReason>,
 
     /// VSIDS activity per variable.
     var_activity: Vec<f64>,
@@ -275,6 +303,8 @@ impl Solver {
             watches: Vec::new(),
             clauses: ClauseArena::new(),
             learnts: Vec::new(),
+            theory_reason_lits: Vec::new(),
+            theory_reasons: Vec::new(),
             var_activity: Vec::new(),
             var_inc: 1.0,
             var_decay: 0.95,
@@ -420,7 +450,8 @@ impl Solver {
         loop {
             self.notify_theory_assignments(theory);
             if let Some(conflict) = self.flush_theory_clauses(theory, false, &mut theory_clauses) {
-                if self.decision_level() == 0 {
+                let conflict_level = self.theory_conflict_level(&conflict.lits);
+                if conflict_level == 0 {
                     self.ok = false;
                     self.inconsistent_assertion_level = Some(conflict.assertion_level);
                     self.maybe_emit_telemetry_sample(theory);
@@ -431,6 +462,10 @@ impl Solver {
                 self.conflicts += 1;
                 restart_conflicts += 1;
 
+                if conflict_level < self.decision_level() {
+                    self.cancel_until(conflict_level);
+                    theory.notify_backtrack(conflict_level);
+                }
                 let summary = self.analyze_theory_clause(
                     &conflict.lits,
                     conflict.assertion_level,
@@ -456,13 +491,18 @@ impl Solver {
                 self.conflicts += 1;
                 restart_conflicts += 1;
 
-                if self.decision_level() == 0 {
+                let conflict_level = self.propagation_conflict_level(conflict);
+                if conflict_level == 0 {
                     self.ok = false;
                     self.inconsistent_assertion_level = Some(self.assertion_level);
                     self.maybe_emit_telemetry_sample(theory);
                     return SatResult::Unsat;
                 }
 
+                if conflict_level < self.decision_level() {
+                    self.cancel_until(conflict_level);
+                    theory.notify_backtrack(conflict_level);
+                }
                 let summary = self.analyze(conflict, &mut learnt);
                 self.cancel_until(summary.backtrack_level);
                 theory.notify_backtrack(summary.backtrack_level);
@@ -481,7 +521,8 @@ impl Solver {
 
             self.notify_theory_assignments(theory);
             if let Some(conflict) = self.flush_theory_clauses(theory, true, &mut theory_clauses) {
-                if self.decision_level() == 0 {
+                let conflict_level = self.theory_conflict_level(&conflict.lits);
+                if conflict_level == 0 {
                     self.ok = false;
                     self.inconsistent_assertion_level = Some(conflict.assertion_level);
                     self.maybe_emit_telemetry_sample(theory);
@@ -492,6 +533,10 @@ impl Solver {
                 self.conflicts += 1;
                 restart_conflicts += 1;
 
+                if conflict_level < self.decision_level() {
+                    self.cancel_until(conflict_level);
+                    theory.notify_backtrack(conflict_level);
+                }
                 let summary = self.analyze_theory_clause(
                     &conflict.lits,
                     conflict.assertion_level,
@@ -623,14 +668,42 @@ impl Solver {
                 .prepare_clause(&clause.lits)
                 .is_some_and(|prepared| prepared.is_empty())
             {
+                let assertion_level = self.theory_clause_assertion_level(&clause);
                 return Some(PendingTheoryConflict {
                     lits: clause.lits,
-                    assertion_level: clause.assertion_level,
+                    assertion_level,
                 });
             }
             let _ = self.add_theory_clause(clause);
         }
         None
+    }
+
+    /// Returns the highest SAT decision level present in a falsified theory
+    /// conflict clause.
+    fn theory_conflict_level(&self, lits: &[Lit]) -> usize {
+        lits.iter()
+            .map(|lit| self.sat_level[lit.var().index()])
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Returns the highest SAT decision level present in a propagation conflict.
+    fn propagation_conflict_level(&self, conflict: propagate::Conflict) -> usize {
+        match conflict {
+            propagate::Conflict::Binary {
+                false_lit, other, ..
+            } => self.sat_level[false_lit.var().index()].max(self.sat_level[other.var().index()]),
+            propagate::Conflict::Clause(cid) => {
+                let len = self.clauses.header(cid).len();
+                let mut level = 0;
+                for i in 0..len {
+                    let lit = self.clauses.clause(cid).lit(i);
+                    level = level.max(self.sat_level[lit.var().index()]);
+                }
+                level
+            }
+        }
     }
 }
 

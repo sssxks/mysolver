@@ -72,6 +72,81 @@ impl Solver {
         }
     }
 
+    /// Adds one theory clause without discarding falsified literals needed as
+    /// propagation reasons under the current trail.
+    fn add_scoped_theory_clause(
+        &mut self,
+        lits: &[Lit],
+        assertion_level: AssertionLevel,
+    ) -> AddClauseResult {
+        if !self.ok {
+            if self
+                .inconsistent_assertion_level
+                .is_some_and(|level| level <= self.assertion_level)
+            {
+                return AddClauseResult::Inconsistent;
+            }
+            self.ok = true;
+        }
+        let Some(mut ps) = self.prepare_reason_clause(lits) else {
+            return AddClauseResult::Satisfied;
+        };
+
+        let live_count = ps
+            .iter()
+            .filter(|&&lit| self.value_lit(lit) != super::LBool::False)
+            .count();
+        match live_count {
+            0 => {
+                self.ok = false;
+                self.inconsistent_assertion_level = Some(assertion_level);
+                AddClauseResult::Inconsistent
+            }
+            1 => {
+                let unit_index = ps
+                    .iter()
+                    .position(|&lit| self.value_lit(lit) == super::LBool::Undef)
+                    .expect("one live literal in an unsatisfied clause must be unassigned");
+                ps.swap(0, unit_index);
+                match ps.len() {
+                    1 => {
+                        if !self.enqueue(ps[0], Reason::None) {
+                            self.ok = false;
+                            self.inconsistent_assertion_level = Some(assertion_level);
+                            return AddClauseResult::Inconsistent;
+                        }
+                    }
+                    _ => {
+                        let reason = if self.unit_theory_reason_is_root_level(&ps) {
+                            Reason::None
+                        } else {
+                            Reason::Theory(self.push_theory_reason(&ps, assertion_level))
+                        };
+                        if !self.enqueue(ps[0], reason) {
+                            self.ok = false;
+                            self.inconsistent_assertion_level = Some(assertion_level);
+                            return AddClauseResult::Inconsistent;
+                        }
+                    }
+                }
+                AddClauseResult::Added
+            }
+            _ => {
+                move_two_live_literals_to_front(&mut ps, |lit| {
+                    self.value_lit(lit) != super::LBool::False
+                });
+                match ps.len() {
+                    0 | 1 => unreachable!("live count is at least two"),
+                    2 => self.attach_binary(ps[0], ps[1], assertion_level),
+                    _ => {
+                        self.attach_irredundant_long(&ps, assertion_level);
+                    }
+                }
+                AddClauseResult::Added
+            }
+        }
+    }
+
     /// Normalizes a clause under the current assignment.
     ///
     /// Satisfied clauses return `None`. Otherwise the result is sorted, duplicate-free,
@@ -85,6 +160,37 @@ impl Solver {
                 super::LBool::False => {}
                 super::LBool::Undef => ps.push(lit),
             }
+        }
+
+        ps.sort_unstable_by_key(|lit| lit.index());
+
+        let mut out = Vec::with_capacity(ps.len());
+        let mut prev: Option<Lit> = None;
+        for lit in ps {
+            if prev == Some(lit) {
+                continue;
+            }
+            if let Some(p) = prev
+                && p.var() == lit.var()
+                && p.is_negated() != lit.is_negated()
+            {
+                return None;
+            }
+            out.push(lit);
+            prev = Some(lit);
+        }
+        Some(out)
+    }
+
+    /// Normalizes a clause while preserving currently falsified literals for use
+    /// as an implication-graph reason.
+    fn prepare_reason_clause(&self, lits: &[Lit]) -> Option<Vec<Lit>> {
+        let mut ps = Vec::with_capacity(lits.len());
+        for &lit in lits {
+            if self.value_lit(lit) == super::LBool::True {
+                return None;
+            }
+            ps.push(lit);
         }
 
         ps.sort_unstable_by_key(|lit| lit.index());
@@ -223,14 +329,58 @@ impl Solver {
             .unwrap_or(AssertionLevel::ROOT)
     }
 
-    /// Inserts one theory clause through the ordinary scoped-clause path.
-    pub(crate) fn add_theory_clause(&mut self, clause: TheoryClause) -> AddClauseResult {
-        let assertion_level = match clause.kind {
+    /// Computes the scope required by one SAT-facing theory clause.
+    pub(crate) fn theory_clause_assertion_level(&self, clause: &TheoryClause) -> AssertionLevel {
+        match clause.kind {
             TheoryClauseKind::Input | TheoryClauseKind::Lemma => clause.assertion_level,
             TheoryClauseKind::PropagationExplanation | TheoryClauseKind::ConflictExplanation => {
                 self.explanation_assertion_level(&clause.lits)
             }
-        };
-        self.add_scoped_clause(&clause.lits, assertion_level, ClauseOrigin::Theory)
+        }
     }
+
+    /// Inserts one theory clause through the ordinary scoped-clause path.
+    pub(crate) fn add_theory_clause(&mut self, clause: TheoryClause) -> AddClauseResult {
+        let assertion_level = self.theory_clause_assertion_level(&clause);
+        self.add_scoped_theory_clause(&clause.lits, assertion_level)
+    }
+
+    /// Stores one transient theory reason and returns its stable id.
+    fn push_theory_reason(&mut self, lits: &[Lit], assertion_level: AssertionLevel) -> usize {
+        let start = u32::try_from(self.theory_reason_lits.len())
+            .expect("theory reason literal arena exhausted u32 offsets");
+        let len = u32::try_from(lits.len()).expect("theory reason length exceeds u32::MAX");
+        let id = self.theory_reasons.len();
+        self.theory_reason_lits.extend_from_slice(lits);
+        self.theory_reasons.push(super::TheoryReason {
+            start,
+            len,
+            assertion_level,
+        });
+        id
+    }
+
+    /// Returns whether one currently unit theory clause depends only on root
+    /// assignments and therefore needs no stored implication-graph reason.
+    fn unit_theory_reason_is_root_level(&self, lits: &[Lit]) -> bool {
+        debug_assert!(!lits.is_empty());
+        lits[1..]
+            .iter()
+            .all(|lit| self.sat_level[lit.var().index()] == 0)
+    }
+}
+
+/// Moves two literals satisfying `is_live` to the first two positions.
+fn move_two_live_literals_to_front(ps: &mut [Lit], is_live: impl Fn(Lit) -> bool) {
+    let first = ps
+        .iter()
+        .position(|&lit| is_live(lit))
+        .expect("caller guarantees at least two live literals");
+    ps.swap(0, first);
+    let second = ps[1..]
+        .iter()
+        .position(|&lit| is_live(lit))
+        .expect("caller guarantees at least two live literals after the first")
+        + 1;
+    ps.swap(1, second);
 }
