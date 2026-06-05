@@ -23,9 +23,9 @@ bench *extra:\
 perf *args="":
     samply record --unstable-presymbolicate -- {{ args }}
 
-
-# This project currently doesn't use nightly feature, so 1.95.0 hawk works; but change this after hawk supports nightly.
+# This project currently doesn't use nightly feature, so 1.95.0 hawk works; update after hawk supports nightly.
 # due to https://github.com/astral-sh/hawk/issues/74, we need to clear `.rustc_info.json` first.
+# `hawk` is aggressive, do not run after each change. instead, audit pub surface with `hawk` when user required.
 hawk *extra:
     @rm -f target/.rustc_info.json
     @cargo +1.95.0 hawk {{ extra }}
