@@ -62,7 +62,7 @@ pub(crate) struct TheoryReason {
 impl TheoryReason {
     /// Returns the literal range backing this transient reason.
     #[inline(always)]
-    pub(crate) fn range(self) -> std::ops::Range<usize> {
+    fn range(self) -> std::ops::Range<usize> {
         let start = self.start as usize;
         let len = self.len as usize;
         start..start + len
