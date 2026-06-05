@@ -29,34 +29,23 @@ pub struct Registry {
     term_atoms: Vec<Vec<TheoryAtomId>>,
     /// Permanent structural parent use-lists.
     parent_apps: Vec<Vec<TermId>>,
-
-    /// Lazily created Boolean sort.
-    bool_sort: Option<SortId>,
-    /// Lazily created canonical true term.
-    true_term: Option<TermId>,
 }
 
 impl Registry {
     /// Interns one sort.
-    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId {
-        let id = self
-            .sorts
+    pub(crate) fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId {
+        self.sorts
             .intern(sort, || match sort {
                 SortRef::Bool => Sort::Bool,
                 SortRef::Uninterpreted { name } => Sort::Uninterpreted {
                     name: self.storage.alloc_str(name),
                 },
             })
-            .id;
-
-        if matches!(sort, SortRef::Bool) {
-            self.bool_sort = Some(id);
-        }
-        id
+            .id
     }
 
     /// Interns one symbol.
-    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> SymbolId {
+    pub(crate) fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> SymbolId {
         self.symbols
             .intern(symbol, || Symbol {
                 name: self.storage.alloc_str(symbol.name),
@@ -67,7 +56,7 @@ impl Registry {
     }
 
     /// Interns one term together with its already-known sort.
-    pub fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId {
+    pub(crate) fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId {
         let symbol = self.symbols.get(term.fun.index());
         // SAFETY: `Symbol` is registry-private, so `arg_sorts` can only point into
         // `self.storage`.
@@ -112,7 +101,7 @@ impl Registry {
     }
 
     /// Interns one theory atom.
-    pub fn intern_atom(&mut self, atom: AtomRef) -> TheoryAtomId {
+    pub(crate) fn intern_atom(&mut self, atom: AtomRef) -> TheoryAtomId {
         let normalized = match atom {
             AtomRef::Eq(lhs, rhs) if rhs < lhs => Atom::Eq(rhs, lhs),
             AtomRef::Eq(lhs, rhs) => Atom::Eq(lhs, rhs),
@@ -133,60 +122,8 @@ impl Registry {
         id
     }
 
-    /// Finds one previously interned sort.
-    pub fn find_sort(&self, sort: SortRef<'_>) -> Option<SortId> {
-        self.sorts.find_ref(sort)
-    }
-
-    /// Finds one previously interned symbol.
-    pub fn find_symbol(&self, symbol: SymbolRef<'_>) -> Option<SymbolId> {
-        self.symbols.find_ref(symbol)
-    }
-
-    /// Finds one previously interned term.
-    pub fn find_term(&self, term: TermRef<'_>) -> Option<TermId> {
-        self.terms.find_ref(term)
-    }
-
-    /// Finds one previously interned atom.
-    pub fn find_atom(&self, atom: AtomRef) -> Option<TheoryAtomId> {
-        let atom = match atom {
-            AtomRef::Eq(lhs, rhs) if rhs < lhs => AtomRef::Eq(rhs, lhs),
-            other => other,
-        };
-        self.atoms.find_ref(atom)
-    }
-
-    /// Returns one borrowed view over the canonical sort named by `id`.
-    pub fn sort_ref(&self, id: SortId) -> SortRef<'_> {
-        match self.sorts.get(id.index()) {
-            Sort::Bool => SortRef::Bool,
-            Sort::Uninterpreted { name } => {
-                // SAFETY: `Sort` is registry-private, so `name` can only point into
-                // `self.storage`.
-                SortRef::Uninterpreted {
-                    name: unsafe { name.as_str() },
-                }
-            }
-        }
-    }
-
-    /// Returns one borrowed view over the canonical symbol named by `id`.
-    pub fn symbol_ref(&self, id: SymbolId) -> SymbolRef<'_> {
-        let symbol = self.symbols.get(id.index());
-        SymbolRef {
-            // SAFETY: `Symbol` is registry-private, so `name` can only point into
-            // `self.storage`.
-            name: unsafe { symbol.name.as_str() },
-            // SAFETY: `Symbol` is registry-private, so `arg_sorts` can only point
-            // into `self.storage`.
-            arg_sorts: unsafe { symbol.arg_sorts.as_slice() },
-            result_sort: symbol.result_sort,
-        }
-    }
-
     /// Returns one borrowed view over the canonical term named by `id`.
-    pub fn term_ref(&self, id: TermId) -> TermRef<'_> {
+    pub(crate) fn term_ref(&self, id: TermId) -> TermRef<'_> {
         let term = self.terms.get(id.index());
         TermRef {
             fun: term.fun,
@@ -197,58 +134,35 @@ impl Registry {
     }
 
     /// Returns one borrowed view over the canonical atom named by `id`.
-    pub fn atom_ref(&self, id: TheoryAtomId) -> AtomRef {
+    pub(crate) fn atom_ref(&self, id: TheoryAtomId) -> AtomRef {
         match *self.atoms.get(id.index()) {
             Atom::Eq(lhs, rhs) => AtomRef::Eq(lhs, rhs),
         }
     }
 
     /// Returns the number of canonical terms.
-    pub fn num_terms(&self) -> usize {
+    pub(crate) fn num_terms(&self) -> usize {
         self.terms.len()
     }
 
     /// Returns the number of canonical atoms.
-    pub fn num_atoms(&self) -> usize {
+    pub(crate) fn num_atoms(&self) -> usize {
         self.atoms.len()
     }
 
     /// Returns the sort of one interned term.
-    pub fn term_sort(&self, id: TermId) -> SortId {
+    #[cfg(test)]
+    pub(crate) fn term_sort(&self, id: TermId) -> SortId {
         self.term_sort[id.index()]
     }
 
     /// Returns the permanent incidence list for `id`.
-    pub fn term_atoms(&self, id: TermId) -> &[TheoryAtomId] {
+    pub(crate) fn term_atoms(&self, id: TermId) -> &[TheoryAtomId] {
         &self.term_atoms[id.index()]
     }
 
     /// Returns the permanent structural parent list for `id`.
-    pub fn parent_apps(&self, id: TermId) -> &[TermId] {
+    pub(crate) fn parent_apps(&self, id: TermId) -> &[TermId] {
         &self.parent_apps[id.index()]
-    }
-
-    /// Returns the canonical Boolean sort, creating it on demand.
-    pub fn bool_sort(&mut self) -> SortId {
-        if let Some(sort) = self.bool_sort {
-            return sort;
-        }
-        self.intern_sort(SortRef::Bool)
-    }
-
-    /// Returns the canonical Boolean true term, creating it on demand.
-    pub fn true_term(&mut self) -> TermId {
-        if let Some(term) = self.true_term {
-            return term;
-        }
-        let bool_sort = self.bool_sort();
-        let symbol = self.intern_symbol(SymbolRef {
-            name: "true",
-            arg_sorts: &[],
-            result_sort: bool_sort,
-        });
-        let term = self.intern_term(TermRef::nullary(symbol), bool_sort);
-        self.true_term = Some(term);
-        term
     }
 }

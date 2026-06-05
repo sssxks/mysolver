@@ -7,13 +7,8 @@ use crate::arena::InternId;
 pub struct SortId(u32);
 
 impl SortId {
-    /// Returns the zero-based index named by this identifier.
-    pub fn index(self) -> usize {
-        self.0 as usize
-    }
-
     /// Creates one sort identifier from a zero-based index.
-    pub(crate) fn from_index(index: usize) -> Self {
+    fn from_index(index: usize) -> Self {
         debug_assert!(u32::try_from(index).is_ok());
         Self(index as u32)
     }
@@ -25,12 +20,12 @@ pub struct SymbolId(u32);
 
 impl SymbolId {
     /// Returns the zero-based index named by this identifier.
-    pub fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
     /// Creates one symbol identifier from a zero-based index.
-    pub(crate) fn from_index(index: usize) -> Self {
+    fn from_index(index: usize) -> Self {
         debug_assert!(u32::try_from(index).is_ok());
         Self(index as u32)
     }
@@ -42,7 +37,7 @@ pub struct TermId(u32);
 
 impl TermId {
     /// Returns the zero-based index named by this identifier.
-    pub fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
@@ -59,12 +54,12 @@ pub struct TheoryAtomId(u32);
 
 impl TheoryAtomId {
     /// Returns the zero-based index named by this identifier.
-    pub fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
     /// Creates one atom identifier from a zero-based index.
-    pub(crate) fn from_index(index: usize) -> Self {
+    fn from_index(index: usize) -> Self {
         debug_assert!(u32::try_from(index).is_ok());
         Self(index as u32)
     }
@@ -76,7 +71,7 @@ pub struct EClassId(u32);
 
 impl EClassId {
     /// Returns the zero-based index named by this identifier.
-    pub fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 

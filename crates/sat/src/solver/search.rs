@@ -98,7 +98,7 @@ impl Solver {
     }
 
     /// Deletes every long clause that left scope after one user-level pop.
-    pub(crate) fn delete_long_clauses_above_level(&mut self, level: AssertionLevel) {
+    fn delete_long_clauses_above_level(&mut self, level: AssertionLevel) {
         for cid in self.clauses.live_clauses_above_level(level) {
             self.delete_clause(cid);
         }
@@ -106,7 +106,7 @@ impl Solver {
     }
 
     /// Shrinks every variable-indexed array back to the live frame boundary.
-    pub(crate) fn shrink_vars_to_frame_boundary(&mut self, new_level: AssertionLevel) {
+    fn shrink_vars_to_frame_boundary(&mut self, new_level: AssertionLevel) {
         let vars_base = self.user_frames.last().map_or(0, |frame| {
             debug_assert_eq!(frame.level, new_level);
             frame.vars_base

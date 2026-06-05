@@ -102,7 +102,7 @@ impl Solver {
     }
 
     /// Evaluates `lit` against an arbitrary assignment slice.
-    pub(crate) fn value_lit_in(assigns: &[LBool], lit: Lit) -> LBool {
+    fn value_lit_in(assigns: &[LBool], lit: Lit) -> LBool {
         match assigns[lit.var().index()] {
             LBool::Undef => LBool::Undef,
             LBool::True => {

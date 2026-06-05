@@ -8,7 +8,7 @@ use crate::types::TermId;
 
 impl SearchState {
     /// Explains why `lhs == rhs` currently holds as a multiset of input literals.
-    pub fn explain_equality(
+    pub(crate) fn explain_equality(
         &mut self,
         registry: &Registry,
         lhs: TermId,
@@ -146,7 +146,7 @@ impl SearchState {
     }
 
     /// Explains one disequality conflict as its supporting input literals.
-    pub fn explain_conflict(
+    pub(crate) fn explain_conflict(
         &mut self,
         registry: &Registry,
         diseq: DisequalityEntry,

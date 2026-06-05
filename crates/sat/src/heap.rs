@@ -24,7 +24,7 @@ impl VarHeap {
     }
 
     /// Returns whether the heap currently contains `v`.
-    pub(crate) fn contains(&self, v: Var) -> bool {
+    fn contains(&self, v: Var) -> bool {
         self.pos[v.index()] >= 0
     }
 

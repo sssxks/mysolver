@@ -6,8 +6,10 @@ use crate::registry::Registry;
 use crate::search_state::{
     ClassMerge, DiseqInput, DisequalityEntry, MergeInput, MergeReason, SearchState,
 };
-use crate::types::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId};
-use crate::{AtomLiteralKind, telemetry};
+use crate::telemetry;
+use crate::types::{
+    AtomLiteralKind, AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
+};
 
 /// The EUF theory module exposed to the SAT engine.
 #[derive(Debug, Default)]
@@ -25,11 +27,6 @@ pub struct EufTheory {
 }
 
 impl EufTheory {
-    /// Creates one empty theory object.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Interns one sort.
     pub fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId {
         self.registry.intern_sort(sort)
@@ -69,12 +66,12 @@ impl EufTheory {
     }
 
     /// Returns the canonical atom, if any, bound to `var`.
-    pub fn theory_atom_for_var(&self, var: Var) -> Option<TheoryAtomId> {
+    fn theory_atom_for_var(&self, var: Var) -> Option<TheoryAtomId> {
         self.var_to_theory_atom.get(var.index()).copied().flatten()
     }
 
     /// Decodes one SAT literal as one EUF atom literal, if applicable.
-    pub fn atom_literal_kind(&self, lit: Lit) -> Option<AtomLiteralKind> {
+    fn atom_literal_kind(&self, lit: Lit) -> Option<AtomLiteralKind> {
         let atom = self.theory_atom_for_var(lit.var())?;
         match self.registry.atom_ref(atom) {
             AtomRef::Eq(lhs, rhs) => Some(AtomLiteralKind::Eq {
@@ -399,7 +396,7 @@ mod tests {
 
     #[test]
     fn registry_interns_terms_and_atoms_canonically() {
-        let mut theory = EufTheory::new();
+        let mut theory = EufTheory::default();
         let mut sat = sat::Solver::new();
         let bool_sort = theory.intern_sort(SortRef::Bool);
         let u_sort = theory.intern_sort(SortRef::Uninterpreted { name: "U" });
@@ -417,7 +414,7 @@ mod tests {
         let fa = theory.intern_term(TermRef { fun: f, args: &[a] }, u_sort);
 
         assert_eq!(theory.registry.term_sort(fa), u_sort);
-        assert_eq!(theory.registry.bool_sort(), bool_sort);
+        assert_eq!(theory.intern_sort(SortRef::Bool), bool_sort);
 
         let sat_var = sat.new_var();
         let atom = theory.intern_equality_atom(fa, a, sat_var);
@@ -427,7 +424,7 @@ mod tests {
     #[test]
     fn theory_reports_conflict_for_negative_congruence_atom() {
         let mut sat = sat::Solver::new();
-        let mut theory = EufTheory::new();
+        let mut theory = EufTheory::default();
         let u_sort = theory.intern_sort(SortRef::Uninterpreted { name: "U" });
         let f = theory.intern_symbol(SymbolRef {
             name: "f",
@@ -468,7 +465,7 @@ mod tests {
     #[test]
     fn theory_repairs_congruence_through_transitive_input_merges() {
         let mut sat = sat::Solver::new();
-        let mut theory = EufTheory::new();
+        let mut theory = EufTheory::default();
         let u_sort = theory.intern_sort(SortRef::Uninterpreted { name: "U" });
         let f = theory.intern_symbol(SymbolRef {
             name: "f",

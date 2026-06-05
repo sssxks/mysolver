@@ -19,12 +19,12 @@ pub(crate) struct ClauseId {
 
 impl ClauseId {
     /// Creates one clause identifier from one (slot, generation) pair.
-    pub(crate) fn new(slot: u32, generation: u32) -> Self {
+    fn new(slot: u32, generation: u32) -> Self {
         Self { slot, generation }
     }
 
     /// Returns the zero-based header-table index of this clause id.
-    pub(crate) fn slot_index(self) -> usize {
+    fn slot_index(self) -> usize {
         self.slot as usize
     }
 
@@ -34,7 +34,7 @@ impl ClauseId {
     }
 
     /// Returns the generation expected in [`Self::slot`].
-    pub(crate) fn generation(self) -> u32 {
+    fn generation(self) -> u32 {
         self.generation
     }
 }
@@ -75,14 +75,14 @@ impl ClauseHeader {
     const RETIRED_STATE: u32 = 0b11 << 30;
 
     /// Mask selecting the generation counter stored in the state word.
-    pub(crate) const GENERATION_MASK: u32 = !Self::STATE_MASK;
+    const GENERATION_MASK: u32 = !Self::STATE_MASK;
     /// Largest generation value that still leaves room for state bits.
-    pub(crate) const MAX_GENERATION: u32 = Self::GENERATION_MASK;
+    const MAX_GENERATION: u32 = Self::GENERATION_MASK;
     /// Sentinel stored in `offset_or_next` to terminate the intrusive free list.
     const FREE_LIST_END: u32 = u32::MAX;
 
     /// Creates one live irredundant clause header for a payload beginning at `offset`.
-    pub(crate) fn new_irredundant(
+    fn new_irredundant(
         generation: u32,
         offset: u32,
         len: u32,
@@ -97,12 +97,7 @@ impl ClauseHeader {
     }
 
     /// Creates one live learned clause header for a payload beginning at `offset`.
-    pub(crate) fn new_learnt(
-        generation: u32,
-        offset: u32,
-        len: u32,
-        assertion_level: AssertionLevel,
-    ) -> Self {
+    fn new_learnt(generation: u32, offset: u32, len: u32, assertion_level: AssertionLevel) -> Self {
         Self {
             len,
             generation_state: Self::pack_generation_state(generation, Self::LEARNT_STATE),
@@ -112,7 +107,7 @@ impl ClauseHeader {
     }
 
     /// Creates one free header slot that points at the next free slot.
-    pub(crate) fn new_free(generation: u32, next_free_slot: Option<u32>) -> Self {
+    fn new_free(generation: u32, next_free_slot: Option<u32>) -> Self {
         Self {
             len: 0,
             generation_state: Self::pack_generation_state(generation, Self::FREE_STATE),
@@ -122,7 +117,7 @@ impl ClauseHeader {
     }
 
     /// Creates one retired header slot that can no longer be allocated.
-    pub(crate) fn new_retired(generation: u32) -> Self {
+    fn new_retired(generation: u32) -> Self {
         Self {
             len: 0,
             generation_state: Self::pack_generation_state(generation, Self::RETIRED_STATE),
@@ -143,14 +138,14 @@ impl ClauseHeader {
     }
 
     /// Returns the generation currently assigned to this slot.
-    pub(crate) fn generation(self) -> u32 {
+    fn generation(self) -> u32 {
         self.generation_state & Self::GENERATION_MASK
     }
 
     // state query methods
 
     /// Returns whether this header slot currently stores a live clause.
-    pub(crate) fn is_live(self) -> bool {
+    fn is_live(self) -> bool {
         matches!(
             self.generation_state & Self::STATE_MASK,
             Self::LIVE_STATE | Self::LEARNT_STATE
@@ -163,19 +158,19 @@ impl ClauseHeader {
     }
 
     /// Returns whether this header slot is currently free for reuse.
-    pub(crate) fn is_free(self) -> bool {
+    fn is_free(self) -> bool {
         (self.generation_state & Self::STATE_MASK) == Self::FREE_STATE
     }
 
     /// Returns whether this header slot has been retired permanently.
-    pub(crate) fn is_retired(self) -> bool {
+    fn is_retired(self) -> bool {
         (self.generation_state & Self::STATE_MASK) == Self::RETIRED_STATE
     }
 
     /// Returns the payload offset measured in literal words.
     ///
     /// Preconditoin: this header must be live, i.e. `is_live()` must return `true`.
-    pub(crate) fn offset(self) -> usize {
+    fn offset(self) -> usize {
         debug_assert!(self.is_live());
         self.offset_or_next as usize
     }
@@ -183,7 +178,7 @@ impl ClauseHeader {
     /// Updates the payload offset after clause compaction.
     ///
     /// Preconditoin: this header must be live, i.e. `is_live()` must return `true`.
-    pub(crate) fn set_offset(&mut self, offset: u32) {
+    fn set_offset(&mut self, offset: u32) {
         debug_assert!(self.is_live());
         self.offset_or_next = offset;
     }
@@ -205,7 +200,7 @@ impl ClauseHeader {
     /// Returns the next free slot in the intrusive free list.
     ///
     /// Preconditoin: this header must be free, i.e. `is_free()` must return `true`.
-    pub(crate) fn next_free_slot(self) -> Option<u32> {
+    fn next_free_slot(self) -> Option<u32> {
         debug_assert!(self.is_free());
         (self.offset_or_next != Self::FREE_LIST_END).then_some(self.offset_or_next)
     }

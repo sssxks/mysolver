@@ -137,7 +137,7 @@ pub struct Interner<Id, T> {
     /// Stored canonical values in insertion order.
     values: Vec<T>,
     /// Fast lookup by stored value.
-    pub(crate) index: HashMap<T, Id>,
+    index: HashMap<T, Id>,
 }
 
 /// Result of one interning attempt.
@@ -209,7 +209,7 @@ impl<Id: InternId + Eq + Hash, T: Clone + Eq + Hash> Interner<Id, T> {
         Interned { id, is_new: true }
     }
     /// Finds one interned value matching the borrowed `query`.
-    pub(crate) fn find_ref(&self, query: T::Query<'_>) -> Option<Id>
+    fn find_ref(&self, query: T::Query<'_>) -> Option<Id>
     where
         T: MatchesRef,
     {

@@ -37,7 +37,7 @@ impl TelemetryRecorder {
     }
 
     /// Starts writing JSONL telemetry samples to `path` using a custom period.
-    pub fn with_period(path: &Path, period: std::time::Duration) -> io::Result<Self> {
+    fn with_period(path: &Path, period: std::time::Duration) -> io::Result<Self> {
         install_session(path)?;
         SAMPLE_TICK.store(false, Ordering::Relaxed);
         let (stop_sender, stop_receiver) = mpsc::channel();

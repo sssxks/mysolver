@@ -292,7 +292,7 @@ impl Solver {
     }
 
     /// Creates a solver preallocated with `n` variables.
-    pub fn with_vars(n: usize) -> Self {
+    pub(crate) fn with_vars(n: usize) -> Self {
         let mut s = Self::new();
         for _ in 0..n {
             s.new_var();
@@ -321,30 +321,25 @@ impl Solver {
     }
 
     /// Returns the number of variables currently known to the solver.
-    pub fn num_vars(&self) -> usize {
+    pub(crate) fn num_vars(&self) -> usize {
         self.nvars
     }
 
     /// Returns the current decision level.
-    pub fn decision_level(&self) -> usize {
+    fn decision_level(&self) -> usize {
         self.trail_lim.len()
     }
 
     /// Returns the current user assertion level.
-    pub fn current_assertion_level(&self) -> AssertionLevel {
+    pub(crate) fn current_assertion_level(&self) -> AssertionLevel {
         self.assertion_level
-    }
-
-    /// Returns the user assertion level where `var` was introduced.
-    pub fn intro_level_of(&self, var: Var) -> AssertionLevel {
-        self.intro_level[var.index()]
     }
 
     /// Returns the current truth value of `lit`, if assigned.
     ///
     /// The return value is `Some(true)` when `lit` is satisfied, `Some(false)` when
     /// `lit` is falsified, and `None` when its variable is unassigned.
-    pub fn value_lit_public(&self, lit: Lit) -> Option<bool> {
+    pub(crate) fn value_lit_public(&self, lit: Lit) -> Option<bool> {
         match self.value_lit(lit) {
             LBool::True => Some(true),
             LBool::False => Some(false),
@@ -356,7 +351,7 @@ impl Solver {
     ///
     /// The model is indexed by variable and contains the underlying variable value,
     /// not literal satisfaction.
-    pub fn model(&self) -> Option<Vec<bool>> {
+    pub(crate) fn model(&self) -> Option<Vec<bool>> {
         if !self.ok || self.assigned_count != self.nvars {
             return None;
         }
@@ -383,7 +378,7 @@ impl Solver {
     }
 
     /// Searches for a satisfying assignment for the current formula.
-    pub fn solve(&mut self) -> SatResult {
+    pub(crate) fn solve(&mut self) -> SatResult {
         self.solve_with_assumptions(&[], &mut NullTheory)
     }
 

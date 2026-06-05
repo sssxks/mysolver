@@ -221,7 +221,7 @@ impl OutcomeCategory {
     }
 
     /// Returns the short uppercase label used in the terminal.
-    pub(crate) const fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Pass => "PASS",
             Self::NoOracle => "DONE",
@@ -341,7 +341,7 @@ impl RunSummary {
     pub(crate) const FORMAT_VERSION: u32 = 3;
 
     /// Returns the current on-disk file format version.
-    pub(crate) const fn format_version() -> u32 {
+    const fn format_version() -> u32 {
         Self::FORMAT_VERSION
     }
 

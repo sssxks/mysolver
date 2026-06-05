@@ -22,7 +22,7 @@ impl Solver {
     }
 
     /// Adds one clause carrying an explicit user-scope level and origin.
-    pub(crate) fn add_scoped_clause(
+    fn add_scoped_clause(
         &mut self,
         lits: &[Lit],
         assertion_level: AssertionLevel,
@@ -108,7 +108,7 @@ impl Solver {
     }
 
     /// Attaches a binary clause to both of its watch lists.
-    pub(crate) fn attach_binary(&mut self, a: Lit, b: Lit, assertion_level: AssertionLevel) {
+    fn attach_binary(&mut self, a: Lit, b: Lit, assertion_level: AssertionLevel) {
         self.watches[a.index()].push(Watcher::Binary {
             other: b,
             assertion_level,
@@ -121,7 +121,7 @@ impl Solver {
     }
 
     /// Stores and watches one irredundant long clause.
-    pub(crate) fn attach_irredundant_long(
+    fn attach_irredundant_long(
         &mut self,
         lits: &[Lit],
         assertion_level: AssertionLevel,
@@ -207,7 +207,7 @@ impl Solver {
     }
 
     /// Computes the scope required for one frontend or input clause.
-    pub(crate) fn current_clause_assertion_level(&self, lits: &[Lit]) -> AssertionLevel {
+    fn current_clause_assertion_level(&self, lits: &[Lit]) -> AssertionLevel {
         lits.iter()
             .map(|lit| self.intro_level[lit.var().index()])
             .max()
@@ -216,7 +216,7 @@ impl Solver {
     }
 
     /// Computes the scope required for one theory explanation clause.
-    pub(crate) fn explanation_assertion_level(&self, lits: &[Lit]) -> AssertionLevel {
+    fn explanation_assertion_level(&self, lits: &[Lit]) -> AssertionLevel {
         lits.iter()
             .map(|lit| self.intro_level[lit.var().index()])
             .max()

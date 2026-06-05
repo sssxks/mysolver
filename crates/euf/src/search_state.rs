@@ -37,9 +37,9 @@ pub struct DiseqInput {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct CongruenceSigRef<'a> {
     /// Function symbol.
-    pub(crate) fun: SymbolId,
+    fun: SymbolId,
     /// Current class representatives of the arguments.
-    pub(crate) arg_reps: &'a [EClassId],
+    arg_reps: &'a [EClassId],
 }
 
 /// Owned congruence signature stored in the search-local table.
@@ -80,13 +80,13 @@ pub enum MergeReason {
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct MergeEdge {
     /// Left endpoint.
-    pub(crate) lhs: TermId,
+    lhs: TermId,
     /// Right endpoint.
-    pub(crate) rhs: TermId,
+    rhs: TermId,
     /// Previous adjacency-list head for the `lhs -> rhs` orientation.
-    pub(crate) next_lhs: DirectedMergeEdgeId,
+    next_lhs: DirectedMergeEdgeId,
     /// Previous adjacency-list head for the `rhs -> lhs` orientation.
-    pub(crate) next_rhs: DirectedMergeEdgeId,
+    next_rhs: DirectedMergeEdgeId,
     /// Justification for this equality edge.
     pub(crate) reason: MergeReason,
 }
@@ -140,13 +140,13 @@ impl DirectedMergeEdgeId {
 
     /// Creates the `lhs -> rhs` orientation for one merge edge.
     #[inline(always)]
-    pub(crate) fn lhs_to_rhs(edge_index: usize) -> Self {
+    fn lhs_to_rhs(edge_index: usize) -> Self {
         Self::from_edge_index_and_direction(edge_index, false)
     }
 
     /// Creates the `rhs -> lhs` orientation for one merge edge.
     #[inline(always)]
-    pub(crate) fn rhs_to_lhs(edge_index: usize) -> Self {
+    fn rhs_to_lhs(edge_index: usize) -> Self {
         Self::from_edge_index_and_direction(edge_index, true)
     }
 
@@ -173,7 +173,7 @@ impl DirectedMergeEdgeId {
 
     /// Returns whether this orientation is `rhs -> lhs`.
     #[inline(always)]
-    pub(crate) fn is_rhs_to_lhs(self) -> bool {
+    fn is_rhs_to_lhs(self) -> bool {
         debug_assert_ne!(self, Self::NONE);
         self.0 & 1 == 1
     }
@@ -228,25 +228,25 @@ pub(crate) struct ClassMerge {
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub struct SatLevelMarker {
     /// Undo-log length at level entry.
-    pub(crate) undo_len: usize,
+    undo_len: usize,
     /// Congruence-insert log length at level entry.
-    pub(crate) congruence_insert_len: usize,
+    congruence_insert_len: usize,
     /// Merge-edge length at level entry.
-    pub(crate) merge_edges_len: usize,
+    merge_edges_len: usize,
     /// Active-disequality length at level entry.
-    pub(crate) active_disequalities_len: usize,
+    active_disequalities_len: usize,
     /// Disequality incidence-log length at level entry.
-    pub(crate) disequality_incident_log_len: usize,
+    disequality_incident_log_len: usize,
     /// Pending-merge queue length at level entry.
-    pub(crate) pending_merges_len: usize,
+    pending_merges_len: usize,
     /// Pending-repair queue length at level entry.
-    pub(crate) pending_repairs_len: usize,
+    pending_repairs_len: usize,
     /// Pending-atom-trigger queue length at level entry.
-    pub(crate) pending_atom_triggers_len: usize,
+    pending_atom_triggers_len: usize,
     /// Pending-clause queue length at level entry.
-    pub(crate) pending_clauses_len: usize,
+    pending_clauses_len: usize,
     /// Search-local atom-assignment trail length at level entry.
-    pub(crate) atom_trail_len: usize,
+    atom_trail_len: usize,
 }
 
 /// One reversible mutation record.
@@ -283,7 +283,7 @@ pub struct SearchState {
     /// Number of terms in each current representative class.
     class_size: Vec<u32>,
     /// Successor link for each term in one circular class-membership list.
-    pub(crate) next: Vec<TermId>,
+    next: Vec<TermId>,
 
     /// Search-lifetime arena for owned congruence signatures.
     ///
@@ -339,7 +339,7 @@ pub struct SearchState {
     pub(crate) explain_cache: HashSet<(TermId, TermId)>,
 
     /// Reversible mutation log.
-    pub(crate) undo_log: Vec<Undo>,
+    undo_log: Vec<Undo>,
     /// One marker per open SAT decision level.
     level_markers: Vec<SatLevelMarker>,
 }
@@ -355,7 +355,7 @@ impl SearchState {
     }
 
     /// Reinitializes the search-local state for one new top-level SAT search.
-    pub fn reset_for_registry(&mut self, registry: &Registry) {
+    pub(crate) fn reset_for_registry(&mut self, registry: &Registry) {
         let nterms = registry.num_terms();
         self.parent.clear();
         self.class_size.clear();
@@ -401,7 +401,7 @@ impl SearchState {
     }
 
     /// Pushes one rollback marker aligned with a new SAT decision level.
-    pub fn push_sat_level(&mut self) {
+    pub(crate) fn push_sat_level(&mut self) {
         self.level_markers.push(SatLevelMarker {
             undo_len: self.undo_log.len(),
             congruence_insert_len: self.signature_log.len(),
@@ -417,7 +417,7 @@ impl SearchState {
     }
 
     /// Pops search-local state back to `new_level`.
-    pub fn pop_sat_levels(&mut self, new_level: usize) {
+    pub(crate) fn pop_sat_levels(&mut self, new_level: usize) {
         while self.level_markers.len() > new_level {
             let marker = self.level_markers.pop().expect("checked above");
             self.pending_clauses.truncate(marker.pending_clauses_len);
@@ -465,7 +465,7 @@ impl SearchState {
     }
 
     /// Finds the current class representative of `term`.
-    pub fn find(&self, term: TermId) -> EClassId {
+    pub(crate) fn find(&self, term: TermId) -> EClassId {
         let mut current = EClassId::from_index(term.index());
         while self.parent[current.index()] != current {
             current = self.parent[current.index()];
@@ -632,7 +632,7 @@ impl SearchState {
     }
 
     /// Enqueues one input equality merge.
-    pub fn enqueue_input_equality(&mut self, input: MergeInput) {
+    pub(crate) fn enqueue_input_equality(&mut self, input: MergeInput) {
         self.pending_merges.push_back(input);
     }
 
@@ -680,7 +680,7 @@ impl SearchState {
     }
 
     /// Activates one input disequality.
-    pub fn enqueue_input_disequality(&mut self, input: DiseqInput) -> DisequalityEntry {
+    pub(crate) fn enqueue_input_disequality(&mut self, input: DiseqInput) -> DisequalityEntry {
         let entry = DisequalityEntry {
             lhs: input.lhs,
             rhs: input.rhs,
@@ -698,7 +698,7 @@ impl SearchState {
     }
 
     /// Rolls back all reversible mutations down to `undo_len`.
-    pub fn rollback_to(&mut self, undo_len: usize) {
+    fn rollback_to(&mut self, undo_len: usize) {
         while self.undo_log.len() > undo_len {
             match self.undo_log.pop().expect("checked above") {
                 Undo::Parent { node, old_parent } => {

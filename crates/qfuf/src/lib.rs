@@ -12,7 +12,15 @@ use crate::parser::parse_commands;
 
 /// Runs the solver over one complete SMT-LIB input string and returns the textual
 /// responses produced by query commands.
+#[cfg(not(feature = "telemetry"))]
 pub fn run_script(input: &str) -> Result<String, String> {
+    let mut driver = Driver::new();
+    run_script_with_driver(&mut driver, input)
+}
+
+/// Runs the solver over one complete SMT-LIB input string for crate-local tests.
+#[cfg(all(feature = "telemetry", test))]
+pub(crate) fn run_script(input: &str) -> Result<String, String> {
     let mut driver = Driver::new();
     run_script_with_driver(&mut driver, input)
 }

@@ -9,7 +9,7 @@ impl AssertionLevel {
     pub const ROOT: Self = Self(0);
 
     /// Returns the zero-based depth index.
-    pub fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
@@ -20,7 +20,7 @@ impl AssertionLevel {
     }
 
     /// Returns the next deeper assertion level.
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         Self(self.0 + 1)
     }
 }
@@ -63,7 +63,7 @@ impl Lit {
     }
 
     /// Returns the zero-based packed literal index.
-    pub fn index(self) -> usize {
+    pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
@@ -81,7 +81,7 @@ impl Lit {
     ///
     /// Panics if `x == 0`, because `0` is the DIMACS clause terminator rather than
     /// a literal.
-    pub fn from_dimacs(x: i32) -> Self {
+    pub(crate) fn from_dimacs(x: i32) -> Self {
         assert!(x != 0);
         let v = Var::from_index((x.unsigned_abs() - 1) as usize);
         Lit::new(v, x < 0)

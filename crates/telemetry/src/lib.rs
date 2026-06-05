@@ -48,15 +48,15 @@ pub use backend::{
 };
 
 /// Default interval between periodic telemetry samples.
-pub const DEFAULT_SAMPLE_PERIOD: Duration = Duration::from_secs(1);
+pub(crate) const DEFAULT_SAMPLE_PERIOD: Duration = Duration::from_secs(1);
 
 /// Counter metrics accumulated between flushed samples.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Counters {
     /// SAT-local counter deltas.
-    pub sat: SatCounters,
+    sat: SatCounters,
     /// EUF-local counter deltas.
-    pub euf: EufCounters,
+    euf: EufCounters,
 }
 
 /// Gauge metrics sampled from the live solver state.
@@ -72,11 +72,11 @@ pub struct Gauges {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sample {
     /// Seconds elapsed since the telemetry session started.
-    pub elapsed_secs: f64,
+    elapsed_secs: f64,
     /// Counter deltas accumulated since the previous sample.
-    pub counters: Counters,
+    counters: Counters,
     /// Point-in-time gauges captured at the sample boundary.
-    pub gauges: Gauges,
+    gauges: Gauges,
 }
 
 /// Aggregate telemetry derived from one case's emitted sample stream.
@@ -117,19 +117,19 @@ impl Summary {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SatCounters {
     /// Number of conflicts encountered since the previous sample.
-    pub conflicts: u64,
+    conflicts: u64,
     /// Number of propagated assignments enqueued since the previous sample.
-    pub propagations: u64,
+    propagations: u64,
     /// Number of branching decisions made since the previous sample.
-    pub decisions: u64,
+    decisions: u64,
     /// Number of restart events executed since the previous sample.
-    pub restarts: u64,
+    restarts: u64,
     /// Number of learned-database reduction passes since the previous sample.
-    pub reductions: u64,
+    reductions: u64,
     /// Number of learned clauses added since the previous sample.
-    pub learnt_clauses: u64,
+    learnt_clauses: u64,
     /// Number of clauses deleted from the learned database since the previous sample.
-    pub deleted_clauses: u64,
+    deleted_clauses: u64,
 }
 
 /// SAT gauge metrics sampled from the live solver state.
@@ -159,15 +159,15 @@ pub struct SatGauges {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EufCounters {
     /// Number of asserted input equalities processed since the previous sample.
-    pub input_equalities: u64,
+    input_equalities: u64,
     /// Number of asserted input disequalities processed since the previous sample.
-    pub input_disequalities: u64,
+    input_disequalities: u64,
     /// Number of congruence-driven merges performed since the previous sample.
-    pub congruence_merges: u64,
+    congruence_merges: u64,
     /// Number of theory propagation clauses emitted since the previous sample.
-    pub theory_propagations: u64,
+    theory_propagations: u64,
     /// Number of theory conflict clauses emitted since the previous sample.
-    pub theory_conflicts: u64,
+    theory_conflicts: u64,
 }
 
 /// EUF gauge metrics sampled from the live theory state.

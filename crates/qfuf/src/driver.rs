@@ -8,7 +8,7 @@ use telemetry::Gauges;
 use crate::types::{BoolView, Command, FunDecl, LocalBinding, SExpr, negate_view};
 
 /// Accepts one clause-insertion result from the SAT core.
-pub(crate) fn accept_add_result(result: AddClauseResult) -> Result<(), String> {
+fn accept_add_result(result: AddClauseResult) -> Result<(), String> {
     match result {
         AddClauseResult::Added | AddClauseResult::Satisfied => Ok(()),
         AddClauseResult::Inconsistent => Ok(()),
@@ -19,9 +19,9 @@ pub(crate) fn accept_add_result(result: AddClauseResult) -> Result<(), String> {
 #[derive(Debug, Default)]
 pub(crate) struct Driver {
     /// Incremental SAT engine.
-    pub(crate) sat: Solver,
+    sat: Solver,
     /// EUF theory module.
-    pub(crate) euf: EufTheory,
+    euf: EufTheory,
     /// Declared sort environment.
     sorts: HashMap<Box<str>, euf::SortId>,
     /// Declared function environment.
@@ -173,7 +173,7 @@ impl Driver {
 
     /// Evaluates one `let` binding list in the outer scope, then lowers `body`
     /// inside a newly pushed lexical scope.
-    pub(crate) fn with_let_bindings<T>(
+    fn with_let_bindings<T>(
         &mut self,
         bindings: &[SExpr],
         body: impl FnOnce(&mut Self) -> Result<T, String>,
@@ -204,7 +204,7 @@ impl Driver {
     }
 
     /// Lowers one formula-position expression into a Boolean view.
-    pub(crate) fn lower_formula(&mut self, expr: &SExpr) -> Result<BoolView, String> {
+    fn lower_formula(&mut self, expr: &SExpr) -> Result<BoolView, String> {
         match expr {
             SExpr::Atom(atom) if atom.as_ref() == "true" => Ok(BoolView::True),
             SExpr::Atom(atom) if atom.as_ref() == "false" => Ok(BoolView::False),
@@ -362,7 +362,7 @@ impl Driver {
     }
 
     /// Returns whether `expr` is known to denote a Boolean expression.
-    pub(crate) fn is_boolean_expr(&mut self, expr: &SExpr) -> Result<bool, String> {
+    fn is_boolean_expr(&mut self, expr: &SExpr) -> Result<bool, String> {
         match expr {
             SExpr::Atom(atom) if atom.as_ref() == "true" || atom.as_ref() == "false" => Ok(true),
             SExpr::Atom(atom) => Ok(match self.lookup_local_binding(atom) {
@@ -405,7 +405,7 @@ impl Driver {
     }
 
     /// Lowers one term-position expression.
-    pub(crate) fn lower_term(&mut self, expr: &SExpr) -> Result<euf::TermId, String> {
+    fn lower_term(&mut self, expr: &SExpr) -> Result<euf::TermId, String> {
         match expr {
             SExpr::Atom(atom) if atom.as_ref() == "true" => self.true_term(),
             SExpr::Atom(atom) if atom.as_ref() == "false" => self.false_term(),
@@ -510,7 +510,7 @@ impl Driver {
     }
 
     /// Returns one SAT literal representing the equality atom `lhs = rhs`.
-    pub(crate) fn equality_literal(&mut self, lhs: euf::TermId, rhs: euf::TermId) -> Lit {
+    fn equality_literal(&mut self, lhs: euf::TermId, rhs: euf::TermId) -> Lit {
         let key = if rhs < lhs { (rhs, lhs) } else { (lhs, rhs) };
         if let Some(&lit) = self.eq_lits.get(&key) {
             return lit;
@@ -523,7 +523,7 @@ impl Driver {
     }
 
     /// Returns one SAT literal representing the Boolean term `term = true`.
-    pub(crate) fn bool_term_literal(&mut self, term: euf::TermId) -> Lit {
+    fn bool_term_literal(&mut self, term: euf::TermId) -> Lit {
         let true_term = self.true_term().expect("true term must be available");
         self.equality_literal(term, true_term)
     }
@@ -567,7 +567,7 @@ impl Driver {
     }
 
     /// Returns the sort of one previously interned term.
-    pub(crate) fn term_sort(&self, term: euf::TermId) -> Result<euf::SortId, String> {
+    fn term_sort(&self, term: euf::TermId) -> Result<euf::SortId, String> {
         self.term_sorts
             .get(&term)
             .copied()
@@ -575,7 +575,7 @@ impl Driver {
     }
 
     /// Returns the canonical Boolean sort.
-    pub(crate) fn bool_sort(&mut self) -> euf::SortId {
+    fn bool_sort(&mut self) -> euf::SortId {
         if let Some(sort) = self.bool_sort {
             return sort;
         }
@@ -585,7 +585,7 @@ impl Driver {
     }
 
     /// Returns the canonical true term.
-    pub(crate) fn true_term(&mut self) -> Result<euf::TermId, String> {
+    fn true_term(&mut self) -> Result<euf::TermId, String> {
         if let Some(term) = self.true_term {
             return Ok(term);
         }
@@ -602,7 +602,7 @@ impl Driver {
     }
 
     /// Returns the canonical false term.
-    pub(crate) fn false_term(&mut self) -> Result<euf::TermId, String> {
+    fn false_term(&mut self) -> Result<euf::TermId, String> {
         if let Some(term) = self.false_term {
             return Ok(term);
         }
