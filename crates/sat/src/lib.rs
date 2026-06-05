@@ -16,9 +16,10 @@ pub mod telemetry;
 /// Core SAT value types.
 mod types;
 
-pub(crate) use dimacs::parse_dimacs;
+
+pub use dimacs::parse_dimacs;
 pub use solver::{
-    AddClauseResult, PopError, SatResult, Solver, Theory, TheoryClause, TheoryClauseKind,
+    AddClauseResult, PopError, SatResult, Solver, Theory, TheoryClause, TheoryClauseKind, NullTheory
 };
 pub use types::{AssertionLevel, Lit, Var};
 

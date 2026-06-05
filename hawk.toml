@@ -1,4 +1,18 @@
 [[production]]
 package = "my-harness"
 bin = "my-harness"
-reason = "shipped application binary"
+reason = "main binary"
+
+[[override]]
+lint = "hawk::unnecessary_public"
+crate = "sat"
+item = "parse_dimacs"
+level = "allow"
+reason = "currently unused; previously used by sat path of my-harness; retained to allow future reuse if needed"
+
+[[override]]
+lint = "hawk::unnecessary_public"
+crate = "sat"
+item = "NullTheory"
+level = "allow"
+reason = "currently unused; previously used by sat path of my-harness; retained to allow future reuse if needed"

@@ -321,6 +321,7 @@ impl Solver {
     }
 
     /// Returns the number of variables currently known to the solver.
+    #[cfg(test)]
     pub(crate) fn num_vars(&self) -> usize {
         self.nvars
     }
@@ -331,6 +332,7 @@ impl Solver {
     }
 
     /// Returns the current user assertion level.
+    #[cfg(test)]
     pub(crate) fn current_assertion_level(&self) -> AssertionLevel {
         self.assertion_level
     }
@@ -339,6 +341,7 @@ impl Solver {
     ///
     /// The return value is `Some(true)` when `lit` is satisfied, `Some(false)` when
     /// `lit` is falsified, and `None` when its variable is unassigned.
+    #[cfg(test)]
     pub(crate) fn value_lit_public(&self, lit: Lit) -> Option<bool> {
         match self.value_lit(lit) {
             LBool::True => Some(true),
@@ -351,6 +354,7 @@ impl Solver {
     ///
     /// The model is indexed by variable and contains the underlying variable value,
     /// not literal satisfaction.
+    #[cfg(test)]
     pub(crate) fn model(&self) -> Option<Vec<bool>> {
         if !self.ok || self.assigned_count != self.nvars {
             return None;
@@ -378,6 +382,7 @@ impl Solver {
     }
 
     /// Searches for a satisfying assignment for the current formula.
+    #[cfg(test)]
     pub(crate) fn solve(&mut self) -> SatResult {
         self.solve_with_assumptions(&[], &mut NullTheory)
     }
@@ -631,7 +636,7 @@ impl Solver {
 
 /// Trivial theory adapter used by plain SAT solving.
 #[derive(Debug, Default)]
-struct NullTheory;
+pub struct NullTheory;
 
 impl Theory for NullTheory {
     fn notify_search_start(&mut self) {}
