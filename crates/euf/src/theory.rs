@@ -1,7 +1,5 @@
 //! SAT-facing EUF theory integration.
 
-use std::collections::VecDeque;
-
 use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
 
 use crate::registry::Registry;
@@ -24,15 +22,6 @@ pub struct EufTheory {
     theory_atom_to_var: Vec<Var>,
     /// Reverse map from SAT variables to theory atoms.
     var_to_theory_atom: Vec<Option<TheoryAtomId>>,
-    /// Queue of assigned theory literals not yet processed by EUF.
-    pending_assignments: VecDeque<Lit>,
-
-    /// Search-local atom assignment cache.
-    atom_value: Vec<Option<bool>>,
-    /// Search-local assigned atom trail.
-    atom_trail: Vec<TheoryAtomId>,
-    /// Search-local decision-level starts for `atom_trail`.
-    atom_trail_lim: Vec<usize>,
 }
 
 impl EufTheory {
@@ -98,16 +87,12 @@ impl EufTheory {
 
     /// Processes all theory assignments currently buffered from SAT.
     fn process_pending_assignments(&mut self) {
-        while let Some(lit) = self.pending_assignments.pop_front() {
+        while let Some(lit) = self.search.pop_pending_assignment() {
             let Some(atom) = self.theory_atom_for_var(lit.var()) else {
                 continue;
             };
             let value = !lit.is_negated();
-            if self.atom_value.len() <= atom.index() {
-                self.atom_value.resize(atom.index() + 1, None);
-            }
-            self.atom_value[atom.index()] = Some(value);
-            self.atom_trail.push(atom);
+            self.search.assign_theory_atom(atom, value);
 
             match self.atom_literal_kind(lit) {
                 Some(AtomLiteralKind::Eq {
@@ -278,7 +263,7 @@ impl EufTheory {
         };
         let lit = Lit::new(sat_var, false);
         let equal_now = self.search.find(lhs) == self.search.find(rhs);
-        let current_value = self.atom_value.get(atom.index()).copied().flatten();
+        let current_value = self.search.atom_value(atom);
 
         if equal_now && current_value.is_none() {
             let mut support = Vec::new();
@@ -337,8 +322,8 @@ impl EufTheory {
         telemetry::Gauges {
             registry_terms: self.registry.num_terms() as u64,
             registry_atoms: self.registry.num_atoms() as u64,
-            pending_assignments: self.pending_assignments.len() as u64,
-            assigned_atoms: self.atom_trail.len() as u64,
+            pending_assignments: self.search.pending_assignment_count() as u64,
+            assigned_atoms: self.search.assigned_atom_count() as u64,
             pending_merges: self.search.pending_merges.len() as u64,
             pending_repairs: self.search.pending_repairs.len() as u64,
             pending_atom_triggers: self
@@ -357,33 +342,20 @@ impl EufTheory {
 impl Theory for EufTheory {
     fn notify_search_start(&mut self) {
         self.search.reset_for_registry(&self.registry);
-        self.pending_assignments.clear();
-        self.atom_value.clear();
-        self.atom_value.resize(self.registry.num_atoms(), None);
-        self.atom_trail.clear();
-        self.atom_trail_lim.clear();
     }
 
     fn notify_new_decision_level(&mut self) {
         self.search.push_sat_level();
-        self.atom_trail_lim.push(self.atom_trail.len());
     }
 
     fn notify_assignment(&mut self, lit: Lit) {
         if self.theory_atom_for_var(lit.var()).is_some() {
-            self.pending_assignments.push_back(lit);
+            self.search.enqueue_pending_assignment(lit);
         }
     }
 
     fn notify_backtrack(&mut self, level: usize) {
         self.search.pop_sat_levels(level);
-        while self.atom_trail_lim.len() > level {
-            let keep = self.atom_trail_lim.pop().expect("checked above");
-            while self.atom_trail.len() > keep {
-                let atom = self.atom_trail.pop().expect("checked above");
-                self.atom_value[atom.index()] = None;
-            }
-        }
     }
 
     fn drain_clauses(&mut self, out: &mut Vec<TheoryClause>) {
@@ -399,11 +371,7 @@ impl Theory for EufTheory {
     }
 
     fn has_pending_work(&self) -> bool {
-        !self.pending_assignments.is_empty()
-            || !self.search.pending_clauses.is_empty()
-            || !self.search.pending_merges.is_empty()
-            || !self.search.pending_repairs.is_empty()
-            || self.search.pending_atom_qhead < self.search.pending_atom_triggers.len()
+        self.search.has_pending_work()
     }
 
     #[cfg(feature = "telemetry")]

@@ -245,6 +245,8 @@ pub struct SatLevelMarker {
     pub(crate) pending_atom_triggers_len: usize,
     /// Pending-clause queue length at level entry.
     pub(crate) pending_clauses_len: usize,
+    /// Search-local atom-assignment trail length at level entry.
+    pub(crate) atom_trail_len: usize,
 }
 
 /// One reversible mutation record.
@@ -299,6 +301,8 @@ pub struct SearchState {
 
     /// Pending input merges still to process.
     pub(crate) pending_merges: VecDeque<MergeInput>,
+    /// Assigned theory literals not yet processed by EUF.
+    pending_assignments: VecDeque<Lit>,
     /// Parent applications that must be reconsidered.
     pub(crate) pending_repairs: VecDeque<TermId>,
     /// Theory atoms affected by recent class changes.
@@ -307,6 +311,10 @@ pub struct SearchState {
     pub(crate) pending_atom_qhead: usize,
     /// Per-atom queue-membership bit.
     pub(crate) atom_is_enqueued: Vec<bool>,
+    /// Current search-local Boolean value for each theory atom.
+    atom_value: Vec<Option<bool>>,
+    /// Search-local assigned atom trail for SAT-level rollback.
+    atom_trail: Vec<TheoryAtomId>,
     /// Pending theory clauses ready to return to SAT.
     pub(crate) pending_clauses: Vec<TheoryClause>,
     /// Currently active disequalities.
@@ -367,11 +375,15 @@ impl SearchState {
         self.signature_log.clear();
         self.initialize_congruence_table(registry);
         self.pending_merges.clear();
+        self.pending_assignments.clear();
         self.pending_repairs.clear();
         self.pending_atom_triggers.clear();
         self.pending_atom_qhead = 0;
         self.atom_is_enqueued.clear();
         self.atom_is_enqueued.resize(registry.num_atoms(), false);
+        self.atom_value.clear();
+        self.atom_value.resize(registry.num_atoms(), None);
+        self.atom_trail.clear();
         self.pending_clauses.clear();
         self.active_disequalities.clear();
         self.term_disequalities.clear();
@@ -400,6 +412,7 @@ impl SearchState {
             pending_repairs_len: self.pending_repairs.len(),
             pending_atom_triggers_len: self.pending_atom_triggers.len(),
             pending_clauses_len: self.pending_clauses.len(),
+            atom_trail_len: self.atom_trail.len(),
         });
     }
 
@@ -418,6 +431,13 @@ impl SearchState {
                 .min(self.pending_atom_triggers.len());
             self.pending_repairs.truncate(marker.pending_repairs_len);
             self.pending_merges.truncate(marker.pending_merges_len);
+            while self.atom_trail.len() > marker.atom_trail_len {
+                let atom = self
+                    .atom_trail
+                    .pop()
+                    .expect("checked atom trail suffix above");
+                self.atom_value[atom.index()] = None;
+            }
             self.active_disequalities
                 .truncate(marker.active_disequalities_len);
             while self.disequality_incident_log.len() > marker.disequality_incident_log_len {
@@ -614,6 +634,49 @@ impl SearchState {
     /// Enqueues one input equality merge.
     pub fn enqueue_input_equality(&mut self, input: MergeInput) {
         self.pending_merges.push_back(input);
+    }
+
+    /// Enqueues one SAT assignment whose variable is bound to a theory atom.
+    pub(crate) fn enqueue_pending_assignment(&mut self, lit: Lit) {
+        self.pending_assignments.push_back(lit);
+    }
+
+    /// Pops the oldest unprocessed SAT assignment.
+    pub(crate) fn pop_pending_assignment(&mut self) -> Option<Lit> {
+        self.pending_assignments.pop_front()
+    }
+
+    /// Records one processed theory-atom assignment.
+    pub(crate) fn assign_theory_atom(&mut self, atom: TheoryAtomId, value: bool) {
+        if self.atom_value.len() <= atom.index() {
+            self.atom_value.resize(atom.index() + 1, None);
+        }
+        self.atom_value[atom.index()] = Some(value);
+        self.atom_trail.push(atom);
+    }
+
+    /// Returns the current search-local value of one theory atom.
+    pub(crate) fn atom_value(&self, atom: TheoryAtomId) -> Option<bool> {
+        self.atom_value.get(atom.index()).copied().flatten()
+    }
+
+    /// Returns the number of SAT assignments waiting for EUF processing.
+    pub(crate) fn pending_assignment_count(&self) -> usize {
+        self.pending_assignments.len()
+    }
+
+    /// Returns the number of currently assigned theory atoms.
+    pub(crate) fn assigned_atom_count(&self) -> usize {
+        self.atom_trail.len()
+    }
+
+    /// Returns whether any search-local work remains.
+    pub(crate) fn has_pending_work(&self) -> bool {
+        !self.pending_assignments.is_empty()
+            || !self.pending_clauses.is_empty()
+            || !self.pending_merges.is_empty()
+            || !self.pending_repairs.is_empty()
+            || self.pending_atom_qhead < self.pending_atom_triggers.len()
     }
 
     /// Activates one input disequality.
