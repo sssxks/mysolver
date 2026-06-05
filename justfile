@@ -15,33 +15,17 @@ smt-bench-fetch *args="":
     @./scripts/fetch_smt_benchmarks.py {{ args }}
 
 # Tests and benchmarks our SAT solver, default to hard subset.
-bench preset="hard" *extra:\
+bench *extra:\
   (sat-bench-fetch "--quiet") \
-  (harness-run \
-    if preset == "full" {\
-         "" \
-    } else if preset == "hard" {\
-        "test/fixture/sat/cases/satlib/engine_unsat_1.0" \
-    } else {\
-        error("unknown bench preset: " + preset) \
-    } extra\
-  )\
-
-# Compares harness results before and after the current local changes.
-compare argument="hard" *extra:
-    @./scripts/bench_compare_stash.py --preset {{ argument }} {{ extra }}
+  (harness-run extra)
 
 # recipe for perf recording. e.g. run with `just bench`, `timeout ...`, `cargo run ...`.
 perf *args="":
     samply record --unstable-presymbolicate -- {{ args }}
 
-# This tool seems can not detect dead type definitions.
-@dead-pub:
-    # cargo install has to update index, causing a little lag even when installed, seems not very ideal.
-    cargo install cargo-workspace-unused-pub -q
-    # rustup is fine.
-    rustup component add rust-analyzer > /dev/null 2>&1
-    # also the `cargo-workspace-unused-pub` tool is poorly implemented, quite slow.
-    -RUST_LOG=off cargo workspace-unused-pub
-    rm -f index.scip
-    
+
+# This project currently doesn't use nightly feature, so 1.95.0 hawk works; but change this after hawk supports nightly.
+# due to https://github.com/astral-sh/hawk/issues/74, we need to clear `.rustc_info.json` first.
+hawk *extra:
+    @rm -f target/.rustc_info.json
+    @cargo +1.95.0 hawk {{ extra }}

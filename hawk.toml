@@ -1,0 +1,4 @@
+[[production]]
+package = "my-harness"
+bin = "my-harness"
+reason = "shipped application binary"
