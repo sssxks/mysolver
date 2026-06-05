@@ -92,49 +92,30 @@ impl Solver {
             return AddClauseResult::Satisfied;
         };
 
-        let live_count = ps
-            .iter()
-            .filter(|&&lit| self.value_lit(lit) != super::LBool::False)
-            .count();
-        match live_count {
-            0 => {
+        match classify_live_lits(&ps, |lit| self.value_lit(lit) != super::LBool::False) {
+            LiveLits::None => {
                 self.ok = false;
                 self.inconsistent_assertion_level = Some(assertion_level);
                 AddClauseResult::Inconsistent
             }
-            1 => {
-                let unit_index = ps
-                    .iter()
-                    .position(|&lit| self.value_lit(lit) == super::LBool::Undef)
-                    .expect("one live literal in an unsatisfied clause must be unassigned");
+            LiveLits::One(unit_index) => {
                 ps.swap(0, unit_index);
-                match ps.len() {
-                    1 => {
-                        if !self.enqueue(ps[0], Reason::None) {
-                            self.ok = false;
-                            self.inconsistent_assertion_level = Some(assertion_level);
-                            return AddClauseResult::Inconsistent;
-                        }
-                    }
-                    _ => {
-                        let reason = if self.unit_theory_reason_is_root_level(&ps) {
-                            Reason::None
-                        } else {
-                            Reason::Theory(self.push_theory_reason(&ps, assertion_level))
-                        };
-                        if !self.enqueue(ps[0], reason) {
-                            self.ok = false;
-                            self.inconsistent_assertion_level = Some(assertion_level);
-                            return AddClauseResult::Inconsistent;
-                        }
-                    }
+
+                let reason = if ps.len() == 1 || self.unit_theory_reason_is_root_level(&ps) {
+                    Reason::None
+                } else {
+                    Reason::Theory(self.push_theory_reason(&ps, assertion_level))
+                };
+                if !self.enqueue(ps[0], reason) {
+                    self.ok = false;
+                    self.inconsistent_assertion_level = Some(assertion_level);
+                    return AddClauseResult::Inconsistent;
                 }
+
                 AddClauseResult::Added
             }
-            _ => {
-                move_two_live_literals_to_front(&mut ps, |lit| {
-                    self.value_lit(lit) != super::LBool::False
-                });
+            LiveLits::Many { first, second } => {
+                move_two_indices_to_front(&mut ps, first, second);
                 match ps.len() {
                     0 | 1 => unreachable!("live count is at least two"),
                     2 => self.attach_binary(ps[0], ps[1], assertion_level),
@@ -370,17 +351,55 @@ impl Solver {
     }
 }
 
-/// Moves two literals satisfying `is_live` to the first two positions.
-fn move_two_live_literals_to_front(ps: &mut [Lit], is_live: impl Fn(Lit) -> bool) {
-    let first = ps
-        .iter()
-        .position(|&lit| is_live(lit))
-        .expect("caller guarantees at least two live literals");
-    ps.swap(0, first);
-    let second = ps[1..]
-        .iter()
-        .position(|&lit| is_live(lit))
-        .expect("caller guarantees at least two live literals after the first")
-        + 1;
-    ps.swap(1, second);
+/// Witnesses how many currently live literals one normalized clause contains.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum LiveLits {
+    /// Every literal is currently false.
+    None,
+    /// Exactly one literal is not currently false.
+    One(usize),
+    /// At least two literals are not currently false.
+    Many {
+        /// Index of the first live literal.
+        first: usize,
+        /// Index of the second live literal.
+        second: usize,
+    },
+}
+
+/// Classifies live literals in one pass and keeps the witness indices.
+fn classify_live_lits(ps: &[Lit], mut is_live: impl FnMut(Lit) -> bool) -> LiveLits {
+    let mut first = None;
+
+    for (index, &lit) in ps.iter().enumerate() {
+        if !is_live(lit) {
+            continue;
+        }
+
+        match first {
+            None => first = Some(index),
+            Some(first) => {
+                return LiveLits::Many {
+                    first,
+                    second: index,
+                };
+            }
+        }
+    }
+
+    match first {
+        None => LiveLits::None,
+        Some(index) => LiveLits::One(index),
+    }
+}
+
+/// Moves two known-distinct indices to the first two positions.
+fn move_two_indices_to_front<T>(slice: &mut [T], first: usize, second: usize) {
+    debug_assert_ne!(first, second);
+    debug_assert!(first < slice.len());
+    debug_assert!(second < slice.len());
+
+    slice.swap(0, first);
+    let second = if second == 0 { first } else { second };
+    slice.swap(1, second);
 }
