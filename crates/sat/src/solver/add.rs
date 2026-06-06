@@ -364,8 +364,6 @@ fn classify_live_lits(ps: &[Lit], mut is_live: impl FnMut(Lit) -> bool) -> LiveL
 /// Moves two known-distinct indices to the first two positions.
 fn move_two_indices_to_front<T>(slice: &mut [T], first: usize, second: usize) {
     debug_assert_ne!(first, second);
-    debug_assert!(first < slice.len());
-    debug_assert!(second < slice.len());
 
     slice.swap(0, first);
     let second = if second == 0 { first } else { second };
