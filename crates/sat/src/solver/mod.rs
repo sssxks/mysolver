@@ -7,6 +7,8 @@ mod propagate;
 /// Branching heuristics, backtracking, and database reduction.
 mod search;
 
+use std::ops::Range;
+
 use crate::clause_db::{ClauseArena, ClauseId};
 use crate::heap::VarHeap;
 use crate::telemetry;
@@ -14,6 +16,7 @@ use crate::telemetry;
 use crate::telemetry::Gauges;
 use crate::{AssertionLevel, Lit, Var};
 
+use self::add::ClassifiedTheoryClause;
 use self::propagate::Watcher;
 
 /// A three-valued boolean used for partial assignments.
@@ -43,6 +46,30 @@ pub(crate) enum Reason {
     },
     /// The assignment came from a long clause stored in the clause arena.
     Clause(ClauseId),
+    /// The assignment came from one unit theory clause kept only as an
+    /// implication-graph reason.
+    Theory(usize),
+}
+
+/// One transient theory reason stored in a shared literal arena.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub(crate) struct TheoryReason {
+    /// Start offset in `Solver::theory_reason_lits`.
+    start: u32,
+    /// Number of literals in this reason clause.
+    len: u32,
+    /// User scope carried by the theory explanation.
+    assertion_level: AssertionLevel,
+}
+
+impl TheoryReason {
+    /// Returns the literal range backing this transient reason.
+    #[inline(always)]
+    fn range(self) -> Range<usize> {
+        let start = self.start as usize;
+        let len = self.len as usize;
+        start..start + len
+    }
 }
 
 /// The outcome of a SAT solve attempt.
@@ -90,7 +117,17 @@ pub enum TheoryClauseKind {
 pub struct TheoryClause {
     /// Fully explained clause over SAT literals.
     pub lits: Box<[Lit]>,
-    /// User level where this clause must remain valid.
+    /// Shallowest user assertion level where this clause is valid.
+    ///
+    /// The theory producer must set this to at least the deepest `push()` frame
+    /// that any non-literal dependency of the clause relies on. For input clauses
+    /// and general theory lemmas, SAT uses this field as the clause scope. For
+    /// propagation and conflict explanations, SAT also raises the stored scope to
+    /// cover variables appearing in `lits`, but empty explanations and dependencies
+    /// not represented by literals still rely on this value. Under-reporting this
+    /// level is unsound because learned clauses may survive a `pop()` that removes
+    /// their justification; over-reporting is sound but prevents reuse in shallower
+    /// scopes.
     pub assertion_level: AssertionLevel,
     /// Classification used only for metrics and debugging.
     pub kind: TheoryClauseKind,
@@ -99,10 +136,28 @@ pub struct TheoryClause {
 /// One theory explanation clause that is already conflicting under the current
 /// SAT trail and therefore must enter CDCL conflict analysis directly.
 #[derive(Clone, Debug)]
-struct PendingTheoryConflict {
+struct TheoryConflict {
     /// Falsified theory-clause literals under the current trail.
     lits: Box<[Lit]>,
     /// User scope carried by the theory explanation.
+    assertion_level: AssertionLevel,
+}
+
+/// One conflict source waiting for root-level handling or first-UIP analysis.
+#[derive(Clone, Debug)]
+enum SearchConflict {
+    /// Conflict emitted directly by a theory callback.
+    Theory(TheoryConflict),
+    /// Conflict found by watched-literal propagation.
+    Propagation(propagate::Conflict),
+}
+
+/// SAT and user-scope coordinates for one search conflict.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+struct SearchConflictScope {
+    /// Highest SAT decision level occurring in the conflict clause.
+    decision_level: usize,
+    /// User assertion level where a root-level conflict remains visible.
     assertion_level: AssertionLevel,
 }
 
@@ -139,18 +194,6 @@ pub trait Theory {
     }
 }
 
-/// Clause origin classification used while inserting scoped clauses.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-#[allow(dead_code)]
-pub(crate) enum ClauseOrigin {
-    /// User-input clause.
-    Input,
-    /// Theory-generated clause.
-    Theory,
-    /// Learned clause from conflict analysis.
-    Learnt,
-}
-
 /// One pushed user-level assertion frame.
 #[derive(Clone, Debug)]
 pub(crate) struct UserFrame {
@@ -174,8 +217,6 @@ pub(crate) struct AnalyzeSummary {
 /// A CDCL SAT solver over CNF formulas.
 #[derive(Debug)]
 pub struct Solver {
-    /// Whether the clause database is still known to be consistent.
-    ok: bool,
     /// The shallowest user scope currently known to be immediately inconsistent.
     inconsistent_assertion_level: Option<AssertionLevel>,
     /// Current user assertion level.
@@ -215,6 +256,10 @@ pub struct Solver {
     learnts: Vec<ClauseId>,
     /// Arena storing all long clauses.
     clauses: ClauseArena,
+    /// Transient theory clauses used as reasons for unit theory propagations.
+    theory_reason_lits: Vec<Lit>,
+    /// Ranges into `theory_reason_lits`.
+    theory_reasons: Vec<TheoryReason>,
 
     /// VSIDS activity per variable.
     var_activity: Vec<f64>,
@@ -236,6 +281,8 @@ pub struct Solver {
     analyze_stack: Vec<Var>,
     /// Memoized redundancy states used while minimizing learned clauses.
     minimize_cache: Vec<u8>,
+    /// User-scope contribution for redundancy proofs cached as true.
+    minimize_scope_cache: Vec<AssertionLevel>,
     /// Variables whose redundancy cache entries must be cleared after one analysis.
     minimize_touched: Vec<Var>,
     /// Epoch-stamped decision levels used while counting clause LBD values.
@@ -256,7 +303,6 @@ impl Solver {
     /// Creates an empty solver with no variables or clauses.
     pub fn new() -> Self {
         Self {
-            ok: true,
             inconsistent_assertion_level: None,
             assertion_level: AssertionLevel::ROOT,
             user_frames: Vec::new(),
@@ -275,6 +321,8 @@ impl Solver {
             watches: Vec::new(),
             clauses: ClauseArena::new(),
             learnts: Vec::new(),
+            theory_reason_lits: Vec::new(),
+            theory_reasons: Vec::new(),
             var_activity: Vec::new(),
             var_inc: 1.0,
             var_decay: 0.95,
@@ -284,6 +332,7 @@ impl Solver {
             seen: Vec::new(),
             analyze_stack: Vec::new(),
             minimize_cache: Vec::new(),
+            minimize_scope_cache: Vec::new(),
             minimize_touched: Vec::new(),
             lbd_levels: Vec::new(),
             lbd_epoch: 0,
@@ -315,6 +364,7 @@ impl Solver {
         self.var_activity.push(0.0);
         self.seen.push(false);
         self.minimize_cache.push(0);
+        self.minimize_scope_cache.push(AssertionLevel::ROOT);
         self.order.new_var();
         self.order.insert(v, &self.var_activity);
         v
@@ -329,6 +379,13 @@ impl Solver {
     /// Returns the current decision level.
     fn decision_level(&self) -> usize {
         self.trail_lim.len()
+    }
+
+    /// Returns whether a remembered inconsistency is active in the current user scope.
+    #[inline(always)]
+    fn not_ok(&self) -> bool {
+        self.inconsistent_assertion_level
+            .is_some_and(|level| level <= self.assertion_level)
     }
 
     /// Returns the current user assertion level.
@@ -356,7 +413,7 @@ impl Solver {
     /// not literal satisfaction.
     #[cfg(test)]
     pub(crate) fn model(&self) -> Option<Vec<bool>> {
-        if !self.ok || self.assigned_count != self.nvars {
+        if self.not_ok() || self.assigned_count != self.nvars {
             return None;
         }
         Some(self.assigns.iter().map(|v| *v == LBool::True).collect())
@@ -394,18 +451,14 @@ impl Solver {
         theory: &mut T,
     ) -> SatResult {
         self.reset_search();
+
         let (live_irredundant_clauses, _) = self.clauses.live_clause_counts();
         let watcher_entries = self.watches.iter().map(Vec::len).sum::<usize>();
         telemetry::initialize_solver_gauges(live_irredundant_clauses, watcher_entries);
 
-        if self
-            .inconsistent_assertion_level
-            .is_some_and(|level| level <= self.assertion_level)
-        {
-            self.ok = false;
+        if self.not_ok() {
             return SatResult::Unsat;
         }
-        self.ok = true;
 
         theory.notify_search_start();
 
@@ -420,95 +473,42 @@ impl Solver {
         loop {
             self.notify_theory_assignments(theory);
             if let Some(conflict) = self.flush_theory_clauses(theory, false, &mut theory_clauses) {
-                if self.decision_level() == 0 {
-                    self.ok = false;
-                    self.inconsistent_assertion_level = Some(conflict.assertion_level);
-                    self.maybe_emit_telemetry_sample(theory);
-                    return SatResult::Unsat;
-                }
-
-                telemetry::record_conflict();
-                self.conflicts += 1;
-                restart_conflicts += 1;
-
-                let summary = self.analyze_theory_clause(
-                    &conflict.lits,
-                    conflict.assertion_level,
+                if let Some(result) = self.handle_search_conflict(
+                    SearchConflict::Theory(conflict),
+                    theory,
                     &mut learnt,
-                );
-                self.cancel_until(summary.backtrack_level);
-                theory.notify_backtrack(summary.backtrack_level);
-                self.add_learnt_clause(&learnt, summary.lbd, summary.assertion_level);
-                self.var_decay_activity();
-                self.clause_decay_activity();
-
-                if self.conflicts >= next_reduce {
-                    self.reduce_db();
-                    next_reduce += 2_000;
+                    &mut restart_conflicts,
+                    &mut next_reduce,
+                ) {
+                    return result;
                 }
-
-                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
             if let Some(conflict) = self.propagate() {
-                telemetry::record_conflict();
-                self.conflicts += 1;
-                restart_conflicts += 1;
-
-                if self.decision_level() == 0 {
-                    self.ok = false;
-                    self.inconsistent_assertion_level = Some(self.assertion_level);
-                    self.maybe_emit_telemetry_sample(theory);
-                    return SatResult::Unsat;
+                if let Some(result) = self.handle_search_conflict(
+                    SearchConflict::Propagation(conflict),
+                    theory,
+                    &mut learnt,
+                    &mut restart_conflicts,
+                    &mut next_reduce,
+                ) {
+                    return result;
                 }
-
-                let summary = self.analyze(conflict, &mut learnt);
-                self.cancel_until(summary.backtrack_level);
-                theory.notify_backtrack(summary.backtrack_level);
-                self.add_learnt_clause(&learnt, summary.lbd, summary.assertion_level);
-                self.var_decay_activity();
-                self.clause_decay_activity();
-
-                if self.conflicts >= next_reduce {
-                    self.reduce_db();
-                    next_reduce += 2_000;
-                }
-
-                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
             self.notify_theory_assignments(theory);
             if let Some(conflict) = self.flush_theory_clauses(theory, true, &mut theory_clauses) {
-                if self.decision_level() == 0 {
-                    self.ok = false;
-                    self.inconsistent_assertion_level = Some(conflict.assertion_level);
-                    self.maybe_emit_telemetry_sample(theory);
-                    return SatResult::Unsat;
-                }
-
-                telemetry::record_conflict();
-                self.conflicts += 1;
-                restart_conflicts += 1;
-
-                let summary = self.analyze_theory_clause(
-                    &conflict.lits,
-                    conflict.assertion_level,
+                if let Some(result) = self.handle_search_conflict(
+                    SearchConflict::Theory(conflict),
+                    theory,
                     &mut learnt,
-                );
-                self.cancel_until(summary.backtrack_level);
-                theory.notify_backtrack(summary.backtrack_level);
-                self.add_learnt_clause(&learnt, summary.lbd, summary.assertion_level);
-                self.var_decay_activity();
-                self.clause_decay_activity();
-
-                if self.conflicts >= next_reduce {
-                    self.reduce_db();
-                    next_reduce += 2_000;
+                    &mut restart_conflicts,
+                    &mut next_reduce,
+                ) {
+                    return result;
                 }
-
-                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
@@ -610,7 +610,7 @@ impl Solver {
         theory: &mut T,
         final_check: bool,
         out: &mut Vec<TheoryClause>,
-    ) -> Option<PendingTheoryConflict> {
+    ) -> Option<TheoryConflict> {
         out.clear();
         if final_check {
             theory.final_check(out);
@@ -619,18 +619,141 @@ impl Solver {
         }
 
         for clause in out.drain(..) {
-            if self
-                .prepare_clause(&clause.lits)
-                .is_some_and(|prepared| prepared.is_empty())
-            {
-                return Some(PendingTheoryConflict {
-                    lits: clause.lits,
-                    assertion_level: clause.assertion_level,
-                });
+            match self.classify_theory_clause(&clause) {
+                ClassifiedTheoryClause::Satisfied => {}
+                ClassifiedTheoryClause::Conflict {
+                    lits,
+                    assertion_level,
+                } => {
+                    return Some(TheoryConflict {
+                        lits: lits.into_boxed_slice(),
+                        assertion_level,
+                    });
+                }
+                ClassifiedTheoryClause::Unit {
+                    lits,
+                    unit_index,
+                    assertion_level,
+                } => {
+                    let _ = self.insert_unit_theory_clause(lits, unit_index, assertion_level);
+                }
+                ClassifiedTheoryClause::Watch {
+                    lits,
+                    first,
+                    second,
+                    assertion_level,
+                } => {
+                    let _ = self.insert_watched_theory_clause(lits, first, second, assertion_level);
+                }
             }
-            let _ = self.add_theory_clause(clause);
         }
         None
+    }
+
+    /// Handles one conflict through either root-level UNSAT or first-UIP learning.
+    fn handle_search_conflict<T: Theory>(
+        &mut self,
+        conflict: SearchConflict,
+        theory: &mut T,
+        learnt: &mut Vec<Lit>,
+        restart_conflicts: &mut usize,
+        next_reduce: &mut usize,
+    ) -> Option<SatResult> {
+        telemetry::record_conflict();
+        self.conflicts += 1;
+        *restart_conflicts += 1;
+
+        let conflict_scope = self.search_conflict_scope(&conflict);
+        if conflict_scope.decision_level == 0 {
+            self.inconsistent_assertion_level = Some(conflict_scope.assertion_level);
+            self.maybe_emit_telemetry_sample(theory);
+            return Some(SatResult::Unsat);
+        }
+
+        if conflict_scope.decision_level < self.decision_level() {
+            self.cancel_until(conflict_scope.decision_level);
+            theory.notify_backtrack(conflict_scope.decision_level);
+        }
+
+        let summary = match conflict {
+            SearchConflict::Theory(conflict) => {
+                self.analyze_theory_clause(&conflict.lits, conflict.assertion_level, learnt)
+            }
+            SearchConflict::Propagation(conflict) => self.analyze(conflict, learnt),
+        };
+
+        self.cancel_until(summary.backtrack_level);
+        theory.notify_backtrack(summary.backtrack_level);
+        self.add_learnt_clause(learnt, summary.lbd, summary.assertion_level);
+        self.var_decay_activity();
+        self.clause_decay_activity();
+
+        if self.conflicts >= *next_reduce {
+            self.reduce_db();
+            *next_reduce += 2_000;
+        }
+
+        self.maybe_emit_telemetry_sample(theory);
+        None
+    }
+
+    /// Returns the SAT decision and user assertion coordinates for one conflict.
+    fn search_conflict_scope(&self, conflict: &SearchConflict) -> SearchConflictScope {
+        match conflict {
+            SearchConflict::Theory(conflict) => self.theory_conflict_scope(conflict),
+            SearchConflict::Propagation(conflict) => self.propagation_conflict_scope(*conflict),
+        }
+    }
+
+    /// Returns the SAT decision and user assertion coordinates for one theory conflict.
+    fn theory_conflict_scope(&self, conflict: &TheoryConflict) -> SearchConflictScope {
+        let mut decision_level = 0;
+        let mut assertion_level = conflict.assertion_level;
+        for &lit in &conflict.lits {
+            let vi = lit.var().index();
+            decision_level = decision_level.max(self.sat_level[vi]);
+            assertion_level = assertion_level.max(self.user_level[vi]);
+        }
+        SearchConflictScope {
+            decision_level,
+            assertion_level,
+        }
+    }
+
+    /// Returns the SAT decision and user assertion coordinates for one propagation conflict.
+    fn propagation_conflict_scope(&self, conflict: propagate::Conflict) -> SearchConflictScope {
+        match conflict {
+            propagate::Conflict::Binary {
+                false_lit,
+                other,
+                assertion_level,
+            } => {
+                let false_vi = false_lit.var().index();
+                let other_vi = other.var().index();
+                SearchConflictScope {
+                    decision_level: self.sat_level[false_vi].max(self.sat_level[other_vi]),
+                    assertion_level: assertion_level
+                        .max(self.user_level[false_vi])
+                        .max(self.user_level[other_vi]),
+                }
+            }
+            propagate::Conflict::Clause(cid) => {
+                let header = self.clauses.header(cid);
+                let len = header.len();
+                let mut level = 0;
+                let mut assertion_level = header.assertion_level();
+                for i in 0..len {
+                    let lit = self.clauses.clause(cid).lit(i);
+                    let vi = lit.var().index();
+                    level = level.max(self.sat_level[vi]);
+                    assertion_level = assertion_level.max(self.user_level[vi]);
+                }
+                SearchConflictScope {
+                    decision_level: level,
+                    assertion_level,
+                }
+            }
+        }
     }
 }
 

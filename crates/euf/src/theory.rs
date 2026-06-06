@@ -127,10 +127,19 @@ impl EufTheory {
         loop {
             while let Some(input) = self.search.pending_merges.pop_front() {
                 self.merge_input(input);
+                if self.has_pending_conflict() {
+                    return;
+                }
                 self.repair_congruence();
+                if self.has_pending_conflict() {
+                    return;
+                }
             }
 
             self.process_pending_atom_triggers();
+            if self.has_pending_conflict() {
+                return;
+            }
 
             if self.search.pending_merges.is_empty()
                 && self.search.pending_repairs.is_empty()
@@ -139,6 +148,15 @@ impl EufTheory {
                 return;
             }
         }
+    }
+
+    /// Returns whether EUF has already produced a conflict for the current SAT
+    /// synchronization point.
+    fn has_pending_conflict(&self) -> bool {
+        self.search
+            .pending_clauses
+            .iter()
+            .any(|clause| clause.kind == TheoryClauseKind::ConflictExplanation)
     }
 
     /// Applies one input equality merge.
@@ -249,6 +267,9 @@ impl EufTheory {
             self.search.pending_atom_qhead += 1;
             self.search.atom_is_enqueued[atom.index()] = false;
             self.evaluate_atom_trigger(atom);
+            if self.has_pending_conflict() {
+                return;
+            }
         }
     }
 
