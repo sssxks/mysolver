@@ -1,3 +1,5 @@
+use std::cmp::max;
+
 use crate::Lit;
 use crate::clause_db::ClauseId;
 use crate::telemetry;
@@ -32,7 +34,7 @@ impl Solver {
         if self.not_ok() {
             return AddClauseResult::Inconsistent;
         }
-        let Some(ps) = self.prepare_clause(lits) else {
+        let Some(ps) = self.normalize_clause::<DROP_FALSE>(lits) else {
             return AddClauseResult::Satisfied;
         };
         match ps.len() {
@@ -58,67 +60,90 @@ impl Solver {
         }
     }
 
-    /// Adds one theory clause without discarding falsified literals needed as
-    /// propagation reasons under the current trail.
-    fn add_scoped_theory_clause(
+    /// Classifies one SAT-facing theory clause after reason-preserving normalization.
+    pub(crate) fn classify_theory_clause(&self, clause: &TheoryClause) -> ClassifiedTheoryClause {
+        let assertion_level = self.theory_clause_assertion_level(clause);
+        let Some(lits) = self.normalize_clause::<KEEP_FALSE>(&clause.lits) else {
+            return ClassifiedTheoryClause::Satisfied;
+        };
+
+        let mut first = None;
+        let mut second = None;
+        for (index, &lit) in lits.iter().enumerate() {
+            if self.value_lit(lit) == super::LBool::False {
+                continue;
+            }
+            if first.is_none() {
+                first = Some(index);
+            } else {
+                second = Some(index);
+                break;
+            }
+        }
+
+        match (first, second) {
+            (None, _) => ClassifiedTheoryClause::Conflict {
+                lits,
+                assertion_level,
+            },
+            (Some(unit_index), None) => ClassifiedTheoryClause::Unit {
+                lits,
+                unit_index,
+                assertion_level,
+            },
+            (Some(first), Some(second)) => ClassifiedTheoryClause::Watch {
+                lits,
+                first,
+                second,
+                assertion_level,
+            },
+        }
+    }
+
+    /// Inserts one currently unit theory clause and keeps its full reason when needed.
+    pub(crate) fn insert_unit_theory_clause(
         &mut self,
-        lits: &[Lit],
+        mut lits: Vec<Lit>,
+        unit_index: usize,
         assertion_level: AssertionLevel,
     ) -> AddClauseResult {
         if self.not_ok() {
             return AddClauseResult::Inconsistent;
         }
-        let Some(mut ps) = self.prepare_reason_clause(lits) else {
-            return AddClauseResult::Satisfied;
+        lits.swap(0, unit_index);
+
+        let reason = if lits.len() == 1 || self.unit_theory_reason_is_root_level(&lits) {
+            Reason::None
+        } else {
+            Reason::Theory(self.push_theory_reason(&lits, assertion_level))
         };
+        if !self.enqueue(lits[0], reason) {
+            self.inconsistent_assertion_level = Some(assertion_level);
+            return AddClauseResult::Inconsistent;
+        }
 
-        match classify_live_lits(&ps, |lit| self.value_lit(lit) != super::LBool::False) {
-            LiveLits::None => {
-                self.inconsistent_assertion_level = Some(assertion_level);
-                AddClauseResult::Inconsistent
-            }
-            LiveLits::One(unit_index) => {
-                ps.swap(0, unit_index);
+        AddClauseResult::Added
+    }
 
-                let reason = if ps.len() == 1 || self.unit_theory_reason_is_root_level(&ps) {
-                    Reason::None
-                } else {
-                    Reason::Theory(self.push_theory_reason(&ps, assertion_level))
-                };
-                if !self.enqueue(ps[0], reason) {
-                    self.inconsistent_assertion_level = Some(assertion_level);
-                    return AddClauseResult::Inconsistent;
-                }
-
-                AddClauseResult::Added
-            }
-            LiveLits::Many { first, second } => {
-                move_two_indices_to_front(&mut ps, first, second);
-                match ps.len() {
-                    0 | 1 => unreachable!("live count is at least two"),
-                    2 => self.attach_binary(ps[0], ps[1], assertion_level),
-                    _ => {
-                        self.attach_irredundant_long(&ps, assertion_level);
-                    }
-                }
-                AddClauseResult::Added
+    /// Inserts one theory clause with at least two currently live literals.
+    pub(crate) fn insert_watched_theory_clause(
+        &mut self,
+        mut lits: Vec<Lit>,
+        first: usize,
+        second: usize,
+        assertion_level: AssertionLevel,
+    ) -> AddClauseResult {
+        if self.not_ok() {
+            return AddClauseResult::Inconsistent;
+        }
+        move_two_indices_to_front(&mut lits, first, second);
+        match lits.len() {
+            2 => self.attach_binary(lits[0], lits[1], assertion_level),
+            _ => {
+                self.attach_irredundant_long(&lits, assertion_level);
             }
         }
-    }
-
-    /// Normalizes a clause under the current assignment.
-    ///
-    /// Satisfied clauses return `None`. Otherwise the result is sorted, duplicate-free,
-    /// and stripped of literals already known to be false. Tautologies also return
-    /// `None`.
-    pub(crate) fn prepare_clause(&self, lits: &[Lit]) -> Option<Vec<Lit>> {
-        self.normalize_clause::<DROP_FALSE>(lits)
-    }
-
-    /// Normalizes a clause while preserving currently falsified literals for use
-    /// as an implication-graph reason.
-    fn prepare_reason_clause(&self, lits: &[Lit]) -> Option<Vec<Lit>> {
-        self.normalize_clause::<KEEP_FALSE>(lits)
+        AddClauseResult::Added
     }
 
     /// Normalizes one clause under the current assignment.
@@ -267,31 +292,23 @@ impl Solver {
             .max(self.assertion_level)
     }
 
-    /// Computes the scope required for one theory explanation clause.
-    fn explanation_assertion_level(&self, lits: &[Lit]) -> AssertionLevel {
-        lits.iter()
-            .map(|lit| self.intro_level[lit.var().index()])
-            .max()
-            .unwrap_or(AssertionLevel::ROOT)
-    }
-
     /// Computes the scope required by one SAT-facing theory clause.
-    pub(crate) fn theory_clause_assertion_level(&self, clause: &TheoryClause) -> AssertionLevel {
+    fn theory_clause_assertion_level(&self, clause: &TheoryClause) -> AssertionLevel {
         match clause.kind {
             TheoryClauseKind::Input | TheoryClauseKind::Lemma => clause.assertion_level,
             TheoryClauseKind::PropagationExplanation | TheoryClauseKind::ConflictExplanation => {
                 // regression test `empty_theory_conflict_preserves_declared_scope` in crates/sat/src/lib.rs
-                clause
-                    .assertion_level
-                    .max(self.explanation_assertion_level(&clause.lits))
+                let a = {
+                    clause
+                        .lits
+                        .iter()
+                        .map(|lit| self.intro_level[lit.var().index()])
+                        .max()
+                        .unwrap_or(AssertionLevel::ROOT)
+                };
+                max(a, clause.assertion_level)
             }
         }
-    }
-
-    /// Inserts one theory clause through the reason-preserving scoped-clause path.
-    pub(crate) fn add_theory_clause(&mut self, clause: TheoryClause) -> AddClauseResult {
-        let assertion_level = self.theory_clause_assertion_level(&clause);
-        self.add_scoped_theory_clause(&clause.lits, assertion_level)
     }
 
     /// Stores one transient theory reason and returns its stable id.
@@ -319,46 +336,40 @@ impl Solver {
     }
 }
 
-/// Witnesses how many currently live literals one normalized clause contains.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum LiveLits {
-    /// Every literal is currently false.
-    None,
-    /// Exactly one literal is not currently false.
-    One(usize),
+/// The current SAT-trail state of one normalized theory clause.
+///
+/// Semantically, this is either a satisfied clause, a currently conflicting
+/// clause, a unit clause ready to propagate, or a clause ready for watching.
+pub(crate) enum ClassifiedTheoryClause {
+    /// The clause is already satisfied or tautological under the current trail.
+    Satisfied,
+    /// Every normalized literal is currently false.
+    Conflict {
+        /// Normalized falsified literals retained for conflict analysis.
+        lits: Vec<Lit>,
+        /// User scope where the conflict must remain visible.
+        assertion_level: AssertionLevel,
+    },
+    /// Exactly one normalized literal is currently not false.
+    Unit {
+        /// Normalized clause literals retained as a propagation reason.
+        lits: Vec<Lit>,
+        /// Index of the literal to enqueue.
+        unit_index: usize,
+        /// User scope where this theory clause remains valid.
+        assertion_level: AssertionLevel,
+    },
     /// At least two literals are not currently false.
-    Many {
+    Watch {
+        /// Normalized clause literals retained for future reasons.
+        lits: Vec<Lit>,
         /// Index of the first live literal.
         first: usize,
         /// Index of the second live literal.
         second: usize,
+        /// User scope where this theory clause remains valid.
+        assertion_level: AssertionLevel,
     },
-}
-
-/// Classifies live literals in one pass and keeps the witness indices.
-fn classify_live_lits(ps: &[Lit], mut is_live: impl FnMut(Lit) -> bool) -> LiveLits {
-    let mut first = None;
-
-    for (index, &lit) in ps.iter().enumerate() {
-        if !is_live(lit) {
-            continue;
-        }
-
-        match first {
-            None => first = Some(index),
-            Some(first) => {
-                return LiveLits::Many {
-                    first,
-                    second: index,
-                };
-            }
-        }
-    }
-
-    match first {
-        None => LiveLits::None,
-        Some(index) => LiveLits::One(index),
-    }
 }
 
 /// Moves two known-distinct indices to the first two positions.

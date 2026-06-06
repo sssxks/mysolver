@@ -7,6 +7,8 @@ mod propagate;
 /// Branching heuristics, backtracking, and database reduction.
 mod search;
 
+use std::ops::Range;
+
 use crate::clause_db::{ClauseArena, ClauseId};
 use crate::heap::VarHeap;
 use crate::telemetry;
@@ -14,6 +16,7 @@ use crate::telemetry;
 use crate::telemetry::Gauges;
 use crate::{AssertionLevel, Lit, Var};
 
+use self::add::ClassifiedTheoryClause;
 use self::propagate::Watcher;
 
 /// A three-valued boolean used for partial assignments.
@@ -62,7 +65,7 @@ pub(crate) struct TheoryReason {
 impl TheoryReason {
     /// Returns the literal range backing this transient reason.
     #[inline(always)]
-    fn range(self) -> std::ops::Range<usize> {
+    fn range(self) -> Range<usize> {
         let start = self.start as usize;
         let len = self.len as usize;
         start..start + len
@@ -123,7 +126,7 @@ pub struct TheoryClause {
 /// One theory explanation clause that is already conflicting under the current
 /// SAT trail and therefore must enter CDCL conflict analysis directly.
 #[derive(Clone, Debug)]
-struct PendingTheoryConflict {
+struct TheoryConflict {
     /// Falsified theory-clause literals under the current trail.
     lits: Box<[Lit]>,
     /// User scope carried by the theory explanation.
@@ -134,9 +137,18 @@ struct PendingTheoryConflict {
 #[derive(Clone, Debug)]
 enum SearchConflict {
     /// Conflict emitted directly by a theory callback.
-    Theory(PendingTheoryConflict),
+    Theory(TheoryConflict),
     /// Conflict found by watched-literal propagation.
     Propagation(propagate::Conflict),
+}
+
+/// SAT and user-scope coordinates for one search conflict.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+struct SearchConflictScope {
+    /// Highest SAT decision level occurring in the conflict clause.
+    decision_level: usize,
+    /// User assertion level where a root-level conflict remains visible.
+    assertion_level: AssertionLevel,
 }
 
 /// The minimal CDCL(T) callback surface consumed by the SAT engine.
@@ -584,7 +596,7 @@ impl Solver {
         theory: &mut T,
         final_check: bool,
         out: &mut Vec<TheoryClause>,
-    ) -> Option<PendingTheoryConflict> {
+    ) -> Option<TheoryConflict> {
         out.clear();
         if final_check {
             theory.final_check(out);
@@ -593,17 +605,34 @@ impl Solver {
         }
 
         for clause in out.drain(..) {
-            if self
-                .prepare_clause(&clause.lits)
-                .is_some_and(|prepared| prepared.is_empty())
-            {
-                let assertion_level = self.theory_clause_assertion_level(&clause);
-                return Some(PendingTheoryConflict {
-                    lits: clause.lits,
+            match self.classify_theory_clause(&clause) {
+                ClassifiedTheoryClause::Satisfied => {}
+                ClassifiedTheoryClause::Conflict {
+                    lits,
                     assertion_level,
-                });
+                } => {
+                    return Some(TheoryConflict {
+                        lits: lits.into_boxed_slice(),
+                        assertion_level,
+                    });
+                }
+                ClassifiedTheoryClause::Unit {
+                    lits,
+                    unit_index,
+                    assertion_level,
+                } => {
+                    let _ = self.insert_unit_theory_clause(lits, unit_index, assertion_level);
+                }
+                ClassifiedTheoryClause::Watch {
+                    lits,
+                    first,
+                    second,
+                    assertion_level,
+                } => {
+                    let _ =
+                        self.insert_watched_theory_clause(lits, first, second, assertion_level);
+                }
             }
-            let _ = self.add_theory_clause(clause);
         }
         None
     }
@@ -621,17 +650,16 @@ impl Solver {
         self.conflicts += 1;
         *restart_conflicts += 1;
 
-        let conflict_level = self.search_conflict_level(&conflict);
-        if conflict_level == 0 {
-            self.inconsistent_assertion_level =
-                Some(self.search_conflict_assertion_level(&conflict));
+        let conflict_scope = self.search_conflict_scope(&conflict);
+        if conflict_scope.decision_level == 0 {
+            self.inconsistent_assertion_level = Some(conflict_scope.assertion_level);
             self.maybe_emit_telemetry_sample(theory);
             return Some(SatResult::Unsat);
         }
 
-        if conflict_level < self.decision_level() {
-            self.cancel_until(conflict_level);
-            theory.notify_backtrack(conflict_level);
+        if conflict_scope.decision_level < self.decision_level() {
+            self.cancel_until(conflict_scope.decision_level);
+            theory.notify_backtrack(conflict_scope.decision_level);
         }
 
         let summary = match conflict {
@@ -656,45 +684,52 @@ impl Solver {
         None
     }
 
-    /// Returns the highest SAT decision level present in one search conflict.
-    fn search_conflict_level(&self, conflict: &SearchConflict) -> usize {
+    /// Returns the SAT decision and user assertion coordinates for one conflict.
+    fn search_conflict_scope(&self, conflict: &SearchConflict) -> SearchConflictScope {
         match conflict {
-            SearchConflict::Theory(conflict) => self.theory_conflict_level(&conflict.lits),
-            SearchConflict::Propagation(conflict) => self.propagation_conflict_level(*conflict),
+            SearchConflict::Theory(conflict) => self.theory_conflict_scope(conflict),
+            SearchConflict::Propagation(conflict) => self.propagation_conflict_scope(*conflict),
         }
     }
 
-    /// Returns the user assertion level to mark inconsistent for a root conflict.
-    fn search_conflict_assertion_level(&self, conflict: &SearchConflict) -> AssertionLevel {
-        match conflict {
-            SearchConflict::Theory(conflict) => conflict.assertion_level,
-            SearchConflict::Propagation(_) => self.assertion_level,
-        }
-    }
-
-    /// Returns the highest SAT decision level present in a falsified theory
-    /// conflict clause.
-    fn theory_conflict_level(&self, lits: &[Lit]) -> usize {
-        lits.iter()
+    /// Returns the SAT decision and user assertion coordinates for one theory conflict.
+    fn theory_conflict_scope(&self, conflict: &TheoryConflict) -> SearchConflictScope {
+        let decision_level = conflict
+            .lits
+            .iter()
             .map(|lit| self.sat_level[lit.var().index()])
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0);
+        SearchConflictScope {
+            decision_level,
+            assertion_level: conflict.assertion_level,
+        }
     }
 
-    /// Returns the highest SAT decision level present in a propagation conflict.
-    fn propagation_conflict_level(&self, conflict: propagate::Conflict) -> usize {
+    /// Returns the SAT decision and user assertion coordinates for one propagation conflict.
+    fn propagation_conflict_scope(&self, conflict: propagate::Conflict) -> SearchConflictScope {
         match conflict {
             propagate::Conflict::Binary {
-                false_lit, other, ..
-            } => self.sat_level[false_lit.var().index()].max(self.sat_level[other.var().index()]),
+                false_lit,
+                other,
+                assertion_level,
+            } => SearchConflictScope {
+                decision_level: self.sat_level[false_lit.var().index()]
+                    .max(self.sat_level[other.var().index()]),
+                assertion_level,
+            },
             propagate::Conflict::Clause(cid) => {
-                let len = self.clauses.header(cid).len();
+                let header = self.clauses.header(cid);
+                let len = header.len();
                 let mut level = 0;
                 for i in 0..len {
                     let lit = self.clauses.clause(cid).lit(i);
                     level = level.max(self.sat_level[lit.var().index()]);
                 }
-                level
+                SearchConflictScope {
+                    decision_level: level,
+                    assertion_level: header.assertion_level(),
+                }
             }
         }
     }

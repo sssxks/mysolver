@@ -271,4 +271,27 @@ mod tests {
         let mut noop = NoopTheory;
         assert_eq!(s.solve_with_assumptions(&[], &mut noop), SatResult::Sat);
     }
+
+    #[test]
+    fn root_long_propagation_conflict_survives_deeper_pop() {
+        let mut s = Solver::new();
+        let a = s.new_var();
+        let b = s.new_var();
+        let c = s.new_var();
+        assert_eq!(
+            s.add_clause(&[lit(a), lit(b), lit(c)]),
+            AddClauseResult::Added
+        );
+        assert_eq!(s.add_clause(&[nlit(a)]), AddClauseResult::Added);
+        assert_eq!(s.add_clause(&[nlit(b)]), AddClauseResult::Added);
+        assert_eq!(s.add_clause(&[nlit(c)]), AddClauseResult::Added);
+
+        s.push();
+        let mut noop = NoopTheory;
+        assert_eq!(s.solve_with_assumptions(&[], &mut noop), SatResult::Unsat);
+
+        s.pop(1).expect("unrelated deeper frame should exist");
+
+        assert_eq!(s.solve_with_assumptions(&[], &mut noop), SatResult::Unsat);
+    }
 }
