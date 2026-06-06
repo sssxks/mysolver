@@ -3,8 +3,14 @@ use crate::clause_db::ClauseId;
 use crate::telemetry;
 
 use super::propagate::Watcher;
-use super::{AddClauseResult, ClauseOrigin, Reason, Solver, TheoryClause, TheoryClauseKind};
+use super::{AddClauseResult, Reason, Solver, TheoryClause, TheoryClauseKind};
 use crate::AssertionLevel;
+
+/// Drop false literals during ordinary clause normalization.
+const DROP_FALSE: bool = false;
+
+/// Keep false literals so theory clauses can become full implication-graph reasons.
+const KEEP_FALSE: bool = true;
 
 impl Solver {
     /// Adds a CNF clause to the database.
@@ -14,19 +20,14 @@ impl Solver {
     /// clauses are ignored.
     pub fn add_clause(&mut self, lits: &[Lit]) -> AddClauseResult {
         self.reset_search();
-        self.add_scoped_clause(
-            lits,
-            self.current_clause_assertion_level(lits),
-            ClauseOrigin::Input,
-        )
+        self.add_scoped_clause(lits, self.current_clause_assertion_level(lits))
     }
 
-    /// Adds one clause carrying an explicit user-scope level and origin.
+    /// Adds one input clause carrying an explicit user-scope level.
     fn add_scoped_clause(
         &mut self,
         lits: &[Lit],
         assertion_level: AssertionLevel,
-        origin: ClauseOrigin,
     ) -> AddClauseResult {
         if !self.ok {
             if self
@@ -59,14 +60,7 @@ impl Solver {
                 AddClauseResult::Added
             }
             _ => {
-                match origin {
-                    ClauseOrigin::Input | ClauseOrigin::Theory => {
-                        self.attach_irredundant_long(&ps, assertion_level);
-                    }
-                    ClauseOrigin::Learnt => {
-                        unreachable!("learned long clauses use add_learnt_clause")
-                    }
-                }
+                self.attach_irredundant_long(&ps, assertion_level);
                 AddClauseResult::Added
             }
         }
@@ -134,44 +128,31 @@ impl Solver {
     /// and stripped of literals already known to be false. Tautologies also return
     /// `None`.
     pub(crate) fn prepare_clause(&self, lits: &[Lit]) -> Option<Vec<Lit>> {
-        let mut ps = Vec::with_capacity(lits.len());
-        for &lit in lits {
-            match self.value_lit(lit) {
-                super::LBool::True => return None,
-                super::LBool::False => {}
-                super::LBool::Undef => ps.push(lit),
-            }
-        }
-
-        ps.sort_unstable_by_key(|lit| lit.index());
-
-        let mut out = Vec::with_capacity(ps.len());
-        let mut prev: Option<Lit> = None;
-        for lit in ps {
-            if prev == Some(lit) {
-                continue;
-            }
-            if let Some(p) = prev
-                && p.var() == lit.var()
-                && p.is_negated() != lit.is_negated()
-            {
-                return None;
-            }
-            out.push(lit);
-            prev = Some(lit);
-        }
-        Some(out)
+        self.normalize_clause::<DROP_FALSE>(lits)
     }
 
     /// Normalizes a clause while preserving currently falsified literals for use
     /// as an implication-graph reason.
     fn prepare_reason_clause(&self, lits: &[Lit]) -> Option<Vec<Lit>> {
+        self.normalize_clause::<KEEP_FALSE>(lits)
+    }
+
+    /// Normalizes one clause under the current assignment.
+    ///
+    /// The returned clause is sorted and duplicate-free. Tautological clauses and
+    /// clauses already satisfied by the current assignment return `None`.
+    fn normalize_clause<const KEEP_FALSE_LITERALS: bool>(&self, lits: &[Lit]) -> Option<Vec<Lit>> {
         let mut ps = Vec::with_capacity(lits.len());
         for &lit in lits {
-            if self.value_lit(lit) == super::LBool::True {
-                return None;
+            match self.value_lit(lit) {
+                super::LBool::True => return None,
+                super::LBool::False => {
+                    if KEEP_FALSE_LITERALS {
+                        ps.push(lit);
+                    }
+                }
+                super::LBool::Undef => ps.push(lit),
             }
-            ps.push(lit);
         }
 
         ps.sort_unstable_by_key(|lit| lit.index());

@@ -130,6 +130,15 @@ struct PendingTheoryConflict {
     assertion_level: AssertionLevel,
 }
 
+/// One conflict source waiting for root-level handling or first-UIP analysis.
+#[derive(Clone, Debug)]
+enum SearchConflict {
+    /// Conflict emitted directly by a theory callback.
+    Theory(PendingTheoryConflict),
+    /// Conflict found by watched-literal propagation.
+    Propagation(propagate::Conflict),
+}
+
 /// The minimal CDCL(T) callback surface consumed by the SAT engine.
 pub trait Theory {
     /// Called once at the start of each SAT search.
@@ -161,18 +170,6 @@ pub trait Theory {
             euf: telemetry::EufGauges::default(),
         });
     }
-}
-
-/// Clause origin classification used while inserting scoped clauses.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-#[allow(dead_code)]
-pub(crate) enum ClauseOrigin {
-    /// User-input clause.
-    Input,
-    /// Theory-generated clause.
-    Theory,
-    /// Learned clause from conflict analysis.
-    Learnt,
 }
 
 /// One pushed user-level assertion frame.
@@ -424,6 +421,7 @@ impl Solver {
         theory: &mut T,
     ) -> SatResult {
         self.reset_search();
+
         let (live_irredundant_clauses, _) = self.clauses.live_clause_counts();
         let watcher_entries = self.watches.iter().map(Vec::len).sum::<usize>();
         telemetry::initialize_solver_gauges(live_irredundant_clauses, watcher_entries);
@@ -435,6 +433,7 @@ impl Solver {
             self.ok = false;
             return SatResult::Unsat;
         }
+
         self.ok = true;
 
         theory.notify_search_start();
@@ -450,110 +449,42 @@ impl Solver {
         loop {
             self.notify_theory_assignments(theory);
             if let Some(conflict) = self.flush_theory_clauses(theory, false, &mut theory_clauses) {
-                let conflict_level = self.theory_conflict_level(&conflict.lits);
-                if conflict_level == 0 {
-                    self.ok = false;
-                    self.inconsistent_assertion_level = Some(conflict.assertion_level);
-                    self.maybe_emit_telemetry_sample(theory);
-                    return SatResult::Unsat;
-                }
-
-                telemetry::record_conflict();
-                self.conflicts += 1;
-                restart_conflicts += 1;
-
-                if conflict_level < self.decision_level() {
-                    self.cancel_until(conflict_level);
-                    theory.notify_backtrack(conflict_level);
-                }
-                let summary = self.analyze_theory_clause(
-                    &conflict.lits,
-                    conflict.assertion_level,
+                if let Some(result) = self.handle_search_conflict(
+                    SearchConflict::Theory(conflict),
+                    theory,
                     &mut learnt,
-                );
-                self.cancel_until(summary.backtrack_level);
-                theory.notify_backtrack(summary.backtrack_level);
-                self.add_learnt_clause(&learnt, summary.lbd, summary.assertion_level);
-                self.var_decay_activity();
-                self.clause_decay_activity();
-
-                if self.conflicts >= next_reduce {
-                    self.reduce_db();
-                    next_reduce += 2_000;
+                    &mut restart_conflicts,
+                    &mut next_reduce,
+                ) {
+                    return result;
                 }
-
-                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
             if let Some(conflict) = self.propagate() {
-                telemetry::record_conflict();
-                self.conflicts += 1;
-                restart_conflicts += 1;
-
-                let conflict_level = self.propagation_conflict_level(conflict);
-                if conflict_level == 0 {
-                    self.ok = false;
-                    self.inconsistent_assertion_level = Some(self.assertion_level);
-                    self.maybe_emit_telemetry_sample(theory);
-                    return SatResult::Unsat;
+                if let Some(result) = self.handle_search_conflict(
+                    SearchConflict::Propagation(conflict),
+                    theory,
+                    &mut learnt,
+                    &mut restart_conflicts,
+                    &mut next_reduce,
+                ) {
+                    return result;
                 }
-
-                if conflict_level < self.decision_level() {
-                    self.cancel_until(conflict_level);
-                    theory.notify_backtrack(conflict_level);
-                }
-                let summary = self.analyze(conflict, &mut learnt);
-                self.cancel_until(summary.backtrack_level);
-                theory.notify_backtrack(summary.backtrack_level);
-                self.add_learnt_clause(&learnt, summary.lbd, summary.assertion_level);
-                self.var_decay_activity();
-                self.clause_decay_activity();
-
-                if self.conflicts >= next_reduce {
-                    self.reduce_db();
-                    next_reduce += 2_000;
-                }
-
-                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
             self.notify_theory_assignments(theory);
             if let Some(conflict) = self.flush_theory_clauses(theory, true, &mut theory_clauses) {
-                let conflict_level = self.theory_conflict_level(&conflict.lits);
-                if conflict_level == 0 {
-                    self.ok = false;
-                    self.inconsistent_assertion_level = Some(conflict.assertion_level);
-                    self.maybe_emit_telemetry_sample(theory);
-                    return SatResult::Unsat;
-                }
-
-                telemetry::record_conflict();
-                self.conflicts += 1;
-                restart_conflicts += 1;
-
-                if conflict_level < self.decision_level() {
-                    self.cancel_until(conflict_level);
-                    theory.notify_backtrack(conflict_level);
-                }
-                let summary = self.analyze_theory_clause(
-                    &conflict.lits,
-                    conflict.assertion_level,
+                if let Some(result) = self.handle_search_conflict(
+                    SearchConflict::Theory(conflict),
+                    theory,
                     &mut learnt,
-                );
-                self.cancel_until(summary.backtrack_level);
-                theory.notify_backtrack(summary.backtrack_level);
-                self.add_learnt_clause(&learnt, summary.lbd, summary.assertion_level);
-                self.var_decay_activity();
-                self.clause_decay_activity();
-
-                if self.conflicts >= next_reduce {
-                    self.reduce_db();
-                    next_reduce += 2_000;
+                    &mut restart_conflicts,
+                    &mut next_reduce,
+                ) {
+                    return result;
                 }
-
-                self.maybe_emit_telemetry_sample(theory);
                 continue;
             }
 
@@ -677,6 +608,71 @@ impl Solver {
             let _ = self.add_theory_clause(clause);
         }
         None
+    }
+
+    /// Handles one conflict through either root-level UNSAT or first-UIP learning.
+    fn handle_search_conflict<T: Theory>(
+        &mut self,
+        conflict: SearchConflict,
+        theory: &mut T,
+        learnt: &mut Vec<Lit>,
+        restart_conflicts: &mut usize,
+        next_reduce: &mut usize,
+    ) -> Option<SatResult> {
+        telemetry::record_conflict();
+        self.conflicts += 1;
+        *restart_conflicts += 1;
+
+        let conflict_level = self.search_conflict_level(&conflict);
+        if conflict_level == 0 {
+            self.ok = false;
+            self.inconsistent_assertion_level =
+                Some(self.search_conflict_assertion_level(&conflict));
+            self.maybe_emit_telemetry_sample(theory);
+            return Some(SatResult::Unsat);
+        }
+
+        if conflict_level < self.decision_level() {
+            self.cancel_until(conflict_level);
+            theory.notify_backtrack(conflict_level);
+        }
+
+        let summary = match conflict {
+            SearchConflict::Theory(conflict) => {
+                self.analyze_theory_clause(&conflict.lits, conflict.assertion_level, learnt)
+            }
+            SearchConflict::Propagation(conflict) => self.analyze(conflict, learnt),
+        };
+
+        self.cancel_until(summary.backtrack_level);
+        theory.notify_backtrack(summary.backtrack_level);
+        self.add_learnt_clause(learnt, summary.lbd, summary.assertion_level);
+        self.var_decay_activity();
+        self.clause_decay_activity();
+
+        if self.conflicts >= *next_reduce {
+            self.reduce_db();
+            *next_reduce += 2_000;
+        }
+
+        self.maybe_emit_telemetry_sample(theory);
+        None
+    }
+
+    /// Returns the highest SAT decision level present in one search conflict.
+    fn search_conflict_level(&self, conflict: &SearchConflict) -> usize {
+        match conflict {
+            SearchConflict::Theory(conflict) => self.theory_conflict_level(&conflict.lits),
+            SearchConflict::Propagation(conflict) => self.propagation_conflict_level(*conflict),
+        }
+    }
+
+    /// Returns the user assertion level to mark inconsistent for a root conflict.
+    fn search_conflict_assertion_level(&self, conflict: &SearchConflict) -> AssertionLevel {
+        match conflict {
+            SearchConflict::Theory(conflict) => conflict.assertion_level,
+            SearchConflict::Propagation(_) => self.assertion_level,
+        }
     }
 
     /// Returns the highest SAT decision level present in a falsified theory
