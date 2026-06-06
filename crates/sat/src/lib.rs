@@ -106,6 +106,39 @@ mod tests {
         }
     }
 
+    struct EmptyScopedConflictTheory {
+        assertion_level: AssertionLevel,
+        emitted: bool,
+    }
+
+    impl Theory for EmptyScopedConflictTheory {
+        fn notify_search_start(&mut self) {}
+
+        fn notify_new_decision_level(&mut self) {}
+
+        fn notify_assignment(&mut self, _lit: Lit) {}
+
+        fn notify_backtrack(&mut self, _level: usize) {}
+
+        fn drain_clauses(&mut self, _out: &mut Vec<TheoryClause>) {}
+
+        fn final_check(&mut self, out: &mut Vec<TheoryClause>) {
+            if self.emitted {
+                return;
+            }
+            self.emitted = true;
+            out.push(TheoryClause {
+                lits: Box::from([]),
+                assertion_level: self.assertion_level,
+                kind: TheoryClauseKind::ConflictExplanation,
+            });
+        }
+
+        fn has_pending_work(&self) -> bool {
+            false
+        }
+    }
+
     fn lit(v: Var) -> Lit {
         Lit::new(v, false)
     }
@@ -216,5 +249,26 @@ mod tests {
 
         assert_eq!(s.solve_with_assumptions(&[], &mut theory), SatResult::Sat);
         assert_eq!(s.value_lit_public(premise), Some(false));
+    }
+
+    #[test]
+    fn empty_theory_conflict_preserves_declared_scope() {
+        let mut s = Solver::new();
+        s.push();
+        let scoped_level = s.current_assertion_level();
+        let mut conflict_theory = EmptyScopedConflictTheory {
+            assertion_level: scoped_level,
+            emitted: false,
+        };
+
+        assert_eq!(
+            s.solve_with_assumptions(&[], &mut conflict_theory),
+            SatResult::Unsat
+        );
+
+        s.pop(1).expect("scoped conflict frame should exist");
+
+        let mut noop = NoopTheory;
+        assert_eq!(s.solve_with_assumptions(&[], &mut noop), SatResult::Sat);
     }
 }

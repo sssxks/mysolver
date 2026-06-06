@@ -315,12 +315,15 @@ impl Solver {
         match clause.kind {
             TheoryClauseKind::Input | TheoryClauseKind::Lemma => clause.assertion_level,
             TheoryClauseKind::PropagationExplanation | TheoryClauseKind::ConflictExplanation => {
-                self.explanation_assertion_level(&clause.lits)
+                // regression test `empty_theory_conflict_preserves_declared_scope` in crates/sat/src/lib.rs
+                clause
+                    .assertion_level
+                    .max(self.explanation_assertion_level(&clause.lits))
             }
         }
     }
 
-    /// Inserts one theory clause through the ordinary scoped-clause path.
+    /// Inserts one theory clause through the reason-preserving scoped-clause path.
     pub(crate) fn add_theory_clause(&mut self, clause: TheoryClause) -> AddClauseResult {
         let assertion_level = self.theory_clause_assertion_level(&clause);
         self.add_scoped_theory_clause(&clause.lits, assertion_level)

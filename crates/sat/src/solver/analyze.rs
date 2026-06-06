@@ -116,15 +116,9 @@ impl Solver {
 
             let p = loop {
                 if trail_idx == 0 {
-                    trail_idx = self.trail.len();
-                    let Some(index) = (0..trail_idx)
-                        .rev()
-                        .find(|&index| self.seen[self.trail[index].var().index()])
-                    else {
-                        panic!("conflict analysis lost all marked current-level literals");
-                    };
-                    trail_idx = index;
-                    break self.trail[index];
+                    panic!(
+                        "conflict analysis ran out of earlier marked literals; reason sources must precede propagated literals on the trail"
+                    );
                 }
                 trail_idx -= 1;
                 let p = self.trail[trail_idx];
