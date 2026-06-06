@@ -117,7 +117,17 @@ pub enum TheoryClauseKind {
 pub struct TheoryClause {
     /// Fully explained clause over SAT literals.
     pub lits: Box<[Lit]>,
-    /// User level where this clause must remain valid.
+    /// Shallowest user assertion level where this clause is valid.
+    ///
+    /// The theory producer must set this to at least the deepest `push()` frame
+    /// that any non-literal dependency of the clause relies on. For input clauses
+    /// and general theory lemmas, SAT uses this field as the clause scope. For
+    /// propagation and conflict explanations, SAT also raises the stored scope to
+    /// cover variables appearing in `lits`, but empty explanations and dependencies
+    /// not represented by literals still rely on this value. Under-reporting this
+    /// level is unsound because learned clauses may survive a `pop()` that removes
+    /// their justification; over-reporting is sound but prevents reuse in shallower
+    /// scopes.
     pub assertion_level: AssertionLevel,
     /// Classification used only for metrics and debugging.
     pub kind: TheoryClauseKind,

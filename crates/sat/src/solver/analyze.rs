@@ -472,7 +472,7 @@ impl Solver {
 #[cfg(test)]
 mod tests {
     use super::Solver;
-    use crate::{AddClauseResult, Lit, Var};
+    use crate::{AddClauseResult, AssertionLevel, Lit, TheoryClause, TheoryClauseKind, Var};
 
     fn lit(index: usize) -> Lit {
         Lit::new(Var::from_index(index), false)
@@ -480,6 +480,49 @@ mod tests {
 
     fn nlit(index: usize) -> Lit {
         Lit::new(Var::from_index(index), true)
+    }
+
+    #[test]
+    fn unit_theory_propagation_keeps_its_reason_clause() {
+        let mut solver = Solver::with_vars(3);
+        let premise = lit(0);
+        let left = lit(1);
+        let right = lit(2);
+
+        solver.new_decision_level();
+        assert!(solver.enqueue(premise, super::Reason::None));
+
+        for propagated in [left, right] {
+            let clause = TheoryClause {
+                lits: Box::from([!premise, propagated]),
+                assertion_level: AssertionLevel::ROOT,
+                kind: TheoryClauseKind::PropagationExplanation,
+            };
+            let crate::solver::add::ClassifiedTheoryClause::Unit {
+                lits,
+                unit_index,
+                assertion_level,
+            } = solver.classify_theory_clause(&clause)
+            else {
+                panic!("premise should make the theory explanation unit");
+            };
+            assert_eq!(
+                solver.insert_unit_theory_clause(lits, unit_index, assertion_level),
+                AddClauseResult::Added
+            );
+            assert!(
+                matches!(solver.reason[propagated.var().index()], super::Reason::Theory(_)),
+                "non-root theory propagation must retain its explanation as the assignment reason"
+            );
+        }
+
+        let mut learnt = Vec::new();
+        let summary =
+            solver.analyze_theory_clause(&[!left, !right], AssertionLevel::ROOT, &mut learnt);
+
+        assert_eq!(learnt, [!premise]);
+        assert_eq!(summary.backtrack_level, 0);
+        assert_eq!(summary.assertion_level, AssertionLevel::ROOT);
     }
 
     #[test]

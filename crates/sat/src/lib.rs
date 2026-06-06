@@ -48,18 +48,19 @@ mod tests {
         }
     }
 
-    struct ImplicationConflictTheory {
+    struct TwoPropagationConflictTheory {
         premise: Lit,
-        propagated: Lit,
+        left: Lit,
+        right: Lit,
         saw_premise: bool,
-        emitted_implication: bool,
+        emitted_propagations: bool,
         emitted_conflict: bool,
     }
 
-    impl Theory for ImplicationConflictTheory {
+    impl Theory for TwoPropagationConflictTheory {
         fn notify_search_start(&mut self) {
             self.saw_premise = false;
-            self.emitted_implication = false;
+            self.emitted_propagations = false;
             self.emitted_conflict = false;
         }
 
@@ -74,16 +75,21 @@ mod tests {
         fn notify_backtrack(&mut self, level: usize) {
             if level == 0 {
                 self.saw_premise = false;
-                self.emitted_implication = false;
+                self.emitted_propagations = false;
                 self.emitted_conflict = false;
             }
         }
 
         fn drain_clauses(&mut self, out: &mut Vec<TheoryClause>) {
-            if self.saw_premise && !self.emitted_implication {
-                self.emitted_implication = true;
+            if self.saw_premise && !self.emitted_propagations {
+                self.emitted_propagations = true;
                 out.push(TheoryClause {
-                    lits: Box::from([!self.premise, self.propagated]),
+                    lits: Box::from([!self.premise, self.left]),
+                    assertion_level: AssertionLevel::ROOT,
+                    kind: TheoryClauseKind::PropagationExplanation,
+                });
+                out.push(TheoryClause {
+                    lits: Box::from([!self.premise, self.right]),
                     assertion_level: AssertionLevel::ROOT,
                     kind: TheoryClauseKind::PropagationExplanation,
                 });
@@ -91,10 +97,10 @@ mod tests {
         }
 
         fn final_check(&mut self, out: &mut Vec<TheoryClause>) {
-            if self.saw_premise && self.emitted_implication && !self.emitted_conflict {
+            if self.saw_premise && self.emitted_propagations && !self.emitted_conflict {
                 self.emitted_conflict = true;
                 out.push(TheoryClause {
-                    lits: Box::from([!self.propagated]),
+                    lits: Box::from([!self.left, !self.right]),
                     assertion_level: AssertionLevel::ROOT,
                     kind: TheoryClauseKind::ConflictExplanation,
                 });
@@ -102,7 +108,7 @@ mod tests {
         }
 
         fn has_pending_work(&self) -> bool {
-            self.saw_premise && !self.emitted_implication
+            self.saw_premise && !self.emitted_propagations
         }
     }
 
@@ -235,23 +241,6 @@ mod tests {
     }
 
     #[test]
-    fn unit_theory_propagation_keeps_its_reason_clause() {
-        let mut s = Solver::new();
-        let premise = lit(s.new_var());
-        let propagated = lit(s.new_var());
-        let mut theory = ImplicationConflictTheory {
-            premise,
-            propagated,
-            saw_premise: false,
-            emitted_implication: false,
-            emitted_conflict: false,
-        };
-
-        assert_eq!(s.solve_with_assumptions(&[], &mut theory), SatResult::Sat);
-        assert_eq!(s.value_lit_public(premise), Some(false));
-    }
-
-    #[test]
     fn empty_theory_conflict_preserves_declared_scope() {
         let mut s = Solver::new();
         s.push();
@@ -323,14 +312,16 @@ mod tests {
     fn scoped_root_theory_premise_does_not_make_root_globally_unsat() {
         let mut s = Solver::new();
         let premise = lit(s.new_var());
-        let propagated = lit(s.new_var());
+        let left = lit(s.new_var());
+        let right = lit(s.new_var());
         s.push();
         assert_eq!(s.add_clause(&[premise]), AddClauseResult::Added);
-        let mut theory = ImplicationConflictTheory {
+        let mut theory = TwoPropagationConflictTheory {
             premise,
-            propagated,
+            left,
+            right,
             saw_premise: false,
-            emitted_implication: false,
+            emitted_propagations: false,
             emitted_conflict: false,
         };
 
