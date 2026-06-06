@@ -372,8 +372,8 @@ pub enum TheoryClauseKind {
 /// Incremental SAT solver state.
 #[derive(Debug)]
 pub struct Solver {
-    /// Formula consistency at the current user level.
-    ok: bool,
+    /// The shallowest user scope currently known to be immediately inconsistent.
+    inconsistent_assertion_level: Option<AssertionLevel>,
 
     /// Current user assertion level.
     assertion_level: AssertionLevel,

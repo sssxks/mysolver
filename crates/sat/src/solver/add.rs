@@ -29,27 +29,19 @@ impl Solver {
         lits: &[Lit],
         assertion_level: AssertionLevel,
     ) -> AddClauseResult {
-        if !self.ok {
-            if self
-                .inconsistent_assertion_level
-                .is_some_and(|level| level <= self.assertion_level)
-            {
-                return AddClauseResult::Inconsistent;
-            }
-            self.ok = true;
+        if self.ok() {
+            return AddClauseResult::Inconsistent;
         }
         let Some(ps) = self.prepare_clause(lits) else {
             return AddClauseResult::Satisfied;
         };
         match ps.len() {
             0 => {
-                self.ok = false;
                 self.inconsistent_assertion_level = Some(assertion_level);
                 AddClauseResult::Inconsistent
             }
             1 => {
                 if !self.enqueue(ps[0], Reason::None) {
-                    self.ok = false;
                     self.inconsistent_assertion_level = Some(assertion_level);
                     return AddClauseResult::Inconsistent;
                 }
@@ -73,14 +65,8 @@ impl Solver {
         lits: &[Lit],
         assertion_level: AssertionLevel,
     ) -> AddClauseResult {
-        if !self.ok {
-            if self
-                .inconsistent_assertion_level
-                .is_some_and(|level| level <= self.assertion_level)
-            {
-                return AddClauseResult::Inconsistent;
-            }
-            self.ok = true;
+        if self.ok() {
+            return AddClauseResult::Inconsistent;
         }
         let Some(mut ps) = self.prepare_reason_clause(lits) else {
             return AddClauseResult::Satisfied;
@@ -88,7 +74,6 @@ impl Solver {
 
         match classify_live_lits(&ps, |lit| self.value_lit(lit) != super::LBool::False) {
             LiveLits::None => {
-                self.ok = false;
                 self.inconsistent_assertion_level = Some(assertion_level);
                 AddClauseResult::Inconsistent
             }
@@ -101,7 +86,6 @@ impl Solver {
                     Reason::Theory(self.push_theory_reason(&ps, assertion_level))
                 };
                 if !self.enqueue(ps[0], reason) {
-                    self.ok = false;
                     self.inconsistent_assertion_level = Some(assertion_level);
                     return AddClauseResult::Inconsistent;
                 }

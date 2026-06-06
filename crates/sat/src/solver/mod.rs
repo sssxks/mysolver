@@ -195,8 +195,6 @@ pub(crate) struct AnalyzeSummary {
 /// A CDCL SAT solver over CNF formulas.
 #[derive(Debug)]
 pub struct Solver {
-    /// Whether the clause database is still known to be consistent.
-    ok: bool,
     /// The shallowest user scope currently known to be immediately inconsistent.
     inconsistent_assertion_level: Option<AssertionLevel>,
     /// Current user assertion level.
@@ -281,7 +279,6 @@ impl Solver {
     /// Creates an empty solver with no variables or clauses.
     pub fn new() -> Self {
         Self {
-            ok: true,
             inconsistent_assertion_level: None,
             assertion_level: AssertionLevel::ROOT,
             user_frames: Vec::new(),
@@ -358,6 +355,13 @@ impl Solver {
         self.trail_lim.len()
     }
 
+    /// Returns whether a remembered inconsistency is active in the current user scope.
+    #[inline(always)]
+    fn ok(&self) -> bool {
+        self.inconsistent_assertion_level
+            .is_some_and(|level| level <= self.assertion_level)
+    }
+
     /// Returns the current user assertion level.
     #[cfg(test)]
     pub(crate) fn current_assertion_level(&self) -> AssertionLevel {
@@ -383,7 +387,7 @@ impl Solver {
     /// not literal satisfaction.
     #[cfg(test)]
     pub(crate) fn model(&self) -> Option<Vec<bool>> {
-        if !self.ok || self.assigned_count != self.nvars {
+        if self.ok() || self.assigned_count != self.nvars {
             return None;
         }
         Some(self.assigns.iter().map(|v| *v == LBool::True).collect())
@@ -426,15 +430,9 @@ impl Solver {
         let watcher_entries = self.watches.iter().map(Vec::len).sum::<usize>();
         telemetry::initialize_solver_gauges(live_irredundant_clauses, watcher_entries);
 
-        if self
-            .inconsistent_assertion_level
-            .is_some_and(|level| level <= self.assertion_level)
-        {
-            self.ok = false;
+        if self.ok() {
             return SatResult::Unsat;
         }
-
-        self.ok = true;
 
         theory.notify_search_start();
 
@@ -625,7 +623,6 @@ impl Solver {
 
         let conflict_level = self.search_conflict_level(&conflict);
         if conflict_level == 0 {
-            self.ok = false;
             self.inconsistent_assertion_level =
                 Some(self.search_conflict_assertion_level(&conflict));
             self.maybe_emit_telemetry_sample(theory);

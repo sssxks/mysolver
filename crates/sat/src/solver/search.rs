@@ -134,7 +134,6 @@ impl Solver {
             .is_some_and(|level| level > new_level)
         {
             self.inconsistent_assertion_level = None;
-            self.ok = true;
         }
         while self
             .user_frames
