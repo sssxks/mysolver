@@ -357,7 +357,7 @@ impl Solver {
 
     /// Returns whether a remembered inconsistency is active in the current user scope.
     #[inline(always)]
-    fn ok(&self) -> bool {
+    fn not_ok(&self) -> bool {
         self.inconsistent_assertion_level
             .is_some_and(|level| level <= self.assertion_level)
     }
@@ -387,7 +387,7 @@ impl Solver {
     /// not literal satisfaction.
     #[cfg(test)]
     pub(crate) fn model(&self) -> Option<Vec<bool>> {
-        if self.ok() || self.assigned_count != self.nvars {
+        if self.not_ok() || self.assigned_count != self.nvars {
             return None;
         }
         Some(self.assigns.iter().map(|v| *v == LBool::True).collect())
@@ -430,7 +430,7 @@ impl Solver {
         let watcher_entries = self.watches.iter().map(Vec::len).sum::<usize>();
         telemetry::initialize_solver_gauges(live_irredundant_clauses, watcher_entries);
 
-        if self.ok() {
+        if self.not_ok() {
             return SatResult::Unsat;
         }
 

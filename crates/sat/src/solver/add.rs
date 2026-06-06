@@ -29,7 +29,7 @@ impl Solver {
         lits: &[Lit],
         assertion_level: AssertionLevel,
     ) -> AddClauseResult {
-        if self.ok() {
+        if self.not_ok() {
             return AddClauseResult::Inconsistent;
         }
         let Some(ps) = self.prepare_clause(lits) else {
@@ -65,7 +65,7 @@ impl Solver {
         lits: &[Lit],
         assertion_level: AssertionLevel,
     ) -> AddClauseResult {
-        if self.ok() {
+        if self.not_ok() {
             return AddClauseResult::Inconsistent;
         }
         let Some(mut ps) = self.prepare_reason_clause(lits) else {
