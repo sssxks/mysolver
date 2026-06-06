@@ -294,4 +294,50 @@ mod tests {
 
         assert_eq!(s.solve_with_assumptions(&[], &mut noop), SatResult::Unsat);
     }
+
+    #[test]
+    fn scoped_root_assignments_do_not_make_root_clause_globally_unsat() {
+        let mut s = Solver::new();
+        let a = s.new_var();
+        let b = s.new_var();
+        let c = s.new_var();
+        assert_eq!(
+            s.add_clause(&[lit(a), lit(b), lit(c)]),
+            AddClauseResult::Added
+        );
+
+        s.push();
+        assert_eq!(s.add_clause(&[nlit(a)]), AddClauseResult::Added);
+        assert_eq!(s.add_clause(&[nlit(b)]), AddClauseResult::Added);
+        assert_eq!(s.add_clause(&[nlit(c)]), AddClauseResult::Added);
+
+        let mut noop = NoopTheory;
+        assert_eq!(s.solve_with_assumptions(&[], &mut noop), SatResult::Unsat);
+
+        s.pop(1).expect("scoped unit frame should exist");
+
+        assert_eq!(s.solve_with_assumptions(&[], &mut noop), SatResult::Sat);
+    }
+
+    #[test]
+    fn scoped_root_theory_premise_does_not_make_root_globally_unsat() {
+        let mut s = Solver::new();
+        let premise = lit(s.new_var());
+        let propagated = lit(s.new_var());
+        s.push();
+        assert_eq!(s.add_clause(&[premise]), AddClauseResult::Added);
+        let mut theory = ImplicationConflictTheory {
+            premise,
+            propagated,
+            saw_premise: false,
+            emitted_implication: false,
+            emitted_conflict: false,
+        };
+
+        assert_eq!(s.solve_with_assumptions(&[], &mut theory), SatResult::Unsat);
+
+        s.pop(1).expect("scoped premise frame should exist");
+
+        assert_eq!(s.solve_with_assumptions(&[], &mut theory), SatResult::Sat);
+    }
 }

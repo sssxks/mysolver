@@ -271,6 +271,8 @@ pub struct Solver {
     analyze_stack: Vec<Var>,
     /// Memoized redundancy states used while minimizing learned clauses.
     minimize_cache: Vec<u8>,
+    /// User-scope contribution for redundancy proofs cached as true.
+    minimize_scope_cache: Vec<AssertionLevel>,
     /// Variables whose redundancy cache entries must be cleared after one analysis.
     minimize_touched: Vec<Var>,
     /// Epoch-stamped decision levels used while counting clause LBD values.
@@ -320,6 +322,7 @@ impl Solver {
             seen: Vec::new(),
             analyze_stack: Vec::new(),
             minimize_cache: Vec::new(),
+            minimize_scope_cache: Vec::new(),
             minimize_touched: Vec::new(),
             lbd_levels: Vec::new(),
             lbd_epoch: 0,
@@ -351,6 +354,7 @@ impl Solver {
         self.var_activity.push(0.0);
         self.seen.push(false);
         self.minimize_cache.push(0);
+        self.minimize_scope_cache.push(AssertionLevel::ROOT);
         self.order.new_var();
         self.order.insert(v, &self.var_activity);
         v
@@ -629,8 +633,7 @@ impl Solver {
                     second,
                     assertion_level,
                 } => {
-                    let _ =
-                        self.insert_watched_theory_clause(lits, first, second, assertion_level);
+                    let _ = self.insert_watched_theory_clause(lits, first, second, assertion_level);
                 }
             }
         }
@@ -694,15 +697,16 @@ impl Solver {
 
     /// Returns the SAT decision and user assertion coordinates for one theory conflict.
     fn theory_conflict_scope(&self, conflict: &TheoryConflict) -> SearchConflictScope {
-        let decision_level = conflict
-            .lits
-            .iter()
-            .map(|lit| self.sat_level[lit.var().index()])
-            .max()
-            .unwrap_or(0);
+        let mut decision_level = 0;
+        let mut assertion_level = conflict.assertion_level;
+        for &lit in &conflict.lits {
+            let vi = lit.var().index();
+            decision_level = decision_level.max(self.sat_level[vi]);
+            assertion_level = assertion_level.max(self.user_level[vi]);
+        }
         SearchConflictScope {
             decision_level,
-            assertion_level: conflict.assertion_level,
+            assertion_level,
         }
     }
 
@@ -713,22 +717,30 @@ impl Solver {
                 false_lit,
                 other,
                 assertion_level,
-            } => SearchConflictScope {
-                decision_level: self.sat_level[false_lit.var().index()]
-                    .max(self.sat_level[other.var().index()]),
-                assertion_level,
-            },
+            } => {
+                let false_vi = false_lit.var().index();
+                let other_vi = other.var().index();
+                SearchConflictScope {
+                    decision_level: self.sat_level[false_vi].max(self.sat_level[other_vi]),
+                    assertion_level: assertion_level
+                        .max(self.user_level[false_vi])
+                        .max(self.user_level[other_vi]),
+                }
+            }
             propagate::Conflict::Clause(cid) => {
                 let header = self.clauses.header(cid);
                 let len = header.len();
                 let mut level = 0;
+                let mut assertion_level = header.assertion_level();
                 for i in 0..len {
                     let lit = self.clauses.clause(cid).lit(i);
-                    level = level.max(self.sat_level[lit.var().index()]);
+                    let vi = lit.var().index();
+                    level = level.max(self.sat_level[vi]);
+                    assertion_level = assertion_level.max(self.user_level[vi]);
                 }
                 SearchConflictScope {
                     decision_level: level,
-                    assertion_level: header.assertion_level(),
+                    assertion_level,
                 }
             }
         }

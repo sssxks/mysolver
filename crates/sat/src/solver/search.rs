@@ -17,6 +17,10 @@ impl Solver {
     /// Backtracks to `level`, undoing assignments above it.
     pub(crate) fn cancel_until(&mut self, level: usize) {
         if self.decision_level() <= level {
+            if level == 0 {
+                self.theory_reason_lits.clear();
+                self.theory_reasons.clear();
+            }
             return;
         }
         let keep = self.trail_lim[level];
@@ -35,6 +39,10 @@ impl Solver {
         self.trail_lim.truncate(level);
         self.qhead = self.trail.len();
         self.theory_qhead = self.theory_qhead.min(self.trail.len());
+        if level == 0 {
+            self.theory_reason_lits.clear();
+            self.theory_reasons.clear();
+        }
     }
 
     /// Picks the next unassigned branching literal according to activity and phase.
@@ -190,6 +198,7 @@ impl Solver {
         self.var_activity.truncate(new_nvars);
         self.seen.truncate(new_nvars);
         self.minimize_cache.truncate(new_nvars);
+        self.minimize_scope_cache.truncate(new_nvars);
         self.watches.truncate(new_nvars * 2);
         self.rebuild_order_heap();
     }
