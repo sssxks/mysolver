@@ -406,7 +406,7 @@ pub struct Solver {
     /// Long learned clauses that are still live.
     learnts: Vec<Clause>,
     /// Long clause arena. Long clauses must carry their own scope.
-    clauses: ClauseArena,
+    clauses: Clauses,
 
     /// VSIDS data and branching heap.
     var_activity: Vec<f64>,
@@ -428,7 +428,7 @@ pub struct Solver {
 }
 ```
 
-The current `ClauseArena` should be extended conceptually so that each long clause header carries:
+The current `Clauses` should be extended conceptually so that each long clause header carries:
 
 ```rust
 pub(crate) struct ClauseHeader {

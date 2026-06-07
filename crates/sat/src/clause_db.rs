@@ -5,7 +5,7 @@ const MIN_COMPACTION_WASTE_WORDS: usize = 1_024;
 /// Fraction of the payload arena that may be dead before triggering compaction.
 const COMPACTION_WASTE_DIVISOR: usize = 2;
 
-/// A generational handle into one [`ClauseArena`] slot.
+/// A generational handle into one [`Clauses`] slot.
 ///
 /// Resolving a clause handle against a particular arena state either yields the live
 /// clause occupying this (slot, generation) pair or reports the handle as stale.
@@ -245,7 +245,7 @@ impl ClauseMut<'_> {
 
 /// A clause arena with stable physical slots and relocatable literal payloads.
 #[derive(Debug, Default)]
-pub(crate) struct ClauseArena {
+pub(crate) struct Clauses {
     /// Clause slots indexed by [`Clause::slot`].
     headers: Vec<ClauseHeader>,
     /// VSIDS activity per physical clause slot.
@@ -267,7 +267,7 @@ pub(crate) struct ClauseArena {
     wasted_words: usize,
 }
 
-impl ClauseArena {
+impl Clauses {
     /// Creates an empty clause arena.
     pub(crate) fn new() -> Self {
         Self::default()
@@ -575,7 +575,7 @@ impl ClauseArena {
 
 #[cfg(test)]
 mod tests {
-    use super::ClauseArena;
+    use super::Clauses;
     use crate::{Literal, Scope, Var};
 
     fn lit(index: usize) -> Literal {
@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn delete_reuses_header_slot_and_bumps_generation() {
-        let mut arena = ClauseArena::new();
+        let mut arena = Clauses::new();
         let a = arena.alloc_irredundant(&[lit(0), lit(1), lit(2)], Scope::ROOT);
         let b = arena.alloc_learnt(&[lit(3), lit(4), lit(5)], 7.0, 5, Scope::ROOT);
 
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn delete_compacts_payload_without_rewriting_live_clause_handles() {
-        let mut arena = ClauseArena::new();
+        let mut arena = Clauses::new();
 
         let make_clause =
             |base: usize| -> Vec<Literal> { (0..600).map(|idx| lit(base + idx)).collect() };
@@ -636,7 +636,7 @@ mod tests {
 
     #[test]
     fn delete_retires_slot_when_generation_overflows() {
-        let mut arena = ClauseArena::new();
+        let mut arena = Clauses::new();
         let cid = arena.alloc_irredundant(&[lit(0), lit(1), lit(2)], Scope::ROOT);
         let retired = super::Clause::new(cid.slot(), super::ClauseHeader::MAX_GENERATION);
         arena.headers[cid.slot_index()] = super::ClauseHeader::new_irredundant(

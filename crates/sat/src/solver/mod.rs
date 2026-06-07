@@ -9,7 +9,7 @@ mod search;
 
 use std::ops::Range;
 
-use crate::clause_db::{Clause, ClauseArena};
+use crate::clause_db::{Clause, Clauses};
 use crate::heap::VarHeap;
 use crate::telemetry;
 #[cfg(feature = "telemetry")]
@@ -259,7 +259,7 @@ pub struct Solver {
     /// Active learned clauses, eagerly maintained [`Clause`] liveness.
     learnts: Vec<Clause>,
     /// Arena storing all long clauses.
-    clauses: ClauseArena,
+    clauses: Clauses,
 
     /// VSIDS activity per variable.
     var_activity: Vec<f64>,
@@ -319,7 +319,7 @@ impl Solver {
             qhead: 0,
             theory_qhead: 0,
             watches: Vec::new(),
-            clauses: ClauseArena::new(),
+            clauses: Clauses::new(),
             learnts: Vec::new(),
             theory_reason_lits: Vec::new(),
             theory_reasons: Vec::new(),
