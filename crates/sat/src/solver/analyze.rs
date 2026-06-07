@@ -461,7 +461,7 @@ impl Solver {
 #[cfg(test)]
 mod tests {
     use super::Solver;
-    use crate::{AddClauseResult, Level, Literal, Scope, TheoryClause, TheoryClauseKind, Var};
+    use crate::{Level, Literal, Scope, TheoryClause, TheoryClauseKind, Var};
 
     fn lit(index: usize) -> Literal {
         Literal::new(Var::from_index(index), false)
@@ -495,10 +495,7 @@ mod tests {
             else {
                 panic!("premise should make the theory explanation unit");
             };
-            assert_eq!(
-                solver.insert_unit_theory_clause(lits, unit_index, scope),
-                AddClauseResult::Added
-            );
+            solver.insert_unit_theory_clause(lits, unit_index, scope);
             assert!(
                 matches!(
                     solver.reason[propagated.var().index()],
@@ -520,26 +517,11 @@ mod tests {
     fn analyze_reports_distinct_levels_as_lbd() {
         let mut solver = Solver::with_vars(7);
 
-        assert_eq!(
-            solver.add_clause(&[nlit(0), lit(1)]),
-            AddClauseResult::Added
-        );
-        assert_eq!(
-            solver.add_clause(&[nlit(2), lit(3)]),
-            AddClauseResult::Added
-        );
-        assert_eq!(
-            solver.add_clause(&[nlit(4), lit(5)]),
-            AddClauseResult::Added
-        );
-        assert_eq!(
-            solver.add_clause(&[nlit(4), lit(6)]),
-            AddClauseResult::Added
-        );
-        assert_eq!(
-            solver.add_clause(&[nlit(1), nlit(3), nlit(5), nlit(6)]),
-            AddClauseResult::Added
-        );
+        solver.add_clause(&[nlit(0), lit(1)]);
+        solver.add_clause(&[nlit(2), lit(3)]);
+        solver.add_clause(&[nlit(4), lit(5)]);
+        solver.add_clause(&[nlit(4), lit(6)]);
+        solver.add_clause(&[nlit(1), nlit(3), nlit(5), nlit(6)]);
 
         solver.new_level();
         assert!(solver.enqueue(lit(0), super::Reason::None));

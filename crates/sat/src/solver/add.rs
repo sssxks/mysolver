@@ -5,7 +5,7 @@ use crate::telemetry;
 use crate::{Level, Literal};
 
 use super::propagate::Watcher;
-use super::{AddClauseResult, Reason, Solver, TheoryClause, TheoryClauseKind, TruthValue};
+use super::{Reason, Solver, TheoryClause, TheoryClauseKind, TruthValue};
 use crate::Scope;
 
 /// Drop false literals during ordinary clause normalization.
@@ -17,41 +17,35 @@ const KEEP_FALSE: bool = true;
 impl Solver {
     /// Adds a CNF clause to the database.
     ///
-    /// The method returns `false` when the clause makes the formula immediately
-    /// inconsistent; otherwise it returns `true`. Tautological and already-satisfied
-    /// clauses are ignored.
-    pub fn add_clause(&mut self, lits: &[Literal]) -> AddClauseResult {
+    /// Tautological and already-satisfied clauses are ignored. Empty or
+    /// conflicting clauses mark the current scope inconsistent.
+    pub fn add_clause(&mut self, lits: &[Literal]) {
         self.reset_search();
-        self.add_scoped_clause(lits, self.input_clause_scope(lits))
+        self.add_scoped_clause(lits, self.input_clause_scope(lits));
     }
 
     /// Adds one input clause carrying an explicit scope level.
-    fn add_scoped_clause(&mut self, lits: &[Literal], scope: Scope) -> AddClauseResult {
+    fn add_scoped_clause(&mut self, lits: &[Literal], scope: Scope) {
         if self.not_ok() {
-            return AddClauseResult::Inconsistent;
+            return;
         }
         let Some(ps) = self.normalize_clause::<DROP_FALSE>(lits) else {
-            return AddClauseResult::Satisfied;
+            return;
         };
         match ps.len() {
             0 => {
                 self.inconsistent_scope = Some(scope);
-                AddClauseResult::Inconsistent
             }
             1 => {
                 if !self.enqueue(ps[0], Reason::None) {
                     self.inconsistent_scope = Some(scope);
-                    return AddClauseResult::Inconsistent;
                 }
-                AddClauseResult::Added
             }
             2 => {
                 self.attach_binary(ps[0], ps[1], scope);
-                AddClauseResult::Added
             }
             _ => {
                 self.attach_irredundant_long(&ps, scope);
-                AddClauseResult::Added
             }
         }
     }
@@ -99,9 +93,9 @@ impl Solver {
         mut lits: Vec<Literal>,
         unit_index: usize,
         scope: Scope,
-    ) -> AddClauseResult {
+    ) {
         if self.not_ok() {
-            return AddClauseResult::Inconsistent;
+            return;
         }
         lits.swap(0, unit_index);
 
@@ -112,10 +106,7 @@ impl Solver {
         };
         if !self.enqueue(lits[0], reason) {
             self.inconsistent_scope = Some(scope);
-            return AddClauseResult::Inconsistent;
         }
-
-        AddClauseResult::Added
     }
 
     /// Inserts one theory clause with at least two currently live literals.
@@ -125,9 +116,9 @@ impl Solver {
         first: usize,
         second: usize,
         scope: Scope,
-    ) -> AddClauseResult {
+    ) {
         if self.not_ok() {
-            return AddClauseResult::Inconsistent;
+            return;
         }
         move_two_indices_to_front(&mut lits, first, second);
         match lits.len() {
@@ -136,7 +127,6 @@ impl Solver {
                 self.attach_irredundant_long(&lits, scope);
             }
         }
-        AddClauseResult::Added
     }
 
     /// Normalizes one clause under the current assignment.

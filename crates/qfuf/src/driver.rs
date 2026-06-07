@@ -1,19 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use euf::{EufTheory, SortRef, SymbolRef, TermRef};
-use sat::{AddClauseResult, Literal, SatResult, Solver};
+use sat::{Literal, SatResult, Solver};
 #[cfg(feature = "telemetry")]
 use telemetry::Gauges;
 
 use crate::types::{BoolView, Command, FunDecl, LocalBinding, SExpr, negate_view};
-
-/// Accepts one clause-insertion result from the SAT core.
-fn accept_add_result(result: AddClauseResult) -> Result<(), String> {
-    match result {
-        AddClauseResult::Added | AddClauseResult::Satisfied => Ok(()),
-        AddClauseResult::Inconsistent => Ok(()),
-    }
-}
 
 /// One incremental QF-UF solver driver.
 #[derive(Debug, Default)]
@@ -148,8 +140,14 @@ impl Driver {
     fn assert_bool_view(&mut self, view: BoolView) -> Result<(), String> {
         match view {
             BoolView::True => Ok(()),
-            BoolView::False => accept_add_result(self.sat.add_clause(&[])),
-            BoolView::Lit(lit) => accept_add_result(self.sat.add_clause(&[lit])),
+            BoolView::False => {
+                self.sat.add_clause(&[]);
+                Ok(())
+            }
+            BoolView::Lit(lit) => {
+                self.sat.add_clause(&[lit]);
+                Ok(())
+            }
         }
     }
 
@@ -502,8 +500,8 @@ impl Driver {
                 let fresh_term = self.fresh_const_term(then_sort);
                 let then_eq = self.equality_literal(fresh_term, then_term);
                 let else_eq = self.equality_literal(fresh_term, else_term);
-                accept_add_result(self.sat.add_clause(&[!cond_lit, then_eq]))?;
-                accept_add_result(self.sat.add_clause(&[cond_lit, else_eq]))?;
+                self.sat.add_clause(&[!cond_lit, then_eq]);
+                self.sat.add_clause(&[cond_lit, else_eq]);
                 Ok(fresh_term)
             }
         }
@@ -540,8 +538,8 @@ impl Driver {
                 let false_term = self.false_term()?;
                 let true_eq = self.equality_literal(fresh, true_term);
                 let false_eq = self.equality_literal(fresh, false_term);
-                accept_add_result(self.sat.add_clause(&[!lit, true_eq]))?;
-                accept_add_result(self.sat.add_clause(&[lit, false_eq]))?;
+                self.sat.add_clause(&[!lit, true_eq]);
+                self.sat.add_clause(&[lit, false_eq]);
                 Ok(fresh)
             }
         }
@@ -642,7 +640,7 @@ impl Driver {
             return;
         };
         let eq_lit = self.equality_literal(true_term, false_term);
-        let _ = accept_add_result(self.sat.add_clause(&[!eq_lit]));
+        self.sat.add_clause(&[!eq_lit]);
         self.bool_constants_separated = true;
     }
 
@@ -655,8 +653,8 @@ impl Driver {
         let true_lit = self.bool_term_literal(term);
         let false_term = self.false_term().expect("false term must be available");
         let false_lit = self.equality_literal(term, false_term);
-        let _ = accept_add_result(self.sat.add_clause(&[true_lit, false_lit]));
-        let _ = accept_add_result(self.sat.add_clause(&[!true_lit, !false_lit]));
+        self.sat.add_clause(&[true_lit, false_lit]);
+        self.sat.add_clause(&[!true_lit, !false_lit]);
     }
 
     /// Lowers one n-ary conjunction.
@@ -691,7 +689,7 @@ impl Driver {
         let lit = self.new_tseitin_lit();
         for &view in &filtered {
             if let BoolView::Lit(arg_lit) = view {
-                accept_add_result(self.sat.add_clause(&[!lit, arg_lit]))?;
+                self.sat.add_clause(&[!lit, arg_lit]);
             }
         }
         let mut support = Vec::with_capacity(filtered.len() + 1);
@@ -701,7 +699,7 @@ impl Driver {
                 support.push(!arg_lit);
             }
         }
-        accept_add_result(self.sat.add_clause(&support))?;
+        self.sat.add_clause(&support);
         Ok(BoolView::Lit(lit))
     }
 
@@ -737,7 +735,7 @@ impl Driver {
         let lit = self.new_tseitin_lit();
         for &view in &filtered {
             if let BoolView::Lit(arg_lit) = view {
-                accept_add_result(self.sat.add_clause(&[lit, !arg_lit]))?;
+                self.sat.add_clause(&[lit, !arg_lit]);
             }
         }
         let mut support = Vec::with_capacity(filtered.len() + 1);
@@ -747,7 +745,7 @@ impl Driver {
                 support.push(arg_lit);
             }
         }
-        accept_add_result(self.sat.add_clause(&support))?;
+        self.sat.add_clause(&support);
         Ok(BoolView::Lit(lit))
     }
 
@@ -763,10 +761,10 @@ impl Driver {
             (BoolView::False, view) | (view, BoolView::False) => Ok(view),
             (BoolView::Lit(lhs), BoolView::Lit(rhs)) => {
                 let lit = self.new_tseitin_lit();
-                accept_add_result(self.sat.add_clause(&[!lhs, !rhs, !lit]))?;
-                accept_add_result(self.sat.add_clause(&[lhs, rhs, !lit]))?;
-                accept_add_result(self.sat.add_clause(&[lhs, !rhs, lit]))?;
-                accept_add_result(self.sat.add_clause(&[!lhs, rhs, lit]))?;
+                self.sat.add_clause(&[!lhs, !rhs, !lit]);
+                self.sat.add_clause(&[lhs, rhs, !lit]);
+                self.sat.add_clause(&[lhs, !rhs, lit]);
+                self.sat.add_clause(&[!lhs, rhs, lit]);
                 Ok(BoolView::Lit(lit))
             }
         }

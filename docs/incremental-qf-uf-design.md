@@ -164,11 +164,11 @@ Once native `push`/`pop` is chosen, the most important SAT-design question is no
 The `sat` crate should expose an incremental API roughly shaped like this:
 
 - `new_var() -> Var`
-- `add_clause(&[Lit]) -> AddClauseResult`
+- `add_clause(&[Lit])`
 - `push()`
 - `pop(n: usize)`
 - `current_scope() -> Scope`
-- `add_scoped_clause(&[Lit]) -> AddClauseResult`
+- `add_scoped_clause(&[Lit])`
 - `solve_with_assumptions(&[Lit], theory: &mut impl Theory) -> SatResult`
 - `reset_search()`
 
@@ -456,7 +456,7 @@ impl Solver {
     pub fn pop(&mut self, n: usize) -> Result<(), PopError>;
     pub fn current_scope(&self) -> Scope;
 
-    pub fn add_clause(&mut self, lits: &[Lit]) -> bool;
+    pub fn add_clause(&mut self, lits: &[Lit]);
     pub fn solve(&mut self) -> SatResult;
     pub fn solve_with_assumptions<T: Theory>(
         &mut self,
@@ -469,7 +469,7 @@ impl Solver {
         lits: &[Lit],
         scope: Scope,
         origin: ClauseOrigin,
-    ) -> AddClauseResult;
+    );
 
     pub(crate) fn pop_to_scope(
         &mut self,
@@ -752,7 +752,7 @@ And SAT should ingest them through:
 
 ```rust
 impl Solver {
-    fn add_theory_clause(&mut self, clause: TheoryClause) -> AddClauseResult {
+    fn add_theory_clause(&mut self, clause: TheoryClause) {
         self.add_scoped_clause(&clause.lits, clause.scope, ClauseOrigin::Theory)
     }
 }

@@ -81,17 +81,6 @@ pub enum SatResult {
     Unsat,
 }
 
-/// The outcome of attempting to insert one clause into the SAT database.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum AddClauseResult {
-    /// The clause was already satisfied or tautological and was ignored.
-    Satisfied,
-    /// The clause was added successfully.
-    Added,
-    /// The clause made the current scope immediately inconsistent.
-    Inconsistent,
-}
-
 /// Why one `pop()` request failed.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum PopError {
@@ -637,7 +626,7 @@ impl Solver {
                     unit_index,
                     scope,
                 } => {
-                    let _ = self.insert_unit_theory_clause(lits, unit_index, scope);
+                    self.insert_unit_theory_clause(lits, unit_index, scope);
                 }
                 ClassifiedTheoryClause::Watch {
                     lits,
@@ -645,7 +634,7 @@ impl Solver {
                     second,
                     scope,
                 } => {
-                    let _ = self.insert_watched_theory_clause(lits, first, second, scope);
+                    self.insert_watched_theory_clause(lits, first, second, scope);
                 }
             }
         }

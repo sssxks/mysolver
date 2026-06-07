@@ -474,8 +474,8 @@ mod tests {
         theory.intern_equality_atom(a, b, ab_var);
         theory.intern_equality_atom(fa, fb, fafb_var);
 
-        let _ = sat.add_clause(&[ab]);
-        let _ = sat.add_clause(&[not_fafb]);
+        sat.add_clause(&[ab]);
+        sat.add_clause(&[not_fafb]);
 
         assert_eq!(
             sat.solve_with_assumptions(&[], &mut theory),
@@ -524,9 +524,9 @@ mod tests {
         theory.intern_equality_atom(b, c, bc_var);
         theory.intern_equality_atom(fa, fc, fafc_var);
 
-        let _ = sat.add_clause(&[ab]);
-        let _ = sat.add_clause(&[bc]);
-        let _ = sat.add_clause(&[not_fafc]);
+        sat.add_clause(&[ab]);
+        sat.add_clause(&[bc]);
+        sat.add_clause(&[not_fafc]);
 
         assert_eq!(
             sat.solve_with_assumptions(&[], &mut theory),
