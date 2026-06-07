@@ -224,9 +224,9 @@ pub(crate) struct ClassMerge {
     pub(crate) disequality_conflict: Option<DisequalityEntry>,
 }
 
-/// One SAT-decision-level rollback marker.
+/// One SAT level rollback marker.
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
-pub struct SatLevelMarker {
+pub struct LevelMarker {
     /// Undo-log length at level entry.
     undo_len: usize,
     /// Congruence-insert log length at level entry.
@@ -340,8 +340,8 @@ pub struct SearchState {
 
     /// Reversible mutation log.
     undo_log: Vec<Undo>,
-    /// One marker per open SAT decision level.
-    level_markers: Vec<SatLevelMarker>,
+    /// One marker per open SAT level.
+    level_markers: Vec<LevelMarker>,
 }
 
 impl SearchState {
@@ -400,9 +400,9 @@ impl SearchState {
         self.level_markers.clear();
     }
 
-    /// Pushes one rollback marker aligned with a new SAT decision level.
-    pub(crate) fn push_sat_level(&mut self) {
-        self.level_markers.push(SatLevelMarker {
+    /// Pushes one rollback marker aligned with a new SAT level.
+    pub(crate) fn push_level(&mut self) {
+        self.level_markers.push(LevelMarker {
             undo_len: self.undo_log.len(),
             congruence_insert_len: self.signature_log.len(),
             merge_edges_len: self.edges.len(),
@@ -417,8 +417,8 @@ impl SearchState {
     }
 
     /// Pops search-local state back to `new_level`.
-    pub(crate) fn pop_sat_levels(&mut self, new_level: usize) {
-        while self.level_markers.len() > new_level {
+    pub(crate) fn pop_levels(&mut self, new_level: sat::Level) {
+        while self.level_markers.len() > new_level.index() {
             let marker = self.level_markers.pop().expect("checked above");
             self.pending_clauses.truncate(marker.pending_clauses_len);
             for &atom in &self.pending_atom_triggers[marker.pending_atom_triggers_len..] {

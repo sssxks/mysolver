@@ -24,7 +24,7 @@ mod theory;
 
 pub use registry::Registry;
 pub use search_state::{
-    CongruenceSig, DisequalityEntry, MergeEdge, MergeInput, MergeReason, SatLevelMarker,
+    CongruenceSig, DisequalityEntry, LevelMarker, MergeEdge, MergeInput, MergeReason,
     SearchState, Undo,
 };
 pub use theory::EufTheory;

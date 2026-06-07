@@ -1,6 +1,6 @@
 use crate::clause_db::ClauseId;
 use crate::telemetry;
-use crate::{Lit, Var};
+use crate::{Level, Lit, Var};
 
 use super::{TruthValue, PopError, Reason, Solver};
 use crate::Scope;
@@ -9,37 +9,37 @@ use crate::Scope;
 const CORE_LBD_CUTOFF: u32 = 2;
 
 impl Solver {
-    /// Starts a new decision level at the current trail position.
-    pub(crate) fn new_decision_level(&mut self) {
+    /// Starts a new level at the current trail position.
+    pub(crate) fn new_level(&mut self) {
         self.trail_lim.push(self.trail.len());
     }
 
     /// Backtracks to `level`, undoing assignments above it.
-    pub(crate) fn cancel_until(&mut self, level: usize) {
-        if self.decision_level() <= level {
-            if level == 0 {
+    pub(crate) fn cancel_until(&mut self, level: Level) {
+        if self.level() <= level {
+            if level == Level::ROOT {
                 self.theory_reason_lits.clear();
                 self.theory_reasons.clear();
             }
             return;
         }
-        let keep = self.trail_lim[level];
+        let keep = self.trail_lim[level.index()];
         for i in (keep..self.trail.len()).rev() {
             let lit = self.trail[i];
             let v = lit.var();
             let vi = v.index();
             self.assigns[vi] = TruthValue::Unknown;
             self.reason[vi] = Reason::None;
-            self.sat_level[vi] = 0;
+            self.level[vi] = Level::ROOT;
             self.assignment_scope[vi] = Scope::ROOT;
             self.assigned_count -= 1;
             self.order.insert(v, &self.var_activity);
         }
         self.trail.truncate(keep);
-        self.trail_lim.truncate(level);
+        self.trail_lim.truncate(level.index());
         self.qhead = self.trail.len();
         self.theory_qhead = self.theory_qhead.min(self.trail.len());
-        if level == 0 {
+        if level == Level::ROOT {
             self.theory_reason_lits.clear();
             self.theory_reasons.clear();
         }
@@ -124,13 +124,13 @@ impl Solver {
 
     /// Resets transient CDCL search state while preserving root-level assignments.
     pub(crate) fn reset_search(&mut self) {
-        self.cancel_until(0);
+        self.cancel_until(Level::ROOT);
         self.theory_qhead = 0;
     }
 
     /// Pops back to one assertion-stack scope.
     pub(crate) fn pop_to_scope(&mut self, new_scope: Scope) -> Result<(), PopError> {
-        debug_assert_eq!(self.decision_level(), 0);
+        debug_assert_eq!(self.level(), Level::ROOT);
         debug_assert!(new_scope <= self.current_scope);
 
         self.current_scope = new_scope;
@@ -155,7 +155,7 @@ impl Solver {
             let lit = self.trail.pop().expect("checked above");
             let vi = lit.var().index();
             self.assigns[vi] = TruthValue::Unknown;
-            self.sat_level[vi] = 0;
+            self.level[vi] = Level::ROOT;
             self.assignment_scope[vi] = Scope::ROOT;
             self.reason[vi] = Reason::None;
             self.assigned_count -= 1;
@@ -185,7 +185,7 @@ impl Solver {
         }
         self.nvars = new_nvars;
         self.assigns.truncate(new_nvars);
-        self.sat_level.truncate(new_nvars);
+        self.level.truncate(new_nvars);
         self.assignment_scope.truncate(new_nvars);
         self.reason.truncate(new_nvars);
         self.variable_scope.truncate(new_nvars);

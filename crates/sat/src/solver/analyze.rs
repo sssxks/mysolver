@@ -1,4 +1,4 @@
-use crate::Lit;
+use crate::{Level, Lit};
 use crate::Var;
 use crate::clause_db::ClauseId;
 
@@ -37,7 +37,7 @@ impl Solver {
     ///
     /// The caller-provided `learnt` buffer is cleared and then populated in asserting
     /// order: slot 0 is the asserting literal, and slot 1, when present, is the
-    /// literal with the highest remaining decision level.
+    /// literal with the highest remaining level.
     pub(crate) fn analyze(&mut self, conflict: Conflict, learnt: &mut Vec<Lit>) -> AnalyzeSummary {
         self.analyze_from_source(self.conflict_source(conflict), learnt)
     }
@@ -59,7 +59,7 @@ impl Solver {
         mut source: AnalyzeSource<'_>,
         learnt: &mut Vec<Lit>,
     ) -> AnalyzeSummary {
-        let current_level = self.decision_level();
+        let current_level = self.level();
         let mut required_scope = Scope::ROOT;
         learnt.clear();
         learnt.push(Lit::from_raw(0));
@@ -188,18 +188,18 @@ impl Solver {
         self.minimize_learnt_clause(learnt, &mut required_scope);
         let lbd = self.learnt_clause_lbd(learnt);
 
-        let mut backtrack_level = 0usize;
+        let mut backtrack_level = Level::ROOT;
         if learnt.len() > 1 {
             let mut max_i = 1;
             for i in 2..learnt.len() {
-                if self.sat_level[learnt[i].var().index()]
-                    > self.sat_level[learnt[max_i].var().index()]
+                if self.level[learnt[i].var().index()]
+                    > self.level[learnt[max_i].var().index()]
                 {
                     max_i = i;
                 }
             }
             learnt.swap(1, max_i);
-            backtrack_level = self.sat_level[learnt[1].var().index()];
+            backtrack_level = self.level[learnt[1].var().index()];
         }
 
         AnalyzeSummary {
@@ -339,7 +339,7 @@ impl Solver {
         }
 
         let antecedent_index = antecedent.index();
-        if self.sat_level[antecedent_index] == 0 {
+        if self.level[antecedent_index] == Level::ROOT {
             *scope = (*scope).max(self.assignment_scope[antecedent_index]);
             return true;
         }
@@ -355,19 +355,19 @@ impl Solver {
         redundant
     }
 
-    /// Counts distinct decision levels in one minimized learned clause.
+    /// Counts distinct levels in one minimized learned clause.
     fn learnt_clause_lbd(&mut self, learnt: &[Lit]) -> u32 {
         let epoch = self.next_lbd_epoch();
         let mut count = 0u32;
 
         for &lit in learnt {
-            self.note_clause_level(epoch, self.sat_level[lit.var().index()], &mut count);
+            self.note_clause_level(epoch, self.level[lit.var().index()], &mut count);
         }
 
         count.max(1)
     }
 
-    /// Counts distinct decision levels in one live clause currently stored in the arena.
+    /// Counts distinct levels in one live clause currently stored in the arena.
     fn clause_lbd(&mut self, cid: ClauseId) -> u32 {
         let epoch = self.next_lbd_epoch();
         let mut count = 0u32;
@@ -375,7 +375,7 @@ impl Solver {
 
         for i in 0..len {
             let lit = self.clauses.clause(cid).lit(i);
-            self.note_clause_level(epoch, self.sat_level[lit.var().index()], &mut count);
+            self.note_clause_level(epoch, self.level[lit.var().index()], &mut count);
         }
 
         count.max(1)
@@ -392,13 +392,14 @@ impl Solver {
         self.lbd_epoch
     }
 
-    /// Records one decision level into the current LBD counter.
-    fn note_clause_level(&mut self, epoch: u32, level: usize, count: &mut u32) {
-        if level >= self.lbd_levels.len() {
-            self.lbd_levels.resize(level + 1, 0);
+    /// Records one level into the current LBD counter.
+    fn note_clause_level(&mut self, epoch: u32, level: Level, count: &mut u32) {
+        let index = level.index();
+        if index >= self.lbd_levels.len() {
+            self.lbd_levels.resize(index + 1, 0);
         }
-        if self.lbd_levels[level] != epoch {
-            self.lbd_levels[level] = epoch;
+        if self.lbd_levels[index] != epoch {
+            self.lbd_levels[index] = epoch;
             *count += 1;
         }
     }
@@ -424,7 +425,7 @@ impl Solver {
         &mut self,
         q: Lit,
         resolved: Option<Var>,
-        current_level: usize,
+        current_level: Level,
         path_count: &mut usize,
         required_scope: &mut Scope,
         learnt: &mut Vec<Lit>,
@@ -434,14 +435,14 @@ impl Solver {
             return;
         }
         let vi = v.index();
-        if self.sat_level[vi] == 0 {
+        if self.level[vi] == Level::ROOT {
             *required_scope = (*required_scope).max(self.assignment_scope[vi]);
         }
-        if !self.seen[vi] && self.sat_level[vi] > 0 {
+        if !self.seen[vi] && self.level[vi] > Level::ROOT {
             self.seen[vi] = true;
             self.analyze_stack.push(v);
             self.bump_var_activity(v);
-            if self.sat_level[vi] == current_level {
+            if self.level[vi] == current_level {
                 *path_count += 1;
             } else {
                 learnt.push(q);
@@ -453,7 +454,7 @@ impl Solver {
 #[cfg(test)]
 mod tests {
     use super::Solver;
-    use crate::{AddClauseResult, Lit, Scope, TheoryClause, TheoryClauseKind, Var};
+    use crate::{AddClauseResult, Level, Lit, Scope, TheoryClause, TheoryClauseKind, Var};
 
     fn lit(index: usize) -> Lit {
         Lit::new(Var::from_index(index), false)
@@ -470,7 +471,7 @@ mod tests {
         let left = lit(1);
         let right = lit(2);
 
-        solver.new_decision_level();
+        solver.new_level();
         assert!(solver.enqueue(premise, super::Reason::None));
 
         for propagated in [left, right] {
@@ -504,12 +505,12 @@ mod tests {
         let summary = solver.analyze_theory_clause(&[!left, !right], Scope::ROOT, &mut learnt);
 
         assert_eq!(learnt, [!premise]);
-        assert_eq!(summary.backtrack_level, 0);
+        assert_eq!(summary.backtrack_level, Level::ROOT);
         assert_eq!(summary.scope, Scope::ROOT);
     }
 
     #[test]
-    fn analyze_reports_distinct_decision_levels_as_lbd() {
+    fn analyze_reports_distinct_levels_as_lbd() {
         let mut solver = Solver::with_vars(7);
 
         assert_eq!(
@@ -533,15 +534,15 @@ mod tests {
             AddClauseResult::Added
         );
 
-        solver.new_decision_level();
+        solver.new_level();
         assert!(solver.enqueue(lit(0), super::Reason::None));
         assert!(solver.propagate().is_none());
 
-        solver.new_decision_level();
+        solver.new_level();
         assert!(solver.enqueue(lit(2), super::Reason::None));
         assert!(solver.propagate().is_none());
 
-        solver.new_decision_level();
+        solver.new_level();
         assert!(solver.enqueue(lit(4), super::Reason::None));
         let conflict = solver.propagate().expect("expected long-clause conflict");
 
@@ -549,7 +550,7 @@ mod tests {
         let summary = solver.analyze(conflict, &mut learnt);
 
         assert_eq!(summary.lbd, 3);
-        assert_eq!(summary.backtrack_level, 2);
+        assert_eq!(summary.backtrack_level, Level::from_index(2));
         assert_eq!(learnt[0], nlit(4));
         assert_eq!(learnt[1], nlit(3));
         assert!(learnt.contains(&nlit(1)));

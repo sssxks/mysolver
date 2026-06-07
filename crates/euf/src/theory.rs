@@ -362,8 +362,8 @@ impl Theory for EufTheory {
         self.search.reset_for_registry(&self.registry);
     }
 
-    fn notify_new_decision_level(&mut self) {
-        self.search.push_sat_level();
+    fn notify_new_level(&mut self) {
+        self.search.push_level();
     }
 
     fn notify_assignment(&mut self, lit: Lit) {
@@ -372,8 +372,8 @@ impl Theory for EufTheory {
         }
     }
 
-    fn notify_backtrack(&mut self, level: usize) {
-        self.search.pop_sat_levels(level);
+    fn notify_backtrack(&mut self, level: sat::Level) {
+        self.search.pop_levels(level);
     }
 
     fn drain_clauses(&mut self, out: &mut Vec<TheoryClause>) {

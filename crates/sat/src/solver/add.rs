@@ -1,6 +1,6 @@
 use std::cmp::max;
 
-use crate::Lit;
+use crate::{Level, Lit};
 use crate::clause_db::ClauseId;
 use crate::telemetry;
 
@@ -226,7 +226,7 @@ impl Solver {
     ///
     /// The caller must provide `lits` in asserting order as produced by
     /// [`Self::analyze`]: `lits[0]` is the asserting literal and, when `lits.len() > 1`,
-    /// `lits[1]` is the literal with the highest remaining decision level.
+    /// `lits[1]` is the literal with the highest remaining level.
     pub(crate) fn add_learnt_clause(&mut self, lits: &[Lit], lbd: u32, scope: Scope) {
         debug_assert!(!lits.is_empty());
         debug_assert!(lbd > 0);
@@ -300,7 +300,7 @@ impl Solver {
         debug_assert!(!lits.is_empty());
         lits[1..]
             .iter()
-            .all(|lit| self.sat_level[lit.var().index()] == 0)
+            .all(|lit| self.level[lit.var().index()] == Level::ROOT)
     }
 }
 

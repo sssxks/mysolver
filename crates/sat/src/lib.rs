@@ -21,7 +21,7 @@ pub use solver::{
     AddClauseResult, NullTheory, PopError, SatResult, Solver, Theory, TheoryClause,
     TheoryClauseKind,
 };
-pub use types::{Lit, Scope, Var};
+pub use types::{Level, Lit, Scope, Var};
 
 #[cfg(test)]
 mod tests {
@@ -33,11 +33,11 @@ mod tests {
     impl Theory for NoopTheory {
         fn notify_search_start(&mut self) {}
 
-        fn notify_new_decision_level(&mut self) {}
+        fn notify_new_level(&mut self) {}
 
         fn notify_assignment(&mut self, _lit: Lit) {}
 
-        fn notify_backtrack(&mut self, _level: usize) {}
+        fn notify_backtrack(&mut self, _level: Level) {}
 
         fn drain_clauses(&mut self, _out: &mut Vec<TheoryClause>) {}
 
@@ -64,7 +64,7 @@ mod tests {
             self.emitted_conflict = false;
         }
 
-        fn notify_new_decision_level(&mut self) {}
+        fn notify_new_level(&mut self) {}
 
         fn notify_assignment(&mut self, lit: Lit) {
             if lit == self.premise {
@@ -72,8 +72,8 @@ mod tests {
             }
         }
 
-        fn notify_backtrack(&mut self, level: usize) {
-            if level == 0 {
+        fn notify_backtrack(&mut self, level: Level) {
+            if level == Level::ROOT {
                 self.saw_premise = false;
                 self.emitted_propagations = false;
                 self.emitted_conflict = false;
@@ -120,11 +120,11 @@ mod tests {
     impl Theory for EmptyScopedConflictTheory {
         fn notify_search_start(&mut self) {}
 
-        fn notify_new_decision_level(&mut self) {}
+        fn notify_new_level(&mut self) {}
 
         fn notify_assignment(&mut self, _lit: Lit) {}
 
-        fn notify_backtrack(&mut self, _level: usize) {}
+        fn notify_backtrack(&mut self, _level: Level) {}
 
         fn drain_clauses(&mut self, _out: &mut Vec<TheoryClause>) {}
 

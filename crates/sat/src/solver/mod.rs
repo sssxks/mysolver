@@ -14,7 +14,7 @@ use crate::heap::VarHeap;
 use crate::telemetry;
 #[cfg(feature = "telemetry")]
 use crate::telemetry::Gauges;
-use crate::{Lit, Scope, Var};
+use crate::{Level, Lit, Scope, Var};
 
 use self::add::ClassifiedTheoryClause;
 use self::propagate::Watcher;
@@ -155,8 +155,8 @@ enum SearchConflict {
 /// SAT decision and assertion-stack coordinates for one search conflict.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 struct SearchConflictScope {
-    /// Highest SAT decision level occurring in the conflict clause.
-    decision_level: usize,
+    /// Highest level occurring in the conflict clause.
+    level: Level,
     /// Scope where a root-level conflict remains visible.
     scope: Scope,
 }
@@ -166,14 +166,14 @@ pub trait Theory {
     /// Called once at the start of each SAT search.
     fn notify_search_start(&mut self);
 
-    /// Called immediately after the SAT solver opens a new CDCL decision level.
-    fn notify_new_decision_level(&mut self);
+    /// Called immediately after the SAT solver opens a new CDCL level.
+    fn notify_new_level(&mut self);
 
     /// Called for one new assignment on the SAT trail.
     fn notify_assignment(&mut self, lit: Lit);
 
-    /// Called after the SAT solver backtracks to one CDCL decision level.
-    fn notify_backtrack(&mut self, level: usize);
+    /// Called after the SAT solver backtracks to one CDCL level.
+    fn notify_backtrack(&mut self, level: Level);
 
     /// Drains any theory clauses that became available during propagation.
     fn drain_clauses(&mut self, out: &mut Vec<TheoryClause>);
@@ -206,11 +206,11 @@ pub(crate) struct ScopeFrame {
 /// Summary of one first-UIP conflict analysis.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub(crate) struct AnalyzeSummary {
-    /// Decision level to keep when backtracking before asserting the learned clause.
-    backtrack_level: usize,
+    /// Level to keep when backtracking before asserting the learned clause.
+    backtrack_level: Level,
     /// Scope required for the learned clause to remain sound.
     scope: Scope,
-    /// Number of distinct decision levels present in the minimized learned clause.
+    /// Number of distinct levels present in the minimized learned clause.
     lbd: u32,
 }
 
@@ -228,8 +228,8 @@ pub struct Solver {
 
     /// Current assignment for each variable.
     assigns: Vec<TruthValue>,
-    /// Decision level at which each variable was assigned.
-    sat_level: Vec<usize>,
+    /// Level at which each variable was assigned.
+    level: Vec<Level>,
     /// Scope in which each current assignment was produced.
     assignment_scope: Vec<Scope>,
     /// Antecedent reason for each assignment, eagerly maintained [`ClauseId`] liveness.
@@ -247,7 +247,7 @@ pub struct Solver {
 
     /// Assignment trail in chronological order.
     trail: Vec<Lit>,
-    /// Trail indices that start each decision level.
+    /// Trail indices that start each level.
     trail_lim: Vec<usize>,
     /// Read cursor into `trail` for propagation.
     qhead: usize,
@@ -285,7 +285,7 @@ pub struct Solver {
     minimize_scope_cache: Vec<Scope>,
     /// Variables whose redundancy cache entries must be cleared after one analysis.
     minimize_touched: Vec<Var>,
-    /// Epoch-stamped decision levels used while counting clause LBD values.
+    /// Epoch-stamped levels used while counting clause LBD values.
     lbd_levels: Vec<u32>,
     /// Current epoch value stored in [`Self::lbd_levels`].
     lbd_epoch: u32,
@@ -308,7 +308,7 @@ impl Solver {
             scope_frames: Vec::new(),
             nvars: 0,
             assigns: Vec::new(),
-            sat_level: Vec::new(),
+            level: Vec::new(),
             assignment_scope: Vec::new(),
             reason: Vec::new(),
             variable_scope: Vec::new(),
@@ -354,7 +354,7 @@ impl Solver {
         let v = Var::from_index(self.nvars);
         self.nvars += 1;
         self.assigns.push(TruthValue::Unknown);
-        self.sat_level.push(0);
+        self.level.push(Level::ROOT);
         self.assignment_scope.push(Scope::ROOT);
         self.reason.push(Reason::None);
         self.variable_scope.push(self.current_scope);
@@ -376,9 +376,9 @@ impl Solver {
         self.nvars
     }
 
-    /// Returns the current decision level.
-    fn decision_level(&self) -> usize {
-        self.trail_lim.len()
+    /// Returns the current level.
+    fn level(&self) -> Level {
+        Level::from_index(self.trail_lim.len())
     }
 
     /// Returns whether a remembered inconsistency is active in the current scope.
@@ -423,7 +423,7 @@ impl Solver {
     #[cfg(feature = "telemetry")]
     pub fn telemetry_gauges(&self) -> Gauges {
         Gauges {
-            decision_level: self.decision_level() as u64,
+            decision_level: self.level().index() as u64,
             assigned_vars: self.assigned_count as u64,
             trail_len: self.trail.len() as u64,
             pending_propagations: self.trail.len().saturating_sub(self.qhead) as u64,
@@ -523,8 +523,8 @@ impl Solver {
                         return SatResult::Unsat;
                     }
                     TruthValue::Unknown => {
-                        self.new_decision_level();
-                        theory.notify_new_decision_level();
+                        self.new_level();
+                        theory.notify_new_level();
                         telemetry::record_decision();
                         let _ = self.enqueue(assumption, Reason::None);
                         assumption_cursor += 1;
@@ -541,8 +541,8 @@ impl Solver {
 
             if restart_conflicts >= restart_limit {
                 telemetry::record_restart();
-                self.cancel_until(0);
-                theory.notify_backtrack(0);
+                self.cancel_until(Level::ROOT);
+                theory.notify_backtrack(Level::ROOT);
                 restart_conflicts = 0;
                 restart_limit = ((restart_limit as f64) * 1.5) as usize + 1;
                 self.maybe_emit_telemetry_sample(theory);
@@ -553,8 +553,8 @@ impl Solver {
                 self.maybe_emit_telemetry_sample(theory);
                 return SatResult::Sat;
             };
-            self.new_decision_level();
-            theory.notify_new_decision_level();
+            self.new_level();
+            theory.notify_new_level();
             telemetry::record_decision();
             let _ = self.enqueue(next, Reason::None);
             self.maybe_emit_telemetry_sample(theory);
@@ -564,7 +564,7 @@ impl Solver {
     /// Starts one new assertion-stack scope frame.
     pub fn push(&mut self) {
         self.reset_search();
-        debug_assert_eq!(self.decision_level(), 0);
+        debug_assert_eq!(self.level(), Level::ROOT);
         let new_scope = self.current_scope.next();
         self.scope_frames.push(ScopeFrame {
             scope: new_scope,
@@ -661,15 +661,15 @@ impl Solver {
         *restart_conflicts += 1;
 
         let conflict_scope = self.search_conflict_scope(&conflict);
-        if conflict_scope.decision_level == 0 {
+        if conflict_scope.level == Level::ROOT {
             self.inconsistent_scope = Some(conflict_scope.scope);
             self.maybe_emit_telemetry_sample(theory);
             return Some(SatResult::Unsat);
         }
 
-        if conflict_scope.decision_level < self.decision_level() {
-            self.cancel_until(conflict_scope.decision_level);
-            theory.notify_backtrack(conflict_scope.decision_level);
+        if conflict_scope.level < self.level() {
+            self.cancel_until(conflict_scope.level);
+            theory.notify_backtrack(conflict_scope.level);
         }
 
         let summary = match conflict {
@@ -704,17 +704,14 @@ impl Solver {
 
     /// Returns the SAT decision and assertion-stack coordinates for one theory conflict.
     fn theory_conflict_scope(&self, conflict: &TheoryConflict) -> SearchConflictScope {
-        let mut decision_level = 0;
+        let mut level = Level::ROOT;
         let mut scope = conflict.scope;
         for &lit in &conflict.lits {
             let vi = lit.var().index();
-            decision_level = decision_level.max(self.sat_level[vi]);
+            level = level.max(self.level[vi]);
             scope = scope.max(self.assignment_scope[vi]);
         }
-        SearchConflictScope {
-            decision_level,
-            scope,
-        }
+        SearchConflictScope { level, scope }
     }
 
     /// Returns the SAT decision and assertion-stack coordinates for one propagation conflict.
@@ -728,7 +725,7 @@ impl Solver {
                 let false_vi = false_lit.var().index();
                 let other_vi = other.var().index();
                 SearchConflictScope {
-                    decision_level: self.sat_level[false_vi].max(self.sat_level[other_vi]),
+                    level: self.level[false_vi].max(self.level[other_vi]),
                     scope: scope
                         .max(self.assignment_scope[false_vi])
                         .max(self.assignment_scope[other_vi]),
@@ -737,18 +734,15 @@ impl Solver {
             propagate::Conflict::Clause(cid) => {
                 let header = self.clauses.header(cid);
                 let len = header.len();
-                let mut level = 0;
+                let mut level = Level::ROOT;
                 let mut scope = header.scope();
                 for i in 0..len {
                     let lit = self.clauses.clause(cid).lit(i);
                     let vi = lit.var().index();
-                    level = level.max(self.sat_level[vi]);
+                    level = level.max(self.level[vi]);
                     scope = scope.max(self.assignment_scope[vi]);
                 }
-                SearchConflictScope {
-                    decision_level: level,
-                    scope,
-                }
+                SearchConflictScope { level, scope }
             }
         }
     }
@@ -761,11 +755,11 @@ pub struct NullTheory;
 impl Theory for NullTheory {
     fn notify_search_start(&mut self) {}
 
-    fn notify_new_decision_level(&mut self) {}
+    fn notify_new_level(&mut self) {}
 
     fn notify_assignment(&mut self, _lit: Lit) {}
 
-    fn notify_backtrack(&mut self, _level: usize) {}
+    fn notify_backtrack(&mut self, _level: Level) {}
 
     fn drain_clauses(&mut self, _out: &mut Vec<TheoryClause>) {}
 

@@ -1103,7 +1103,7 @@ pub struct DisequalityEntry {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
-pub struct SatLevelMarker {
+pub struct LevelMarker {
     undo_len: usize,
     merge_edges_len: usize,
     active_disequalities_len: usize,
@@ -1158,9 +1158,9 @@ pub struct SearchState {
     /// The active prefix of this vector is the current proof graph.
     merge_edges: Vec<MergeEdge>,
 
-    /// SAT-decision-level rollback support.
+    /// SAT level rollback support.
     undo_log: Vec<Undo>,
-    level_markers: Vec<SatLevelMarker>,
+    level_markers: Vec<LevelMarker>,
 }
 ```
 
@@ -1202,8 +1202,8 @@ impl SearchState {
         self.level_markers.clear();
     }
 
-    pub fn push_sat_level(&mut self) {
-        self.level_markers.push(SatLevelMarker {
+    pub fn push_level(&mut self) {
+        self.level_markers.push(LevelMarker {
             undo_len: self.undo_log.len(),
             merge_edges_len: self.merge_edges.len(),
             active_disequalities_len: self.active_disequalities.len(),
@@ -1214,8 +1214,8 @@ impl SearchState {
         });
     }
 
-    pub fn pop_sat_levels(&mut self, new_level: usize) {
-        while self.level_markers.len() > new_level {
+    pub fn pop_levels(&mut self, new_level: sat::Level) {
+        while self.level_markers.len() > new_level.index() {
             let marker = self.level_markers.pop().unwrap();
             self.pending_clauses.truncate(marker.pending_clauses_len);
             for &atom in &self.pending_atom_triggers[marker.pending_atom_triggers_len..] {
@@ -1235,12 +1235,12 @@ impl SearchState {
 }
 ```
 
-`level_markers.len()` should always equal the current SAT decision level. Root level `0` has no marker. SAT must therefore call `notify_new_decision_level()` exactly when it creates a new CDCL decision level, and `notify_backtrack(level)` with the target SAT decision level after analysis.
+`level_markers.len()` should always equal the current SAT level. Root level `0` has no marker. SAT must therefore call `notify_new_level()` exactly when it creates a new CDCL level, and `notify_backtrack(level)` with the target SAT level after analysis.
 
 The intended rollback split is:
 
 - `undo_log` handles in-place mutations of union-find, class membership, and congruence-table ownership,
-- `SatLevelMarker` truncation handles append-only vectors and queues.
+- `LevelMarker` truncation handles append-only vectors and queues.
 
 That keeps the undo records small and avoids encoding every queue push as its own `Undo` variant.
 

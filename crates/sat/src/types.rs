@@ -1,5 +1,36 @@
 use std::ops::Not;
 
+/// A CDCL decision level.
+///
+/// Semantically, a decision level is a non-negative integer representing the
+/// depth of the CDCL search tree.
+///
+/// # Encoding
+///
+/// - `u32` → `Level(u32)`.
+/// - Invariants: The value fits in `u32`.
+///
+/// Because the constructor enforces the invariants, `index()` can return the
+/// inner value directly without re-validation.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
+pub struct Level(u32);
+
+impl Level {
+    /// The root level.
+    pub const ROOT: Self = Self(0);
+
+    /// Creates a level from a zero-based index known to fit in the encoding.
+    pub(crate) fn from_index(index: usize) -> Self {
+        debug_assert!(u32::try_from(index).is_ok());
+        Self(index as u32)
+    }
+
+    /// Returns the zero-based index of this level.
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 /// SMT assertion-stack scope created by `push` and `pop`.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
 pub struct Scope(u32);
