@@ -2,7 +2,7 @@ use crate::clause_db::ClauseId;
 use crate::telemetry;
 use crate::{Lit, Var};
 
-use super::{LBool, PopError, Reason, Solver};
+use super::{TruthValue, PopError, Reason, Solver};
 use crate::Scope;
 
 /// Learned clauses at or below this LBD stay in the protected core.
@@ -28,7 +28,7 @@ impl Solver {
             let lit = self.trail[i];
             let v = lit.var();
             let vi = v.index();
-            self.assigns[vi] = LBool::Undef;
+            self.assigns[vi] = TruthValue::Unknown;
             self.reason[vi] = Reason::None;
             self.sat_level[vi] = 0;
             self.assignment_scope[vi] = Scope::ROOT;
@@ -48,7 +48,7 @@ impl Solver {
     /// Picks the next unassigned branching literal according to activity and phase.
     pub(crate) fn pick_branch_lit(&mut self) -> Option<Lit> {
         while let Some(v) = self.order.pop_max(&self.var_activity) {
-            if self.assigns[v.index()] == LBool::Undef {
+            if self.assigns[v.index()] == TruthValue::Unknown {
                 return Some(Lit::new(v, !self.phase[v.index()]));
             }
         }
@@ -154,7 +154,7 @@ impl Solver {
         {
             let lit = self.trail.pop().expect("checked above");
             let vi = lit.var().index();
-            self.assigns[vi] = LBool::Undef;
+            self.assigns[vi] = TruthValue::Unknown;
             self.sat_level[vi] = 0;
             self.assignment_scope[vi] = Scope::ROOT;
             self.reason[vi] = Reason::None;
@@ -205,7 +205,7 @@ impl Solver {
             order.new_var();
         }
         for vi in 0..self.nvars {
-            if self.assigns[vi] == LBool::Undef {
+            if self.assigns[vi] == TruthValue::Unknown {
                 order.insert(crate::Var::from_index(vi), &self.var_activity);
             }
         }

@@ -5,7 +5,7 @@ use crate::clause_db::ClauseId;
 use crate::telemetry;
 
 use super::propagate::Watcher;
-use super::{AddClauseResult, Reason, Solver, TheoryClause, TheoryClauseKind};
+use super::{AddClauseResult, Reason, Solver, TheoryClause, TheoryClauseKind, TruthValue};
 use crate::Scope;
 
 /// Drop false literals during ordinary clause normalization.
@@ -66,7 +66,7 @@ impl Solver {
         let mut first = None;
         let mut second = None;
         for (index, &lit) in lits.iter().enumerate() {
-            if self.value_lit(lit) == super::LBool::False {
+            if self.value_lit(lit) == TruthValue::False {
                 continue;
             }
             if first.is_none() {
@@ -147,13 +147,13 @@ impl Solver {
         let mut ps = Vec::with_capacity(lits.len());
         for &lit in lits {
             match self.value_lit(lit) {
-                super::LBool::True => return None,
-                super::LBool::False => {
+                TruthValue::True => return None,
+                TruthValue::False => {
                     if KEEP_FALSE_LITERALS {
                         ps.push(lit);
                     }
                 }
-                super::LBool::Undef => ps.push(lit),
+                TruthValue::Unknown => ps.push(lit),
             }
         }
 

@@ -5,7 +5,7 @@ use crate::Lit;
 use crate::clause_db::ClauseId;
 use crate::telemetry;
 
-use super::{LBool, Reason, Solver};
+use super::{TruthValue, Reason, Solver};
 use crate::Scope;
 
 /// A watched-literal entry attached to a literal's watch list.
@@ -73,14 +73,14 @@ impl Solver {
     /// Assigns `lit` if it is undefined and checks for immediate contradiction.
     pub(crate) fn enqueue(&mut self, lit: Lit, reason: Reason) -> bool {
         match self.value_lit(lit) {
-            LBool::True => true,
-            LBool::False => false,
-            LBool::Undef => {
+            TruthValue::True => true,
+            TruthValue::False => false,
+            TruthValue::Unknown => {
                 let v = lit.var().index();
                 self.assigns[v] = if lit.is_negated() {
-                    LBool::False
+                    TruthValue::False
                 } else {
-                    LBool::True
+                    TruthValue::True
                 };
                 self.sat_level[v] = self.decision_level();
                 self.assignment_scope[v] = self.current_scope;
@@ -97,26 +97,26 @@ impl Solver {
     }
 
     /// Evaluates the current truth value of `lit`.
-    pub(crate) fn value_lit(&self, lit: Lit) -> LBool {
+    pub(crate) fn value_lit(&self, lit: Lit) -> TruthValue {
         Self::value_lit_in(&self.assigns, lit)
     }
 
     /// Evaluates `lit` against an arbitrary assignment slice.
-    fn value_lit_in(assigns: &[LBool], lit: Lit) -> LBool {
+    fn value_lit_in(assigns: &[TruthValue], lit: Lit) -> TruthValue {
         match assigns[lit.var().index()] {
-            LBool::Undef => LBool::Undef,
-            LBool::True => {
+            TruthValue::Unknown => TruthValue::Unknown,
+            TruthValue::True => {
                 if lit.is_negated() {
-                    LBool::False
+                    TruthValue::False
                 } else {
-                    LBool::True
+                    TruthValue::True
                 }
             }
-            LBool::False => {
+            TruthValue::False => {
                 if lit.is_negated() {
-                    LBool::True
+                    TruthValue::True
                 } else {
-                    LBool::False
+                    TruthValue::False
                 }
             }
         }
@@ -141,10 +141,10 @@ impl Solver {
 
                 match watcher {
                     Watcher::Binary { other, scope } => match self.value_lit(other) {
-                        LBool::True => {
+                        TruthValue::True => {
                             keep = Some(watcher);
                         }
-                        LBool::Undef => {
+                        TruthValue::Unknown => {
                             keep = Some(watcher);
                             if !self.enqueue(
                                 other,
@@ -161,7 +161,7 @@ impl Solver {
                                 });
                             }
                         }
-                        LBool::False => {
+                        TruthValue::False => {
                             keep = Some(watcher);
                             conflict = Some(Conflict::Binary {
                                 false_lit,
@@ -171,7 +171,7 @@ impl Solver {
                         }
                     },
                     Watcher::Long { clause, blocker } => {
-                        if self.value_lit(blocker) == LBool::True {
+                        if self.value_lit(blocker) == TruthValue::True {
                             keep = Some(watcher);
                         } else {
                             match self.process_long_watch(clause, false_lit) {
@@ -246,13 +246,13 @@ impl Solver {
         debug_assert_eq!(clause.lit(1), false_lit);
 
         let other = clause.lit(0);
-        if Self::value_lit_in(assigns, other) == LBool::True {
+        if Self::value_lit_in(assigns, other) == TruthValue::True {
             return LongAction::Keep { blocker: other };
         }
 
         for k in 2..clause.len() {
             let candidate = clause.lit(k);
-            if Self::value_lit_in(assigns, candidate) != LBool::False {
+            if Self::value_lit_in(assigns, candidate) != TruthValue::False {
                 clause.swap_lits(1, k);
                 let new_watch = clause.lit(1);
                 return LongAction::Move {
@@ -263,9 +263,9 @@ impl Solver {
         }
 
         match Self::value_lit_in(assigns, other) {
-            LBool::Undef => LongAction::Unit { lit: other },
-            LBool::False => LongAction::Conflict,
-            LBool::True => LongAction::Keep { blocker: other },
+            TruthValue::Unknown => LongAction::Unit { lit: other },
+            TruthValue::False => LongAction::Conflict,
+            TruthValue::True => LongAction::Keep { blocker: other },
         }
     }
 }

@@ -383,7 +383,7 @@ pub struct Solver {
     /// Number of variables currently allocated and in scope.
     nvars: usize,
     /// Current truth value for each variable.
-    assigns: Vec<LBool>,
+    assigns: Vec<TruthValue>,
     /// CDCL decision level of each current assignment.
     sat_level: Vec<usize>,
     /// Scope of each current assignment.
@@ -497,7 +497,7 @@ The SAT core should maintain these invariants at all times:
 
 ```rust
 /// Every assigned variable has a scoped assignment that is still in scope.
-assert!(solver.assigns[v.index()] == LBool::Undef
+assert!(solver.assigns[v.index()] == TruthValue::Unassigned
     || solver.assignment_scope[v.index()] <= solver.current_scope);
 
 /// Every allocated variable was introduced in a frame that still exists.
@@ -575,7 +575,7 @@ impl Solver {
         {
             let lit = self.trail.pop().unwrap();
             let vi = lit.var().index();
-            self.assigns[vi] = LBool::Undef;
+            self.assigns[vi] = TruthValue::Unassigned;
             self.sat_level[vi] = 0;
             self.assignment_scope[vi] = Scope::ROOT;
             self.reason[vi] = Reason::None;

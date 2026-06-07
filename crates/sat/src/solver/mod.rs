@@ -19,13 +19,13 @@ use crate::{Lit, Scope, Var};
 use self::add::ClassifiedTheoryClause;
 use self::propagate::Watcher;
 
-/// A three-valued boolean used for partial assignments.
+/// A three-valued truth value used for partial assignments.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub(crate) enum LBool {
+pub(crate) enum TruthValue {
     /// The value is assigned to false.
     False,
     /// The value is currently unassigned.
-    Undef,
+    Unknown,
     /// The value is assigned to true.
     True,
 }
@@ -227,7 +227,7 @@ pub struct Solver {
     nvars: usize,
 
     /// Current assignment for each variable.
-    assigns: Vec<LBool>,
+    assigns: Vec<TruthValue>,
     /// Decision level at which each variable was assigned.
     sat_level: Vec<usize>,
     /// Scope in which each current assignment was produced.
@@ -353,7 +353,7 @@ impl Solver {
     pub fn new_var(&mut self) -> Var {
         let v = Var::from_index(self.nvars);
         self.nvars += 1;
-        self.assigns.push(LBool::Undef);
+        self.assigns.push(TruthValue::Unknown);
         self.sat_level.push(0);
         self.assignment_scope.push(Scope::ROOT);
         self.reason.push(Reason::None);
@@ -401,9 +401,9 @@ impl Solver {
     #[cfg(test)]
     pub(crate) fn value_lit_public(&self, lit: Lit) -> Option<bool> {
         match self.value_lit(lit) {
-            LBool::True => Some(true),
-            LBool::False => Some(false),
-            LBool::Undef => None,
+            TruthValue::True => Some(true),
+            TruthValue::False => Some(false),
+            TruthValue::Unknown => None,
         }
     }
 
@@ -416,7 +416,7 @@ impl Solver {
         if self.not_ok() || self.assigned_count != self.nvars {
             return None;
         }
-        Some(self.assigns.iter().map(|v| *v == LBool::True).collect())
+        Some(self.assigns.iter().map(|v| *v == TruthValue::True).collect())
     }
 
     /// Captures the current solver gauges for one telemetry sample boundary.
@@ -514,15 +514,15 @@ impl Solver {
 
             if let Some(&assumption) = assumptions.get(assumption_cursor) {
                 match self.value_lit(assumption) {
-                    LBool::True => {
+                    TruthValue::True => {
                         assumption_cursor += 1;
                         continue;
                     }
-                    LBool::False => {
+                    TruthValue::False => {
                         self.maybe_emit_telemetry_sample(theory);
                         return SatResult::Unsat;
                     }
-                    LBool::Undef => {
+                    TruthValue::Unknown => {
                         self.new_decision_level();
                         theory.notify_new_decision_level();
                         telemetry::record_decision();
