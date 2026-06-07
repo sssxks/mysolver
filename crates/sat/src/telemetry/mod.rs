@@ -149,13 +149,6 @@ pub(crate) fn live_irredundant_clauses() -> u64 {
     telemetry::sat_live_irredundant_clauses()
 }
 
-/// Returns the current irredundant-clause gauge.
-#[cfg(not(feature = "telemetry"))]
-#[inline(always)]
-pub(crate) fn live_irredundant_clauses() -> u64 {
-    0
-}
-
 /// Returns the current watcher-entry gauge.
 #[cfg(feature = "telemetry")]
 #[inline(always)]
@@ -163,25 +156,9 @@ pub(crate) fn watcher_entries() -> u64 {
     telemetry::sat_watcher_entries()
 }
 
-/// Returns the current watcher-entry gauge.
-#[cfg(not(feature = "telemetry"))]
-#[inline(always)]
-pub(crate) fn watcher_entries() -> u64 {
-    0
-}
-
 /// Emits one combined SAT-plus-theory sample when a timer tick is pending.
 #[cfg(feature = "telemetry")]
 #[inline(always)]
 pub(crate) fn maybe_emit_sample<F: FnOnce() -> CombinedGauges>(gauges: F) {
     telemetry::maybe_emit_sample(gauges);
-}
-
-/// Emits one combined SAT-plus-theory sample when a timer tick is pending.
-#[cfg(not(feature = "telemetry"))]
-#[inline(always)]
-pub(crate) fn maybe_emit_sample<F>(_gauges: F)
-where
-    F: FnOnce(),
-{
 }

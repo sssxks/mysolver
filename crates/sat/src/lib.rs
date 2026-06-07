@@ -13,11 +13,14 @@ mod heap;
 mod solver;
 /// Low-overhead telemetry adapters shared with the standalone telemetry crate.
 pub mod telemetry;
+/// SAT-facing CDCL(T) theory interface.
+pub mod theory;
 /// Core SAT value types.
 mod types;
 
 pub use dimacs::parse_dimacs;
-pub use solver::{NullTheory, PopError, SatResult, Solver, Theory, TheoryClause, TheoryClauseKind};
+pub use solver::{PopError, SatResult, Solver};
+pub use theory::{NullTheory, Theory, TheoryClause, TheoryClauseKind};
 pub use types::{Level, Literal, Scope, Var};
 
 #[cfg(test)]
@@ -37,8 +40,6 @@ mod tests {
         fn notify_backtrack(&mut self, _level: Level) {}
 
         fn drain_clauses(&mut self, _out: &mut Vec<TheoryClause>) {}
-
-        fn final_check(&mut self, _out: &mut Vec<TheoryClause>) {}
 
         fn has_pending_work(&self) -> bool {
             false
@@ -90,10 +91,9 @@ mod tests {
                     scope: Scope::ROOT,
                     kind: TheoryClauseKind::PropagationExplanation,
                 });
+                return;
             }
-        }
 
-        fn final_check(&mut self, out: &mut Vec<TheoryClause>) {
             if self.saw_premise && self.emitted_propagations && !self.emitted_conflict {
                 self.emitted_conflict = true;
                 out.push(TheoryClause {
@@ -105,7 +105,7 @@ mod tests {
         }
 
         fn has_pending_work(&self) -> bool {
-            self.saw_premise && !self.emitted_propagations
+            self.saw_premise && (!self.emitted_propagations || !self.emitted_conflict)
         }
     }
 
@@ -123,9 +123,7 @@ mod tests {
 
         fn notify_backtrack(&mut self, _level: Level) {}
 
-        fn drain_clauses(&mut self, _out: &mut Vec<TheoryClause>) {}
-
-        fn final_check(&mut self, out: &mut Vec<TheoryClause>) {
+        fn drain_clauses(&mut self, out: &mut Vec<TheoryClause>) {
             if self.emitted {
                 return;
             }
@@ -138,7 +136,7 @@ mod tests {
         }
 
         fn has_pending_work(&self) -> bool {
-            false
+            !self.emitted
         }
     }
 

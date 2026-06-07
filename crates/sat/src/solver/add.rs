@@ -2,10 +2,11 @@ use std::cmp::max;
 
 use crate::clause_db::Clause;
 use crate::telemetry;
+use crate::theory::{TheoryClause, TheoryClauseKind};
 use crate::{Level, Literal};
 
 use super::propagate::Watcher;
-use super::{Reason, Solver, TheoryClause, TheoryClauseKind, TruthValue};
+use super::{Reason, Solver, TruthValue};
 use crate::Scope;
 
 /// Drop false literals during ordinary clause normalization.
@@ -22,6 +23,15 @@ impl Solver {
     pub fn add_clause(&mut self, lits: &[Literal]) {
         self.reset_search();
         self.add_scoped_clause(lits, self.input_clause_scope(lits));
+    }
+
+    /// Computes the scope required for one frontend or input clause.
+    fn input_clause_scope(&self, lits: &[Literal]) -> Scope {
+        lits.iter()
+            .map(|lit| self.variable_scope[lit.var().index()])
+            .max()
+            .unwrap_or(self.current_scope)
+            .max(self.current_scope)
     }
 
     /// Adds one input clause carrying an explicit scope level.
@@ -250,15 +260,6 @@ impl Solver {
                 let _ = self.enqueue(lits[0], Reason::Clause(cid));
             }
         }
-    }
-
-    /// Computes the scope required for one frontend or input clause.
-    fn input_clause_scope(&self, lits: &[Literal]) -> Scope {
-        lits.iter()
-            .map(|lit| self.variable_scope[lit.var().index()])
-            .max()
-            .unwrap_or(self.current_scope)
-            .max(self.current_scope)
     }
 
     /// Computes the scope required by one SAT-facing theory clause.

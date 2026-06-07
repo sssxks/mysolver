@@ -743,7 +743,6 @@ pub trait Theory {
     fn notify_assignment(&mut self, lit: Lit);
     fn notify_backtrack(&mut self, level: usize);
     fn drain_clauses(&mut self, out: &mut Vec<TheoryClause>);
-    fn final_check(&mut self, out: &mut Vec<TheoryClause>);
     fn has_pending_work(&self) -> bool;
 }
 ```
@@ -790,7 +789,6 @@ The SAT crate should depend only on a small trait, conceptually like:
 - `notify_assignment(lit: Lit)`
 - `notify_backtrack(level: usize)`
 - `drain_clauses(out: &mut Vec<TheoryClause>)`
-- `final_check(out: &mut Vec<TheoryClause>)`
 - `has_pending_work() -> bool`
 
 Where `TheoryClause` is:
@@ -1502,12 +1500,6 @@ impl Theory for EufTheory {
         out.append(&mut self.search.pending_clauses);
     }
 
-    fn final_check(&mut self, out: &mut Vec<TheoryClause>) {
-        self.process_pending_assignments();
-        self.saturate();
-        out.append(&mut self.search.pending_clauses);
-    }
-
     fn has_pending_work(&self) -> bool {
         !self.pending_assignments.is_empty()
             || !self.search.pending_clauses.is_empty()
@@ -1645,8 +1637,8 @@ One `check-sat` should conceptually do this:
 6. Newly assigned theory literals are pushed into EUF.
 7. EUF saturates congruence closure and returns any explained clauses.
 8. SAT adds those clauses and continues.
-9. On `SAT`, SAT asks EUF for `final_check`.
-10. If `final_check` emits more clauses, continue searching.
+9. Before returning `sat`, SAT forces one more EUF `drain_clauses` check.
+10. If that check emits more clauses, continue searching.
 11. Otherwise return `sat`.
 
 The important point is that EUF is not replayed from scratch for every propagation step. It is reset once per top-level `check-sat`, and then it backtracks with SAT decision levels during that search.

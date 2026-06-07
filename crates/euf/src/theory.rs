@@ -382,12 +382,6 @@ impl Theory for EufTheory {
         out.append(&mut self.search.pending_clauses);
     }
 
-    fn final_check(&mut self, out: &mut Vec<TheoryClause>) {
-        self.process_pending_assignments();
-        self.saturate();
-        out.append(&mut self.search.pending_clauses);
-    }
-
     fn has_pending_work(&self) -> bool {
         self.search.has_pending_work()
     }
