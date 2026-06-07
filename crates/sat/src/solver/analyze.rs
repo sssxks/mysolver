@@ -4,7 +4,7 @@ use crate::clause_db::ClauseId;
 
 use super::propagate::Conflict;
 use super::{AnalyzeSummary, Reason, Solver};
-use crate::AssertionLevel;
+use crate::Scope;
 
 /// A clause-like source used during conflict analysis.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -15,8 +15,8 @@ enum AnalyzeSource<'a> {
         false_lit: Lit,
         /// The propagated or conflicting counterpart literal.
         other: Lit,
-        /// User scope in which this binary clause exists.
-        assertion_level: AssertionLevel,
+        /// Scope in which this binary clause exists.
+        scope: Scope,
     },
     /// Treat a long clause as an analysis source.
     Clause(ClauseId),
@@ -24,8 +24,8 @@ enum AnalyzeSource<'a> {
     TheoryClause {
         /// The falsified theory clause literals.
         lits: &'a [Lit],
-        /// User scope carried by the theory explanation.
-        assertion_level: AssertionLevel,
+        /// Scope carried by the theory explanation.
+        scope: Scope,
     },
     /// Treat one transient theory reason stored by the solver as an analysis
     /// source.
@@ -47,16 +47,10 @@ impl Solver {
     pub(crate) fn analyze_theory_clause(
         &mut self,
         lits: &[Lit],
-        assertion_level: AssertionLevel,
+        scope: Scope,
         learnt: &mut Vec<Lit>,
     ) -> AnalyzeSummary {
-        self.analyze_from_source(
-            AnalyzeSource::TheoryClause {
-                lits,
-                assertion_level,
-            },
-            learnt,
-        )
+        self.analyze_from_source(AnalyzeSource::TheoryClause { lits, scope }, learnt)
     }
 
     /// Shared first-UIP conflict analysis entry point for propagator and theory sources.
@@ -66,7 +60,7 @@ impl Solver {
         learnt: &mut Vec<Lit>,
     ) -> AnalyzeSummary {
         let current_level = self.decision_level();
-        let mut max_assertion_level = AssertionLevel::ROOT;
+        let mut required_scope = Scope::ROOT;
         learnt.clear();
         learnt.push(Lit::from_raw(0));
 
@@ -79,15 +73,15 @@ impl Solver {
                 AnalyzeSource::Binary {
                     false_lit,
                     other,
-                    assertion_level,
+                    scope,
                 } => {
-                    max_assertion_level = max_assertion_level.max(assertion_level);
+                    required_scope = required_scope.max(scope);
                     self.analyze_lit(
                         false_lit,
                         resolved,
                         current_level,
                         &mut path_count,
-                        &mut max_assertion_level,
+                        &mut required_scope,
                         learnt,
                     );
                     self.analyze_lit(
@@ -95,14 +89,13 @@ impl Solver {
                         resolved,
                         current_level,
                         &mut path_count,
-                        &mut max_assertion_level,
+                        &mut required_scope,
                         learnt,
                     );
                 }
                 AnalyzeSource::Clause(cid) => {
                     self.note_clause_analysis(cid);
-                    max_assertion_level =
-                        max_assertion_level.max(self.clauses.header(cid).assertion_level());
+                    required_scope = required_scope.max(self.clauses.header(cid).scope());
                     let len = self.clauses.header(cid).len();
                     for i in 0..len {
                         let q = self.clauses.clause(cid).lit(i);
@@ -111,30 +104,27 @@ impl Solver {
                             resolved,
                             current_level,
                             &mut path_count,
-                            &mut max_assertion_level,
+                            &mut required_scope,
                             learnt,
                         );
                     }
                 }
-                AnalyzeSource::TheoryClause {
-                    lits,
-                    assertion_level,
-                } => {
-                    max_assertion_level = max_assertion_level.max(assertion_level);
+                AnalyzeSource::TheoryClause { lits, scope } => {
+                    required_scope = required_scope.max(scope);
                     for &q in lits {
                         self.analyze_lit(
                             q,
                             resolved,
                             current_level,
                             &mut path_count,
-                            &mut max_assertion_level,
+                            &mut required_scope,
                             learnt,
                         );
                     }
                 }
                 AnalyzeSource::TheoryReason(id) => {
                     let reason = self.theory_reasons[id];
-                    max_assertion_level = max_assertion_level.max(reason.assertion_level);
+                    required_scope = required_scope.max(reason.scope);
                     for i in reason.range() {
                         let q = self.theory_reason_lits[i];
                         self.analyze_lit(
@@ -142,7 +132,7 @@ impl Solver {
                             resolved,
                             current_level,
                             &mut path_count,
-                            &mut max_assertion_level,
+                            &mut required_scope,
                             learnt,
                         );
                     }
@@ -176,11 +166,11 @@ impl Solver {
                 Reason::Binary {
                     false_lit,
                     other,
-                    assertion_level,
+                    scope,
                 } => AnalyzeSource::Binary {
                     false_lit,
                     other,
-                    assertion_level,
+                    scope,
                 },
                 Reason::Clause(cid) => AnalyzeSource::Clause(cid),
                 Reason::Theory(id) => AnalyzeSource::TheoryReason(id),
@@ -195,7 +185,7 @@ impl Solver {
             self.seen[v.index()] = false;
         }
 
-        self.minimize_learnt_clause(learnt, &mut max_assertion_level);
+        self.minimize_learnt_clause(learnt, &mut required_scope);
         let lbd = self.learnt_clause_lbd(learnt);
 
         let mut backtrack_level = 0usize;
@@ -214,7 +204,7 @@ impl Solver {
 
         AnalyzeSummary {
             backtrack_level,
-            assertion_level: max_assertion_level,
+            scope: required_scope,
             lbd,
         }
     }
@@ -234,11 +224,7 @@ impl Solver {
     }
 
     /// Removes learned literals whose reasons are already implied by the rest.
-    fn minimize_learnt_clause(
-        &mut self,
-        learnt: &mut Vec<Lit>,
-        max_assertion_level: &mut AssertionLevel,
-    ) {
+    fn minimize_learnt_clause(&mut self, learnt: &mut Vec<Lit>, required_scope: &mut Scope) {
         if learnt.len() <= 2 {
             return;
         }
@@ -259,7 +245,7 @@ impl Solver {
             let lit = learnt[i];
             let (redundant, scope) = self.literal_is_redundant(lit.var());
             if redundant {
-                *max_assertion_level = (*max_assertion_level).max(scope);
+                *required_scope = (*required_scope).max(scope);
             } else {
                 learnt[out] = lit;
                 out += 1;
@@ -271,31 +257,31 @@ impl Solver {
         }
         for v in self.minimize_touched.drain(..) {
             self.minimize_cache[v.index()] = 0;
-            self.minimize_scope_cache[v.index()] = AssertionLevel::ROOT;
+            self.minimize_scope_cache[v.index()] = Scope::ROOT;
         }
 
         learnt.truncate(out);
     }
 
     /// Returns whether one learned literal can be dropped without changing entailment.
-    fn literal_is_redundant(&mut self, var: Var) -> (bool, AssertionLevel) {
+    fn literal_is_redundant(&mut self, var: Var) -> (bool, Scope) {
         let vi = var.index();
         match self.minimize_cache[vi] {
             1 => return (true, self.minimize_scope_cache[vi]),
-            2 => return (false, AssertionLevel::ROOT),
-            3 => return (true, AssertionLevel::ROOT),
+            2 => return (false, Scope::ROOT),
+            3 => return (true, Scope::ROOT),
             _ => {}
         }
 
         let (ok, scope) = match self.reason[vi] {
-            Reason::None => (false, AssertionLevel::ROOT),
+            Reason::None => (false, Scope::ROOT),
             Reason::Binary {
                 false_lit,
                 other,
-                assertion_level,
+                scope,
             } => {
                 self.set_minimize_cache(var, 3);
-                let mut scope = assertion_level;
+                let mut scope = scope;
                 let false_lit_ok = self.reason_literal_is_redundant(var, false_lit, &mut scope);
                 let other_ok = self.reason_literal_is_redundant(var, other, &mut scope);
                 (false_lit_ok && other_ok, scope)
@@ -304,7 +290,7 @@ impl Solver {
                 self.set_minimize_cache(var, 3);
                 let header = self.clauses.header(cid);
                 let len = header.len();
-                let mut scope = header.assertion_level();
+                let mut scope = header.scope();
                 let mut ok = true;
                 for i in 0..len {
                     let q = self.clauses.clause(cid).lit(i);
@@ -318,7 +304,7 @@ impl Solver {
             Reason::Theory(id) => {
                 self.set_minimize_cache(var, 3);
                 let reason = self.theory_reasons[id];
-                let mut scope = reason.assertion_level;
+                let mut scope = reason.scope;
                 let mut ok = true;
                 for i in reason.range() {
                     let q = self.theory_reason_lits[i];
@@ -332,7 +318,7 @@ impl Solver {
         };
 
         self.set_minimize_cache(var, if ok { 1 } else { 2 });
-        self.minimize_scope_cache[vi] = if ok { scope } else { AssertionLevel::ROOT };
+        self.minimize_scope_cache[vi] = if ok { scope } else { Scope::ROOT };
         (ok, scope)
     }
 
@@ -346,12 +332,7 @@ impl Solver {
     }
 
     /// Returns whether one antecedent literal is already covered by the learned clause.
-    fn reason_literal_is_redundant(
-        &mut self,
-        current: Var,
-        lit: Lit,
-        scope: &mut AssertionLevel,
-    ) -> bool {
+    fn reason_literal_is_redundant(&mut self, current: Var, lit: Lit, scope: &mut Scope) -> bool {
         let antecedent = lit.var();
         if antecedent == current {
             return true;
@@ -359,7 +340,7 @@ impl Solver {
 
         let antecedent_index = antecedent.index();
         if self.sat_level[antecedent_index] == 0 {
-            *scope = (*scope).max(self.user_level[antecedent_index]);
+            *scope = (*scope).max(self.assignment_scope[antecedent_index]);
             return true;
         }
 
@@ -428,11 +409,11 @@ impl Solver {
             Conflict::Binary {
                 false_lit,
                 other,
-                assertion_level,
+                scope,
             } => AnalyzeSource::Binary {
                 false_lit,
                 other,
-                assertion_level,
+                scope,
             },
             Conflict::Clause(cid) => AnalyzeSource::Clause(cid),
         }
@@ -445,7 +426,7 @@ impl Solver {
         resolved: Option<Var>,
         current_level: usize,
         path_count: &mut usize,
-        max_assertion_level: &mut AssertionLevel,
+        required_scope: &mut Scope,
         learnt: &mut Vec<Lit>,
     ) {
         let v = q.var();
@@ -454,7 +435,7 @@ impl Solver {
         }
         let vi = v.index();
         if self.sat_level[vi] == 0 {
-            *max_assertion_level = (*max_assertion_level).max(self.user_level[vi]);
+            *required_scope = (*required_scope).max(self.assignment_scope[vi]);
         }
         if !self.seen[vi] && self.sat_level[vi] > 0 {
             self.seen[vi] = true;
@@ -472,7 +453,7 @@ impl Solver {
 #[cfg(test)]
 mod tests {
     use super::Solver;
-    use crate::{AddClauseResult, AssertionLevel, Lit, TheoryClause, TheoryClauseKind, Var};
+    use crate::{AddClauseResult, Lit, Scope, TheoryClause, TheoryClauseKind, Var};
 
     fn lit(index: usize) -> Lit {
         Lit::new(Var::from_index(index), false)
@@ -495,34 +476,36 @@ mod tests {
         for propagated in [left, right] {
             let clause = TheoryClause {
                 lits: Box::from([!premise, propagated]),
-                assertion_level: AssertionLevel::ROOT,
+                scope: Scope::ROOT,
                 kind: TheoryClauseKind::PropagationExplanation,
             };
             let crate::solver::add::ClassifiedTheoryClause::Unit {
                 lits,
                 unit_index,
-                assertion_level,
+                scope,
             } = solver.classify_theory_clause(&clause)
             else {
                 panic!("premise should make the theory explanation unit");
             };
             assert_eq!(
-                solver.insert_unit_theory_clause(lits, unit_index, assertion_level),
+                solver.insert_unit_theory_clause(lits, unit_index, scope),
                 AddClauseResult::Added
             );
             assert!(
-                matches!(solver.reason[propagated.var().index()], super::Reason::Theory(_)),
+                matches!(
+                    solver.reason[propagated.var().index()],
+                    super::Reason::Theory(_)
+                ),
                 "non-root theory propagation must retain its explanation as the assignment reason"
             );
         }
 
         let mut learnt = Vec::new();
-        let summary =
-            solver.analyze_theory_clause(&[!left, !right], AssertionLevel::ROOT, &mut learnt);
+        let summary = solver.analyze_theory_clause(&[!left, !right], Scope::ROOT, &mut learnt);
 
         assert_eq!(learnt, [!premise]);
         assert_eq!(summary.backtrack_level, 0);
-        assert_eq!(summary.assertion_level, AssertionLevel::ROOT);
+        assert_eq!(summary.scope, Scope::ROOT);
     }
 
     #[test]

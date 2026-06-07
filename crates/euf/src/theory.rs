@@ -1,6 +1,6 @@
 //! SAT-facing EUF theory integration.
 
-use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
+use sat::{Lit, Scope, Theory, TheoryClause, TheoryClauseKind, Var};
 
 use crate::registry::Registry;
 use crate::search_state::{
@@ -329,7 +329,7 @@ impl EufTheory {
         }
         TheoryClause {
             lits: lits.into_boxed_slice(),
-            assertion_level: AssertionLevel::ROOT,
+            scope: Scope::ROOT,
             kind,
         }
     }

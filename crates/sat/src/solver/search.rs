@@ -3,7 +3,7 @@ use crate::telemetry;
 use crate::{Lit, Var};
 
 use super::{LBool, PopError, Reason, Solver};
-use crate::AssertionLevel;
+use crate::Scope;
 
 /// Learned clauses at or below this LBD stay in the protected core.
 const CORE_LBD_CUTOFF: u32 = 2;
@@ -31,7 +31,7 @@ impl Solver {
             self.assigns[vi] = LBool::Undef;
             self.reason[vi] = Reason::None;
             self.sat_level[vi] = 0;
-            self.user_level[vi] = AssertionLevel::ROOT;
+            self.assignment_scope[vi] = Scope::ROOT;
             self.assigned_count -= 1;
             self.order.insert(v, &self.var_activity);
         }
@@ -105,18 +105,18 @@ impl Solver {
         self.clauses.delete(cid);
     }
 
-    /// Deletes every long clause that left scope after one user-level pop.
-    fn delete_long_clauses_above_level(&mut self, level: AssertionLevel) {
-        for cid in self.clauses.live_clauses_above_level(level) {
+    /// Deletes every long clause that left scope after one pop.
+    fn delete_long_clauses_above_scope(&mut self, scope: Scope) {
+        for cid in self.clauses.live_clauses_above_scope(scope) {
             self.delete_clause(cid);
         }
         self.learnts.retain(|&cid| self.clauses.is_live(cid));
     }
 
     /// Shrinks every variable-indexed array back to the live frame boundary.
-    fn shrink_vars_to_frame_boundary(&mut self, new_level: AssertionLevel) {
-        let vars_base = self.user_frames.last().map_or(0, |frame| {
-            debug_assert_eq!(frame.level, new_level);
+    fn shrink_vars_to_frame_boundary(&mut self, new_scope: Scope) {
+        let vars_base = self.scope_frames.last().map_or(0, |frame| {
+            debug_assert_eq!(frame.scope, new_scope);
             frame.vars_base
         });
         self.truncate_vars(vars_base);
@@ -128,58 +128,53 @@ impl Solver {
         self.theory_qhead = 0;
     }
 
-    /// Pops back to one user assertion level.
-    pub(crate) fn pop_to_assertion_level(
-        &mut self,
-        new_level: AssertionLevel,
-    ) -> Result<(), PopError> {
+    /// Pops back to one assertion-stack scope.
+    pub(crate) fn pop_to_scope(&mut self, new_scope: Scope) -> Result<(), PopError> {
         debug_assert_eq!(self.decision_level(), 0);
-        debug_assert!(new_level <= self.assertion_level);
+        debug_assert!(new_scope <= self.current_scope);
 
-        self.assertion_level = new_level;
+        self.current_scope = new_scope;
         if self
-            .inconsistent_assertion_level
-            .is_some_and(|level| level > new_level)
+            .inconsistent_scope
+            .is_some_and(|scope| scope > new_scope)
         {
-            self.inconsistent_assertion_level = None;
+            self.inconsistent_scope = None;
         }
         while self
-            .user_frames
+            .scope_frames
             .last()
-            .is_some_and(|frame| frame.level > new_level)
+            .is_some_and(|frame| frame.scope > new_scope)
         {
-            self.user_frames.pop();
+            self.scope_frames.pop();
         }
         while self
             .trail
             .last()
-            .is_some_and(|&lit| self.user_level[lit.var().index()] > new_level)
+            .is_some_and(|&lit| self.assignment_scope[lit.var().index()] > new_scope)
         {
             let lit = self.trail.pop().expect("checked above");
             let vi = lit.var().index();
             self.assigns[vi] = LBool::Undef;
             self.sat_level[vi] = 0;
-            self.user_level[vi] = AssertionLevel::ROOT;
+            self.assignment_scope[vi] = Scope::ROOT;
             self.reason[vi] = Reason::None;
             self.assigned_count -= 1;
         }
         self.qhead = self.trail.len();
         self.theory_qhead = self.theory_qhead.min(self.trail.len());
 
-        self.delete_long_clauses_above_level(new_level);
+        self.delete_long_clauses_above_scope(new_scope);
         for watchers in &mut self.watches {
             watchers.retain(|watcher| match watcher {
-                super::propagate::Watcher::Binary {
-                    assertion_level, ..
-                } => *assertion_level <= new_level,
+                super::propagate::Watcher::Binary { scope, .. } => *scope <= new_scope,
                 super::propagate::Watcher::Long { clause, .. } => {
                     self.clauses.is_live(*clause)
-                        && self.clauses.header(*clause).assertion_level() <= new_level
+                        && self.clauses.header(*clause).scope() <= new_scope
                 }
             });
         }
 
-        self.shrink_vars_to_frame_boundary(new_level);
+        self.shrink_vars_to_frame_boundary(new_scope);
         Ok(())
     }
 
@@ -191,9 +186,9 @@ impl Solver {
         self.nvars = new_nvars;
         self.assigns.truncate(new_nvars);
         self.sat_level.truncate(new_nvars);
-        self.user_level.truncate(new_nvars);
+        self.assignment_scope.truncate(new_nvars);
         self.reason.truncate(new_nvars);
-        self.intro_level.truncate(new_nvars);
+        self.variable_scope.truncate(new_nvars);
         self.phase.truncate(new_nvars);
         self.var_activity.truncate(new_nvars);
         self.seen.truncate(new_nvars);
@@ -279,7 +274,7 @@ mod tests {
     #[cfg(feature = "telemetry")]
     use super::Solver;
     #[cfg(feature = "telemetry")]
-    use crate::AssertionLevel;
+    use crate::Scope;
     #[cfg(feature = "telemetry")]
     use crate::telemetry;
     #[cfg(feature = "telemetry")]
@@ -313,10 +308,9 @@ mod tests {
     fn delete_clause_leaves_stale_watchers_for_lazy_cleanup() {
         let mut solver = Solver::with_vars(5);
         telemetry::initialize_solver_gauges(0, 0);
-        let dead = solver.attach_learnt_long(&[lit(0), lit(1), lit(2)], 4, AssertionLevel::ROOT);
+        let dead = solver.attach_learnt_long(&[lit(0), lit(1), lit(2)], 4, Scope::ROOT);
         solver.delete_clause(dead);
-        let replacement =
-            solver.attach_learnt_long(&[lit(0), lit(3), lit(4)], 3, AssertionLevel::ROOT);
+        let replacement = solver.attach_learnt_long(&[lit(0), lit(3), lit(4)], 3, Scope::ROOT);
 
         assert_eq!(dead.slot(), replacement.slot());
         assert_ne!(dead, replacement);
@@ -340,11 +334,8 @@ mod tests {
         let mut solver = Solver::with_vars(3 * 128);
         telemetry::initialize_solver_gauges(0, 0);
 
-        let core = solver.attach_learnt_long(
-            &[lit(0), lit(1), lit(2)],
-            CORE_LBD_CUTOFF,
-            AssertionLevel::ROOT,
-        );
+        let core =
+            solver.attach_learnt_long(&[lit(0), lit(1), lit(2)], CORE_LBD_CUTOFF, Scope::ROOT);
         solver.clauses.set_activity(core, 0.01);
 
         for clause_idx in 1..128usize {
@@ -352,7 +343,7 @@ mod tests {
             let cid = solver.attach_learnt_long(
                 &[lit(base), lit(base + 1), lit(base + 2)],
                 CORE_LBD_CUTOFF + 4,
-                AssertionLevel::ROOT,
+                Scope::ROOT,
             );
             solver.clauses.set_activity(cid, 100.0 + clause_idx as f32);
         }

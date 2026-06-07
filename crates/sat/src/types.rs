@@ -1,25 +1,25 @@
 use std::ops::Not;
 
-/// User-level assertion depth created by SMT-LIB `push` and `pop`.
+/// SMT assertion-stack scope created by `push` and `pop`.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
-pub struct AssertionLevel(u32);
+pub struct Scope(u32);
 
-impl AssertionLevel {
-    /// The root assertion level.
+impl Scope {
+    /// The root scope.
     pub const ROOT: Self = Self(0);
 
-    /// Returns the zero-based depth index.
+    /// Returns the zero-based scope depth.
     pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
-    /// Creates an assertion level from one zero-based depth.
+    /// Creates a scope from one zero-based depth.
     pub(crate) fn from_index(index: usize) -> Self {
         debug_assert!(u32::try_from(index).is_ok());
         Self(index as u32)
     }
 
-    /// Returns the next deeper assertion level.
+    /// Returns the next deeper scope.
     pub(crate) fn next(self) -> Self {
         Self(self.0 + 1)
     }

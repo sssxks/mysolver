@@ -14,7 +14,7 @@ use crate::heap::VarHeap;
 use crate::telemetry;
 #[cfg(feature = "telemetry")]
 use crate::telemetry::Gauges;
-use crate::{AssertionLevel, Lit, Var};
+use crate::{Lit, Scope, Var};
 
 use self::add::ClassifiedTheoryClause;
 use self::propagate::Watcher;
@@ -41,8 +41,8 @@ pub(crate) enum Reason {
         false_lit: Lit,
         /// The propagated literal.
         other: Lit,
-        /// User scope in which this binary clause exists.
-        assertion_level: AssertionLevel,
+        /// Scope in which this binary clause exists.
+        scope: Scope,
     },
     /// The assignment came from a long clause stored in the clause arena.
     Clause(ClauseId),
@@ -58,8 +58,8 @@ pub(crate) struct TheoryReason {
     start: u32,
     /// Number of literals in this reason clause.
     len: u32,
-    /// User scope carried by the theory explanation.
-    assertion_level: AssertionLevel,
+    /// Scope carried by the theory explanation.
+    scope: Scope,
 }
 
 impl TheoryReason {
@@ -88,7 +88,7 @@ pub enum AddClauseResult {
     Satisfied,
     /// The clause was added successfully.
     Added,
-    /// The clause made the current user scope immediately inconsistent.
+    /// The clause made the current scope immediately inconsistent.
     Inconsistent,
 }
 
@@ -117,7 +117,7 @@ pub enum TheoryClauseKind {
 pub struct TheoryClause {
     /// Fully explained clause over SAT literals.
     pub lits: Box<[Lit]>,
-    /// Shallowest user assertion level where this clause is valid.
+    /// Shallowest scope where this clause is valid.
     ///
     /// The theory producer must set this to at least the deepest `push()` frame
     /// that any non-literal dependency of the clause relies on. For input clauses
@@ -125,10 +125,10 @@ pub struct TheoryClause {
     /// propagation and conflict explanations, SAT also raises the stored scope to
     /// cover variables appearing in `lits`, but empty explanations and dependencies
     /// not represented by literals still rely on this value. Under-reporting this
-    /// level is unsound because learned clauses may survive a `pop()` that removes
+    /// scope is unsound because learned clauses may survive a `pop()` that removes
     /// their justification; over-reporting is sound but prevents reuse in shallower
     /// scopes.
-    pub assertion_level: AssertionLevel,
+    pub scope: Scope,
     /// Classification used only for metrics and debugging.
     pub kind: TheoryClauseKind,
 }
@@ -139,8 +139,8 @@ pub struct TheoryClause {
 struct TheoryConflict {
     /// Falsified theory-clause literals under the current trail.
     lits: Box<[Lit]>,
-    /// User scope carried by the theory explanation.
-    assertion_level: AssertionLevel,
+    /// Scope carried by the theory explanation.
+    scope: Scope,
 }
 
 /// One conflict source waiting for root-level handling or first-UIP analysis.
@@ -152,13 +152,13 @@ enum SearchConflict {
     Propagation(propagate::Conflict),
 }
 
-/// SAT and user-scope coordinates for one search conflict.
+/// SAT decision and assertion-stack coordinates for one search conflict.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 struct SearchConflictScope {
     /// Highest SAT decision level occurring in the conflict clause.
     decision_level: usize,
-    /// User assertion level where a root-level conflict remains visible.
-    assertion_level: AssertionLevel,
+    /// Scope where a root-level conflict remains visible.
+    scope: Scope,
 }
 
 /// The minimal CDCL(T) callback surface consumed by the SAT engine.
@@ -194,11 +194,11 @@ pub trait Theory {
     }
 }
 
-/// One pushed user-level assertion frame.
+/// One pushed assertion-stack scope frame.
 #[derive(Clone, Debug)]
-pub(crate) struct UserFrame {
-    /// Level represented by this frame.
-    level: AssertionLevel,
+pub(crate) struct ScopeFrame {
+    /// Scope represented by this frame.
+    scope: Scope,
     /// Number of variables allocated before this frame was pushed.
     vars_base: usize,
 }
@@ -208,8 +208,8 @@ pub(crate) struct UserFrame {
 pub(crate) struct AnalyzeSummary {
     /// Decision level to keep when backtracking before asserting the learned clause.
     backtrack_level: usize,
-    /// User-level scope required for the learned clause to remain sound.
-    assertion_level: AssertionLevel,
+    /// Scope required for the learned clause to remain sound.
+    scope: Scope,
     /// Number of distinct decision levels present in the minimized learned clause.
     lbd: u32,
 }
@@ -217,12 +217,12 @@ pub(crate) struct AnalyzeSummary {
 /// A CDCL SAT solver over CNF formulas.
 #[derive(Debug)]
 pub struct Solver {
-    /// The shallowest user scope currently known to be immediately inconsistent.
-    inconsistent_assertion_level: Option<AssertionLevel>,
-    /// Current user assertion level.
-    assertion_level: AssertionLevel,
-    /// Stack of pushed user frames above root.
-    user_frames: Vec<UserFrame>,
+    /// The shallowest scope currently known to be immediately inconsistent.
+    inconsistent_scope: Option<Scope>,
+    /// Current assertion-stack scope.
+    current_scope: Scope,
+    /// Stack of pushed scope frames above root.
+    scope_frames: Vec<ScopeFrame>,
     /// The number of variables currently allocated and in scope.
     nvars: usize,
 
@@ -230,12 +230,16 @@ pub struct Solver {
     assigns: Vec<LBool>,
     /// Decision level at which each variable was assigned.
     sat_level: Vec<usize>,
-    /// User assertion level at which each variable was assigned.
-    user_level: Vec<AssertionLevel>,
+    /// Scope in which each current assignment was produced.
+    assignment_scope: Vec<Scope>,
     /// Antecedent reason for each assignment, eagerly maintained [`ClauseId`] liveness.
     reason: Vec<Reason>,
-    /// User assertion level where each variable was introduced.
-    intro_level: Vec<AssertionLevel>,
+    /// Transient theory clauses used as reasons for unit theory propagations.
+    theory_reason_lits: Vec<Lit>,
+    /// Ranges into `theory_reason_lits`.
+    theory_reasons: Vec<TheoryReason>,
+    /// Scope where each variable was introduced.
+    variable_scope: Vec<Scope>,
     /// Saved branching polarity for phase saving.
     phase: Vec<bool>,
     /// Count of variables that are currently assigned.
@@ -256,10 +260,6 @@ pub struct Solver {
     learnts: Vec<ClauseId>,
     /// Arena storing all long clauses.
     clauses: ClauseArena,
-    /// Transient theory clauses used as reasons for unit theory propagations.
-    theory_reason_lits: Vec<Lit>,
-    /// Ranges into `theory_reason_lits`.
-    theory_reasons: Vec<TheoryReason>,
 
     /// VSIDS activity per variable.
     var_activity: Vec<f64>,
@@ -281,8 +281,8 @@ pub struct Solver {
     analyze_stack: Vec<Var>,
     /// Memoized redundancy states used while minimizing learned clauses.
     minimize_cache: Vec<u8>,
-    /// User-scope contribution for redundancy proofs cached as true.
-    minimize_scope_cache: Vec<AssertionLevel>,
+    /// Scope contribution for redundancy proofs cached as true.
+    minimize_scope_cache: Vec<Scope>,
     /// Variables whose redundancy cache entries must be cleared after one analysis.
     minimize_touched: Vec<Var>,
     /// Epoch-stamped decision levels used while counting clause LBD values.
@@ -303,15 +303,15 @@ impl Solver {
     /// Creates an empty solver with no variables or clauses.
     pub fn new() -> Self {
         Self {
-            inconsistent_assertion_level: None,
-            assertion_level: AssertionLevel::ROOT,
-            user_frames: Vec::new(),
+            inconsistent_scope: None,
+            current_scope: Scope::ROOT,
+            scope_frames: Vec::new(),
             nvars: 0,
             assigns: Vec::new(),
             sat_level: Vec::new(),
-            user_level: Vec::new(),
+            assignment_scope: Vec::new(),
             reason: Vec::new(),
-            intro_level: Vec::new(),
+            variable_scope: Vec::new(),
             phase: Vec::new(),
             assigned_count: 0,
             trail: Vec::new(),
@@ -355,16 +355,16 @@ impl Solver {
         self.nvars += 1;
         self.assigns.push(LBool::Undef);
         self.sat_level.push(0);
-        self.user_level.push(AssertionLevel::ROOT);
+        self.assignment_scope.push(Scope::ROOT);
         self.reason.push(Reason::None);
-        self.intro_level.push(self.assertion_level);
+        self.variable_scope.push(self.current_scope);
         self.phase.push(true);
         self.watches.push(Vec::new());
         self.watches.push(Vec::new());
         self.var_activity.push(0.0);
         self.seen.push(false);
         self.minimize_cache.push(0);
-        self.minimize_scope_cache.push(AssertionLevel::ROOT);
+        self.minimize_scope_cache.push(Scope::ROOT);
         self.order.new_var();
         self.order.insert(v, &self.var_activity);
         v
@@ -381,17 +381,17 @@ impl Solver {
         self.trail_lim.len()
     }
 
-    /// Returns whether a remembered inconsistency is active in the current user scope.
+    /// Returns whether a remembered inconsistency is active in the current scope.
     #[inline(always)]
     fn not_ok(&self) -> bool {
-        self.inconsistent_assertion_level
-            .is_some_and(|level| level <= self.assertion_level)
+        self.inconsistent_scope
+            .is_some_and(|level| level <= self.current_scope)
     }
 
-    /// Returns the current user assertion level.
+    /// Returns the current assertion-stack scope.
     #[cfg(test)]
-    pub(crate) fn current_assertion_level(&self) -> AssertionLevel {
-        self.assertion_level
+    pub(crate) fn current_scope(&self) -> Scope {
+        self.current_scope
     }
 
     /// Returns the current truth value of `lit`, if assigned.
@@ -561,27 +561,27 @@ impl Solver {
         }
     }
 
-    /// Starts one new user assertion frame.
+    /// Starts one new assertion-stack scope frame.
     pub fn push(&mut self) {
         self.reset_search();
         debug_assert_eq!(self.decision_level(), 0);
-        let new_level = self.assertion_level.next();
-        self.user_frames.push(UserFrame {
-            level: new_level,
+        let new_scope = self.current_scope.next();
+        self.scope_frames.push(ScopeFrame {
+            scope: new_scope,
             vars_base: self.nvars,
         });
-        self.assertion_level = new_level;
+        self.current_scope = new_scope;
     }
 
-    /// Pops `n` user assertion frames.
+    /// Pops `n` assertion-stack scope frames.
     pub fn pop(&mut self, n: usize) -> Result<(), PopError> {
         self.reset_search();
         let target_depth = self
-            .assertion_level
+            .current_scope
             .index()
             .checked_sub(n)
             .ok_or(PopError::Underflow)?;
-        self.pop_to_assertion_level(AssertionLevel::from_index(target_depth))
+        self.pop_to_scope(Scope::from_index(target_depth))
     }
 
     /// Emits one periodic telemetry sample when the timer thread requested it.
@@ -621,29 +621,26 @@ impl Solver {
         for clause in out.drain(..) {
             match self.classify_theory_clause(&clause) {
                 ClassifiedTheoryClause::Satisfied => {}
-                ClassifiedTheoryClause::Conflict {
-                    lits,
-                    assertion_level,
-                } => {
+                ClassifiedTheoryClause::Conflict { lits, scope } => {
                     return Some(TheoryConflict {
                         lits: lits.into_boxed_slice(),
-                        assertion_level,
+                        scope,
                     });
                 }
                 ClassifiedTheoryClause::Unit {
                     lits,
                     unit_index,
-                    assertion_level,
+                    scope,
                 } => {
-                    let _ = self.insert_unit_theory_clause(lits, unit_index, assertion_level);
+                    let _ = self.insert_unit_theory_clause(lits, unit_index, scope);
                 }
                 ClassifiedTheoryClause::Watch {
                     lits,
                     first,
                     second,
-                    assertion_level,
+                    scope,
                 } => {
-                    let _ = self.insert_watched_theory_clause(lits, first, second, assertion_level);
+                    let _ = self.insert_watched_theory_clause(lits, first, second, scope);
                 }
             }
         }
@@ -665,7 +662,7 @@ impl Solver {
 
         let conflict_scope = self.search_conflict_scope(&conflict);
         if conflict_scope.decision_level == 0 {
-            self.inconsistent_assertion_level = Some(conflict_scope.assertion_level);
+            self.inconsistent_scope = Some(conflict_scope.scope);
             self.maybe_emit_telemetry_sample(theory);
             return Some(SatResult::Unsat);
         }
@@ -677,14 +674,14 @@ impl Solver {
 
         let summary = match conflict {
             SearchConflict::Theory(conflict) => {
-                self.analyze_theory_clause(&conflict.lits, conflict.assertion_level, learnt)
+                self.analyze_theory_clause(&conflict.lits, conflict.scope, learnt)
             }
             SearchConflict::Propagation(conflict) => self.analyze(conflict, learnt),
         };
 
         self.cancel_until(summary.backtrack_level);
         theory.notify_backtrack(summary.backtrack_level);
-        self.add_learnt_clause(learnt, summary.lbd, summary.assertion_level);
+        self.add_learnt_clause(learnt, summary.lbd, summary.scope);
         self.var_decay_activity();
         self.clause_decay_activity();
 
@@ -697,7 +694,7 @@ impl Solver {
         None
     }
 
-    /// Returns the SAT decision and user assertion coordinates for one conflict.
+    /// Returns the SAT decision and assertion-stack coordinates for one conflict.
     fn search_conflict_scope(&self, conflict: &SearchConflict) -> SearchConflictScope {
         match conflict {
             SearchConflict::Theory(conflict) => self.theory_conflict_scope(conflict),
@@ -705,52 +702,52 @@ impl Solver {
         }
     }
 
-    /// Returns the SAT decision and user assertion coordinates for one theory conflict.
+    /// Returns the SAT decision and assertion-stack coordinates for one theory conflict.
     fn theory_conflict_scope(&self, conflict: &TheoryConflict) -> SearchConflictScope {
         let mut decision_level = 0;
-        let mut assertion_level = conflict.assertion_level;
+        let mut scope = conflict.scope;
         for &lit in &conflict.lits {
             let vi = lit.var().index();
             decision_level = decision_level.max(self.sat_level[vi]);
-            assertion_level = assertion_level.max(self.user_level[vi]);
+            scope = scope.max(self.assignment_scope[vi]);
         }
         SearchConflictScope {
             decision_level,
-            assertion_level,
+            scope,
         }
     }
 
-    /// Returns the SAT decision and user assertion coordinates for one propagation conflict.
+    /// Returns the SAT decision and assertion-stack coordinates for one propagation conflict.
     fn propagation_conflict_scope(&self, conflict: propagate::Conflict) -> SearchConflictScope {
         match conflict {
             propagate::Conflict::Binary {
                 false_lit,
                 other,
-                assertion_level,
+                scope,
             } => {
                 let false_vi = false_lit.var().index();
                 let other_vi = other.var().index();
                 SearchConflictScope {
                     decision_level: self.sat_level[false_vi].max(self.sat_level[other_vi]),
-                    assertion_level: assertion_level
-                        .max(self.user_level[false_vi])
-                        .max(self.user_level[other_vi]),
+                    scope: scope
+                        .max(self.assignment_scope[false_vi])
+                        .max(self.assignment_scope[other_vi]),
                 }
             }
             propagate::Conflict::Clause(cid) => {
                 let header = self.clauses.header(cid);
                 let len = header.len();
                 let mut level = 0;
-                let mut assertion_level = header.assertion_level();
+                let mut scope = header.scope();
                 for i in 0..len {
                     let lit = self.clauses.clause(cid).lit(i);
                     let vi = lit.var().index();
                     level = level.max(self.sat_level[vi]);
-                    assertion_level = assertion_level.max(self.user_level[vi]);
+                    scope = scope.max(self.assignment_scope[vi]);
                 }
                 SearchConflictScope {
                     decision_level: level,
-                    assertion_level,
+                    scope,
                 }
             }
         }

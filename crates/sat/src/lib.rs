@@ -21,7 +21,7 @@ pub use solver::{
     AddClauseResult, NullTheory, PopError, SatResult, Solver, Theory, TheoryClause,
     TheoryClauseKind,
 };
-pub use types::{AssertionLevel, Lit, Var};
+pub use types::{Lit, Scope, Var};
 
 #[cfg(test)]
 mod tests {
@@ -85,12 +85,12 @@ mod tests {
                 self.emitted_propagations = true;
                 out.push(TheoryClause {
                     lits: Box::from([!self.premise, self.left]),
-                    assertion_level: AssertionLevel::ROOT,
+                    scope: Scope::ROOT,
                     kind: TheoryClauseKind::PropagationExplanation,
                 });
                 out.push(TheoryClause {
                     lits: Box::from([!self.premise, self.right]),
-                    assertion_level: AssertionLevel::ROOT,
+                    scope: Scope::ROOT,
                     kind: TheoryClauseKind::PropagationExplanation,
                 });
             }
@@ -101,7 +101,7 @@ mod tests {
                 self.emitted_conflict = true;
                 out.push(TheoryClause {
                     lits: Box::from([!self.left, !self.right]),
-                    assertion_level: AssertionLevel::ROOT,
+                    scope: Scope::ROOT,
                     kind: TheoryClauseKind::ConflictExplanation,
                 });
             }
@@ -113,7 +113,7 @@ mod tests {
     }
 
     struct EmptyScopedConflictTheory {
-        assertion_level: AssertionLevel,
+        scope: Scope,
         emitted: bool,
     }
 
@@ -135,7 +135,7 @@ mod tests {
             self.emitted = true;
             out.push(TheoryClause {
                 lits: Box::from([]),
-                assertion_level: self.assertion_level,
+                scope: self.scope,
                 kind: TheoryClauseKind::ConflictExplanation,
             });
         }
@@ -202,13 +202,13 @@ mod tests {
         let mut s = Solver::new();
         s.push();
         let x = s.new_var();
-        assert_eq!(s.current_assertion_level(), AssertionLevel::ROOT.next());
+        assert_eq!(s.current_scope(), Scope::ROOT.next());
         assert_eq!(s.add_clause(&[lit(x)]), AddClauseResult::Added);
         assert_eq!(s.value_lit_public(lit(x)), Some(true));
 
         s.pop(1).expect("frame should exist");
 
-        assert_eq!(s.current_assertion_level(), AssertionLevel::ROOT);
+        assert_eq!(s.current_scope(), Scope::ROOT);
         assert_eq!(s.num_vars(), 0);
     }
 
@@ -244,9 +244,9 @@ mod tests {
     fn empty_theory_conflict_preserves_declared_scope() {
         let mut s = Solver::new();
         s.push();
-        let scoped_level = s.current_assertion_level();
+        let scoped_scope = s.current_scope();
         let mut conflict_theory = EmptyScopedConflictTheory {
-            assertion_level: scoped_level,
+            scope: scoped_scope,
             emitted: false,
         };
 

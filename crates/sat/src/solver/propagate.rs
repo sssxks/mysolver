@@ -6,7 +6,7 @@ use crate::clause_db::ClauseId;
 use crate::telemetry;
 
 use super::{LBool, Reason, Solver};
-use crate::AssertionLevel;
+use crate::Scope;
 
 /// A watched-literal entry attached to a literal's watch list.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -15,8 +15,8 @@ pub(crate) enum Watcher {
     Binary {
         /// The other literal in the watched binary clause.
         other: Lit,
-        /// User scope in which this binary clause exists.
-        assertion_level: AssertionLevel,
+        /// Scope in which this binary clause exists.
+        scope: Scope,
     },
     /// Watches a long clause together with a blocker literal.
     Long {
@@ -36,8 +36,8 @@ pub(crate) enum Conflict {
         false_lit: Lit,
         /// The opposite endpoint of the binary clause.
         other: Lit,
-        /// User scope in which this binary clause exists.
-        assertion_level: AssertionLevel,
+        /// Scope in which this binary clause exists.
+        scope: Scope,
     },
     /// A conflict caused by a falsified long clause.
     Clause(ClauseId),
@@ -83,7 +83,7 @@ impl Solver {
                     LBool::True
                 };
                 self.sat_level[v] = self.decision_level();
-                self.user_level[v] = self.assertion_level;
+                self.assignment_scope[v] = self.current_scope;
                 self.reason[v] = reason;
                 self.phase[v] = !lit.is_negated();
                 self.trail.push(lit);
@@ -140,10 +140,7 @@ impl Solver {
                 let mut conflict: Option<Conflict> = None;
 
                 match watcher {
-                    Watcher::Binary {
-                        other,
-                        assertion_level,
-                    } => match self.value_lit(other) {
+                    Watcher::Binary { other, scope } => match self.value_lit(other) {
                         LBool::True => {
                             keep = Some(watcher);
                         }
@@ -154,13 +151,13 @@ impl Solver {
                                 Reason::Binary {
                                     false_lit,
                                     other,
-                                    assertion_level,
+                                    scope,
                                 },
                             ) {
                                 conflict = Some(Conflict::Binary {
                                     false_lit,
                                     other,
-                                    assertion_level,
+                                    scope,
                                 });
                             }
                         }
@@ -169,7 +166,7 @@ impl Solver {
                             conflict = Some(Conflict::Binary {
                                 false_lit,
                                 other,
-                                assertion_level,
+                                scope,
                             });
                         }
                     },
