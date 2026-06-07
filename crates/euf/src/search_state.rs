@@ -9,15 +9,15 @@ use sat::{Literal, TheoryClause};
 
 use crate::arena::{ArenaSlice, make_hash};
 use crate::registry::Registry;
-use crate::types::{EClassId, SymbolId, TermId, TheoryAtomId};
+use crate::types::{EClass, Symbol, Term, TheoryAtom};
 
 /// One input equality waiting to merge.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct MergeInput {
     /// Left term.
-    pub(crate) lhs: TermId,
+    pub(crate) lhs: Term,
     /// Right term.
-    pub(crate) rhs: TermId,
+    pub(crate) rhs: Term,
     /// Assigned SAT literal justifying this merge.
     pub(crate) reason_lit: Literal,
 }
@@ -26,9 +26,9 @@ pub struct MergeInput {
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct DiseqInput {
     /// Left term.
-    pub(crate) lhs: TermId,
+    pub(crate) lhs: Term,
     /// Right term.
-    pub(crate) rhs: TermId,
+    pub(crate) rhs: Term,
     /// Assigned SAT literal justifying this disequality.
     pub(crate) reason_lit: Literal,
 }
@@ -37,18 +37,18 @@ pub struct DiseqInput {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct CongruenceSigRef<'a> {
     /// Function symbol.
-    fun: SymbolId,
+    fun: Symbol,
     /// Current class representatives of the arguments.
-    arg_reps: &'a [EClassId],
+    arg_reps: &'a [EClass],
 }
 
 /// Owned congruence signature stored in the search-local table.
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct CongruenceSig {
     /// Function symbol.
-    fun: SymbolId,
+    fun: Symbol,
     /// Current class representatives of the arguments.
-    arg_reps: ArenaSlice<EClassId>,
+    arg_reps: ArenaSlice<EClass>,
 }
 
 impl CongruenceSig {
@@ -70,9 +70,9 @@ pub enum MergeReason {
     /// Congruence closure of two application parents.
     Congruence {
         /// Left parent application.
-        left_parent: TermId,
+        left_parent: Term,
         /// Right parent application.
-        right_parent: TermId,
+        right_parent: Term,
     },
 }
 
@@ -80,13 +80,13 @@ pub enum MergeReason {
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct MergeEdge {
     /// Left endpoint.
-    lhs: TermId,
+    lhs: Term,
     /// Right endpoint.
-    rhs: TermId,
+    rhs: Term,
     /// Previous adjacency-list head for the `lhs -> rhs` orientation.
-    next_lhs: DirectedMergeEdgeId,
+    next_lhs: DirectedMergeEdge,
     /// Previous adjacency-list head for the `rhs -> lhs` orientation.
-    next_rhs: DirectedMergeEdgeId,
+    next_rhs: DirectedMergeEdge,
     /// Justification for this equality edge.
     pub(crate) reason: MergeReason,
 }
@@ -94,7 +94,7 @@ pub struct MergeEdge {
 impl MergeEdge {
     /// Returns the endpoint opposite `term` on this undirected merge edge.
     #[inline(always)]
-    pub(crate) fn other_endpoint(self, term: TermId) -> TermId {
+    pub(crate) fn other_endpoint(self, term: Term) -> Term {
         if self.lhs == term {
             return self.rhs;
         }
@@ -104,7 +104,7 @@ impl MergeEdge {
 
     /// Returns the target endpoint for one directed orientation of this edge.
     #[inline(always)]
-    pub(crate) fn target(self, directed: DirectedMergeEdgeId) -> TermId {
+    pub(crate) fn target(self, directed: DirectedMergeEdge) -> Term {
         if directed.is_rhs_to_lhs() {
             return self.lhs;
         }
@@ -113,7 +113,7 @@ impl MergeEdge {
 
     /// Returns the next edge in the source endpoint adjacency list.
     #[inline(always)]
-    pub(crate) fn next(self, directed: DirectedMergeEdgeId) -> DirectedMergeEdgeId {
+    pub(crate) fn next(self, directed: DirectedMergeEdge) -> DirectedMergeEdge {
         if directed.is_rhs_to_lhs() {
             return self.next_rhs;
         }
@@ -121,7 +121,7 @@ impl MergeEdge {
     }
 }
 
-/// Identifier for one directed orientation of a merge edge.
+/// Handle for one directed orientation of a merge edge.
 ///
 /// Semantically, this is `(SearchState::edges index × Direction) + None`.
 ///
@@ -130,11 +130,11 @@ impl MergeEdge {
 /// - `lhs -> rhs` is encoded as `edge.index() * 2`.
 /// - `rhs -> lhs` is encoded as `edge.index() * 2 + 1`.
 /// - `u32::MAX` is reserved as the null adjacency-list terminator.
-/// - Invariants: live raw ids are strictly smaller than `u32::MAX`.
+/// - Invariants: live raw handles are strictly smaller than `u32::MAX`.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub(crate) struct DirectedMergeEdgeId(u32);
+pub(crate) struct DirectedMergeEdge(u32);
 
-impl DirectedMergeEdgeId {
+impl DirectedMergeEdge {
     /// Sentinel for the end of one adjacency list.
     pub(crate) const NONE: Self = Self(u32::MAX);
 
@@ -150,16 +150,16 @@ impl DirectedMergeEdgeId {
         Self::from_edge_index_and_direction(edge_index, true)
     }
 
-    /// Creates one directed edge id from an edge index and orientation bit.
+    /// Creates one directed edge handle from an edge index and orientation bit.
     #[inline(always)]
     fn from_edge_index_and_direction(edge_index: usize, rhs_to_lhs: bool) -> Self {
         let raw = edge_index
             .checked_mul(2)
             .and_then(|raw| raw.checked_add(usize::from(rhs_to_lhs)))
-            .expect("directed merge edge id space exhausted");
+            .expect("directed merge edge handle space exhausted");
         assert!(
             raw < u32::MAX as usize,
-            "directed merge edge id space exhausted"
+            "directed merge edge handle space exhausted"
         );
         Self(raw as u32)
     }
@@ -185,7 +185,7 @@ impl DirectedMergeEdgeId {
     }
 }
 
-impl Default for DirectedMergeEdgeId {
+impl Default for DirectedMergeEdge {
     fn default() -> Self {
         Self::NONE
     }
@@ -197,16 +197,16 @@ pub(crate) struct ExplainVisit {
     /// BFS epoch in which this record is live.
     pub(crate) epoch: u32,
     /// Incoming directed edge on the discovered BFS tree.
-    pub(crate) parent_edge: DirectedMergeEdgeId,
+    pub(crate) parent_edge: DirectedMergeEdge,
 }
 
 /// One active disequality fact.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct DisequalityEntry {
     /// Left endpoint.
-    pub(crate) lhs: TermId,
+    pub(crate) lhs: Term,
     /// Right endpoint.
-    pub(crate) rhs: TermId,
+    pub(crate) rhs: Term,
     /// SAT literal asserting disequality.
     pub(crate) reason_lit: Literal,
 }
@@ -215,9 +215,9 @@ pub struct DisequalityEntry {
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub(crate) struct ClassMerge {
     /// Representative that remains live after the merge.
-    pub(crate) survivor: EClassId,
+    pub(crate) survivor: EClass,
     /// Representative whose class was absorbed.
-    pub(crate) absorbed: EClassId,
+    pub(crate) absorbed: EClass,
     /// Violated active disequality found while scanning the absorbed class.
     ///
     /// The caller must add the merge's proof edge before explaining this conflict.
@@ -255,23 +255,23 @@ pub enum Undo {
     /// Parent pointer change.
     Parent {
         /// Node updated in `parent`.
-        node: TermId,
+        node: Term,
         /// Previous parent value.
-        old_parent: EClassId,
+        old_parent: EClass,
     },
     /// Class-size update for a surviving root.
     ClassSize {
         /// Root updated in `class_size`.
-        root: EClassId,
+        root: EClass,
         /// Previous class size.
         old_size: u32,
     },
     /// Circular class-membership successor change.
     ClassNext {
         /// Node updated in `next_in_class`.
-        node: TermId,
+        node: Term,
         /// Previous successor value.
-        old_next: TermId,
+        old_next: Term,
     },
 }
 
@@ -279,11 +279,11 @@ pub enum Undo {
 #[derive(Debug, Default)]
 pub struct SearchState {
     /// Union-find representative for each term.
-    parent: Vec<EClassId>,
+    parent: Vec<EClass>,
     /// Number of terms in each current representative class.
     class_size: Vec<u32>,
     /// Successor link for each term in one circular class-membership list.
-    next: Vec<TermId>,
+    next: Vec<Term>,
 
     /// Search-lifetime arena for owned congruence signatures.
     ///
@@ -293,20 +293,20 @@ pub struct SearchState {
     /// That keeps `CongruenceSig` as one simple hashable slice handle.
     signature_storage: Bump,
     /// Congruence table keyed by function symbol and current representative arguments.
-    pub(crate) signatures: HashMap<CongruenceSig, TermId>,
+    pub(crate) signatures: HashMap<CongruenceSig, Term>,
     /// Congruence-table insertions in insertion order for SAT-level rollback.
     pub(crate) signature_log: Vec<CongruenceSig>,
     /// Scratch buffer used while building borrowed congruence signatures.
-    signature_scratch: Vec<EClassId>,
+    signature_scratch: Vec<EClass>,
 
     /// Pending input merges still to process.
     pub(crate) pending_merges: VecDeque<MergeInput>,
     /// Assigned theory literals not yet processed by EUF.
     pending_assignments: VecDeque<Literal>,
     /// Parent applications that must be reconsidered.
-    pub(crate) pending_repairs: VecDeque<TermId>,
+    pub(crate) pending_repairs: VecDeque<Term>,
     /// Theory atoms affected by recent class changes.
-    pub(crate) pending_atom_triggers: Vec<TheoryAtomId>,
+    pub(crate) pending_atom_triggers: Vec<TheoryAtom>,
     /// Read cursor into `pending_atom_triggers`.
     pub(crate) pending_atom_qhead: usize,
     /// Per-atom queue-membership bit.
@@ -314,29 +314,29 @@ pub struct SearchState {
     /// Current search-local Boolean value for each theory atom.
     atom_value: Vec<Option<bool>>,
     /// Search-local assigned atom trail for SAT-level rollback.
-    atom_trail: Vec<TheoryAtomId>,
+    atom_trail: Vec<TheoryAtom>,
     /// Pending theory clauses ready to return to SAT.
     pub(crate) pending_clauses: Vec<TheoryClause>,
     /// Currently active disequalities.
     pub(crate) active_disequalities: Vec<DisequalityEntry>,
-    /// Active disequality ids incident to each term.
+    /// Active disequality indexes incident to each term.
     term_disequalities: Vec<Vec<usize>>,
     /// Rollback log for entries appended to `term_disequalities`.
-    disequality_incident_log: Vec<(TermId, usize)>,
+    disequality_incident_log: Vec<(Term, usize)>,
 
     /// Active equality-proof graph.
     pub(crate) edges: Vec<MergeEdge>,
     /// Per-term head of the directed equality-proof adjacency list.
-    pub(crate) graph_heads: Vec<DirectedMergeEdgeId>,
+    pub(crate) graph_heads: Vec<DirectedMergeEdge>,
 
     /// Reusable visited records for equality explanation BFS.
     pub(crate) explain_visits: Vec<ExplainVisit>,
     /// Current nonzero BFS epoch.
     pub(crate) explain_epoch: u32,
     /// Reusable FIFO storage for equality explanation BFS.
-    pub(crate) explain_queue: Vec<TermId>,
+    pub(crate) explain_queue: Vec<Term>,
     /// Pair cache for one recursive equality explanation.
-    pub(crate) explain_cache: HashSet<(TermId, TermId)>,
+    pub(crate) explain_cache: HashSet<(Term, Term)>,
 
     /// Reversible mutation log.
     undo_log: Vec<Undo>,
@@ -346,8 +346,8 @@ pub struct SearchState {
 
 impl SearchState {
     /// Finds one current class representative using an arbitrary parent slice.
-    fn find_in_parent(parent: &[EClassId], term: TermId) -> EClassId {
-        let mut current = EClassId::from_index(term.index());
+    fn find_in_parent(parent: &[EClass], term: Term) -> EClass {
+        let mut current = EClass::from_index(term.index());
         while parent[current.index()] != current {
             current = parent[current.index()];
         }
@@ -363,8 +363,8 @@ impl SearchState {
         self.signature_storage.reset();
 
         for index in 0..nterms {
-            let term = TermId::from_index(index);
-            let rep = EClassId::from_index(index);
+            let term = Term::from_index(index);
+            let rep = EClass::from_index(index);
             self.parent.push(rep);
             self.class_size.push(1);
             self.next.push(term);
@@ -391,7 +391,7 @@ impl SearchState {
         self.disequality_incident_log.clear();
         self.edges.clear();
         self.graph_heads.clear();
-        self.graph_heads.resize(nterms, DirectedMergeEdgeId::NONE);
+        self.graph_heads.resize(nterms, DirectedMergeEdge::NONE);
         self.explain_visits.clear();
         self.explain_epoch = 0;
         self.explain_queue.clear();
@@ -441,14 +441,14 @@ impl SearchState {
             self.active_disequalities
                 .truncate(marker.active_disequalities_len);
             while self.disequality_incident_log.len() > marker.disequality_incident_log_len {
-                let Some((term, id)) = self.disequality_incident_log.pop() else {
+                let Some((term, diseq_index)) = self.disequality_incident_log.pop() else {
                     panic!("checked disequality incidence suffix above");
                 };
                 let Some(last) = self.term_disequalities[term.index()].pop() else {
                     panic!("disequality incidence list must contain logged suffix");
                 };
                 assert_eq!(
-                    last, id,
+                    last, diseq_index,
                     "disequality incidence rollback must be stack-like"
                 );
             }
@@ -465,8 +465,8 @@ impl SearchState {
     }
 
     /// Finds the current class representative of `term`.
-    pub(crate) fn find(&self, term: TermId) -> EClassId {
-        let mut current = EClassId::from_index(term.index());
+    pub(crate) fn find(&self, term: Term) -> EClass {
+        let mut current = EClass::from_index(term.index());
         while self.parent[current.index()] != current {
             current = self.parent[current.index()];
         }
@@ -477,8 +477,8 @@ impl SearchState {
     pub(crate) fn union_roots(
         &mut self,
         registry: &Registry,
-        lhs_root: EClassId,
-        rhs_root: EClassId,
+        lhs_root: EClass,
+        rhs_root: EClass,
     ) -> ClassMerge {
         debug_assert_ne!(lhs_root, rhs_root);
         let (survivor, absorbed) =
@@ -489,7 +489,7 @@ impl SearchState {
             };
 
         self.undo_log.push(Undo::Parent {
-            node: TermId::from_index(absorbed.index()),
+            node: Term::from_index(absorbed.index()),
             old_parent: self.parent[absorbed.index()],
         });
         self.parent[absorbed.index()] = survivor;
@@ -500,7 +500,7 @@ impl SearchState {
         });
         self.class_size[survivor.index()] += self.class_size[absorbed.index()];
 
-        let absorbed_start = TermId::from_index(absorbed.index());
+        let absorbed_start = Term::from_index(absorbed.index());
         let mut term = absorbed_start;
         let mut disequality_conflict = None;
         loop {
@@ -520,8 +520,8 @@ impl SearchState {
             }
         }
 
-        let survivor_node = TermId::from_index(survivor.index());
-        let absorbed_node = TermId::from_index(absorbed.index());
+        let survivor_node = Term::from_index(survivor.index());
+        let absorbed_node = Term::from_index(absorbed.index());
         self.undo_log.push(Undo::ClassNext {
             node: survivor_node,
             old_next: self.next[survivor_node.index()],
@@ -544,7 +544,7 @@ impl SearchState {
     /// Initializes the congruence table for every registered application term.
     fn initialize_congruence_table(&mut self, registry: &Registry) {
         for index in 0..registry.num_terms() {
-            let parent = TermId::from_index(index);
+            let parent = Term::from_index(index);
             if registry.term_ref(parent).args.is_empty() {
                 continue;
             }
@@ -565,8 +565,8 @@ impl SearchState {
     pub(crate) fn fill_congruence_sig_scratch(
         &mut self,
         registry: &Registry,
-        parent: TermId,
-    ) -> Option<SymbolId> {
+        parent: Term,
+    ) -> Option<Symbol> {
         let term = registry.term_ref(parent);
         let union_find_parent = &self.parent;
         self.signature_scratch.clear();
@@ -578,7 +578,7 @@ impl SearchState {
     }
 
     /// Finds one existing congruence-table owner for the current scratch signature.
-    fn find_congruent_parent_for_current_sig(&self, fun: SymbolId) -> Option<TermId> {
+    fn find_congruent_parent_for_current_sig(&self, fun: Symbol) -> Option<Term> {
         let sig = CongruenceSigRef {
             fun,
             arg_reps: &self.signature_scratch,
@@ -591,7 +591,7 @@ impl SearchState {
     }
 
     /// Materializes one owned congruence signature from the current scratch buffer.
-    pub(crate) fn own_current_congruence_sig(&self, fun: SymbolId) -> CongruenceSig {
+    pub(crate) fn own_current_congruence_sig(&self, fun: Symbol) -> CongruenceSig {
         let sig = CongruenceSigRef {
             fun,
             arg_reps: &self.signature_scratch,
@@ -603,14 +603,14 @@ impl SearchState {
     pub(crate) fn find_congruent_parent(
         &mut self,
         registry: &Registry,
-        parent: TermId,
-    ) -> Option<TermId> {
+        parent: Term,
+    ) -> Option<Term> {
         let fun = self.fill_congruence_sig_scratch(registry, parent)?;
         self.find_congruent_parent_for_current_sig(fun)
     }
 
     /// Enqueues one atom trigger at most once.
-    fn enqueue_atom_trigger(&mut self, atom: TheoryAtomId) {
+    fn enqueue_atom_trigger(&mut self, atom: TheoryAtom) {
         if self.atom_is_enqueued[atom.index()] {
             return;
         }
@@ -619,10 +619,10 @@ impl SearchState {
     }
 
     /// Finds one violated active disequality incident to `term`.
-    fn incident_disequality_conflict(&self, term: TermId) -> Option<DisequalityEntry> {
-        for &diseq_id in &self.term_disequalities[term.index()] {
-            let Some(&diseq) = self.active_disequalities.get(diseq_id) else {
-                panic!("active disequality incidence id must name a live entry");
+    fn incident_disequality_conflict(&self, term: Term) -> Option<DisequalityEntry> {
+        for &diseq_index in &self.term_disequalities[term.index()] {
+            let Some(&diseq) = self.active_disequalities.get(diseq_index) else {
+                panic!("active disequality incidence index must name a live entry");
             };
             if self.find(diseq.lhs) == self.find(diseq.rhs) {
                 return Some(diseq);
@@ -647,7 +647,7 @@ impl SearchState {
     }
 
     /// Records one processed theory-atom assignment.
-    pub(crate) fn assign_theory_atom(&mut self, atom: TheoryAtomId, value: bool) {
+    pub(crate) fn assign_theory_atom(&mut self, atom: TheoryAtom, value: bool) {
         if self.atom_value.len() <= atom.index() {
             self.atom_value.resize(atom.index() + 1, None);
         }
@@ -656,7 +656,7 @@ impl SearchState {
     }
 
     /// Returns the current search-local value of one theory atom.
-    pub(crate) fn atom_value(&self, atom: TheoryAtomId) -> Option<bool> {
+    pub(crate) fn atom_value(&self, atom: TheoryAtom) -> Option<bool> {
         self.atom_value.get(atom.index()).copied().flatten()
     }
 
@@ -686,13 +686,13 @@ impl SearchState {
             rhs: input.rhs,
             reason_lit: input.reason_lit,
         };
-        let id = self.active_disequalities.len();
+        let diseq_index = self.active_disequalities.len();
         self.active_disequalities.push(entry);
-        self.term_disequalities[input.lhs.index()].push(id);
-        self.disequality_incident_log.push((input.lhs, id));
+        self.term_disequalities[input.lhs.index()].push(diseq_index);
+        self.disequality_incident_log.push((input.lhs, diseq_index));
         if input.lhs != input.rhs {
-            self.term_disequalities[input.rhs.index()].push(id);
-            self.disequality_incident_log.push((input.rhs, id));
+            self.term_disequalities[input.rhs.index()].push(diseq_index);
+            self.disequality_incident_log.push((input.rhs, diseq_index));
         }
         entry
     }
@@ -716,10 +716,10 @@ impl SearchState {
 
     /// Appends one undirected merge edge and its two directed adjacency entries.
     #[inline(always)]
-    pub(crate) fn push_merge_edge(&mut self, lhs: TermId, rhs: TermId, reason: MergeReason) {
+    pub(crate) fn push_merge_edge(&mut self, lhs: Term, rhs: Term, reason: MergeReason) {
         let edge_index = self.edges.len();
-        let lhs_directed = DirectedMergeEdgeId::lhs_to_rhs(edge_index);
-        let rhs_directed = DirectedMergeEdgeId::rhs_to_lhs(edge_index);
+        let lhs_directed = DirectedMergeEdge::lhs_to_rhs(edge_index);
+        let rhs_directed = DirectedMergeEdge::rhs_to_lhs(edge_index);
         let lhs_head = self.graph_heads[lhs.index()];
         let rhs_head = self.graph_heads[rhs.index()];
         self.edges.push(MergeEdge {
@@ -738,8 +738,8 @@ impl SearchState {
         while self.edges.len() > keep_len {
             let edge_index = self.edges.len() - 1;
             let edge = self.edges[edge_index];
-            let lhs_directed = DirectedMergeEdgeId::lhs_to_rhs(edge_index);
-            let rhs_directed = DirectedMergeEdgeId::rhs_to_lhs(edge_index);
+            let lhs_directed = DirectedMergeEdge::lhs_to_rhs(edge_index);
+            let rhs_directed = DirectedMergeEdge::rhs_to_lhs(edge_index);
             debug_assert_eq!(self.graph_heads[edge.lhs.index()], lhs_directed);
             debug_assert_eq!(self.graph_heads[edge.rhs.index()], rhs_directed);
 

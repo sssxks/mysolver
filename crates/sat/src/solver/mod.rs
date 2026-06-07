@@ -9,7 +9,7 @@ mod search;
 
 use std::ops::Range;
 
-use crate::clause_db::{ClauseArena, Clause};
+use crate::clause_db::{Clause, ClauseArena};
 use crate::heap::VarHeap;
 use crate::telemetry;
 #[cfg(feature = "telemetry")]
@@ -232,7 +232,7 @@ pub struct Solver {
     level: Vec<Level>,
     /// Scope in which each current assignment was produced.
     assignment_scope: Vec<Scope>,
-    /// Antecedent reason for each assignment, eagerly maintained [`ClauseId`] liveness.
+    /// Antecedent reason for each assignment, eagerly maintained [`Clause`] liveness.
     reason: Vec<Reason>,
     /// Transient theory clauses used as reasons for unit theory propagations.
     theory_reason_lits: Vec<Literal>,
@@ -254,9 +254,9 @@ pub struct Solver {
     /// Read cursor into `trail` for theory notifications.
     theory_qhead: usize,
 
-    /// Watch lists indexed by packed literal, may contain invalid [`ClauseId`]s.
+    /// Watch lists indexed by packed literal, may contain invalid [`Clause`]s.
     watches: Vec<Vec<Watcher>>,
-    /// Active learned clauses, eagerly maintained [`ClauseId`] liveness.
+    /// Active learned clauses, eagerly maintained [`Clause`] liveness.
     learnts: Vec<Clause>,
     /// Arena storing all long clauses.
     clauses: ClauseArena,

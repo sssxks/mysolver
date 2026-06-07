@@ -23,21 +23,21 @@ pub(crate) struct Driver {
     /// EUF theory module.
     euf: EufTheory,
     /// Declared sort environment.
-    sorts: HashMap<Box<str>, euf::SortId>,
+    sorts: HashMap<Box<str>, euf::Sort>,
     /// Declared function environment.
     funs: HashMap<Box<str>, FunDecl>,
     /// Reuse map for canonical equality atoms.
-    eq_lits: HashMap<(euf::TermId, euf::TermId), Literal>,
+    eq_lits: HashMap<(euf::Term, euf::Term), Literal>,
     /// Cached sort of each term interned through this driver.
-    term_sorts: HashMap<euf::TermId, euf::SortId>,
+    term_sorts: HashMap<euf::Term, euf::Sort>,
     /// Bool-sorted terms that already have two-valued domain clauses attached.
-    bool_terms_constrained: HashSet<euf::TermId>,
-    /// Cached Boolean sort id.
-    bool_sort: Option<euf::SortId>,
+    bool_terms_constrained: HashSet<euf::Term>,
+    /// Cached Boolean sort.
+    bool_sort: Option<euf::Sort>,
     /// Cached canonical true term.
-    true_term: Option<euf::TermId>,
+    true_term: Option<euf::Term>,
     /// Cached canonical false term.
-    false_term: Option<euf::TermId>,
+    false_term: Option<euf::Term>,
     /// Whether the root clause `true != false` has already been asserted.
     bool_constants_separated: bool,
     /// Lexically scoped `let` bindings used while lowering one expression.
@@ -131,8 +131,8 @@ impl Driver {
         }
     }
 
-    /// Resolves one sort name into one canonical sort identifier.
-    fn resolve_sort(&mut self, name: &str) -> Result<euf::SortId, String> {
+    /// Resolves one sort name into one canonical sort handle.
+    fn resolve_sort(&mut self, name: &str) -> Result<euf::Sort, String> {
         if name == "Bool" {
             let sort = self.euf.intern_sort(SortRef::Bool);
             self.bool_sort = Some(sort);
@@ -405,7 +405,7 @@ impl Driver {
     }
 
     /// Lowers one term-position expression.
-    fn lower_term(&mut self, expr: &SExpr) -> Result<euf::TermId, String> {
+    fn lower_term(&mut self, expr: &SExpr) -> Result<euf::Term, String> {
         match expr {
             SExpr::Atom(atom) if atom.as_ref() == "true" => self.true_term(),
             SExpr::Atom(atom) if atom.as_ref() == "false" => self.false_term(),
@@ -484,7 +484,7 @@ impl Driver {
         cond: &SExpr,
         then_branch: &SExpr,
         else_branch: &SExpr,
-    ) -> Result<euf::TermId, String> {
+    ) -> Result<euf::Term, String> {
         let cond = self.lower_formula(cond)?;
         let then_term = self.lower_term(then_branch)?;
         let else_term = self.lower_term(else_branch)?;
@@ -510,7 +510,7 @@ impl Driver {
     }
 
     /// Returns one SAT literal representing the equality atom `lhs = rhs`.
-    fn equality_literal(&mut self, lhs: euf::TermId, rhs: euf::TermId) -> Literal {
+    fn equality_literal(&mut self, lhs: euf::Term, rhs: euf::Term) -> Literal {
         let key = if rhs < lhs { (rhs, lhs) } else { (lhs, rhs) };
         if let Some(&lit) = self.eq_lits.get(&key) {
             return lit;
@@ -523,13 +523,13 @@ impl Driver {
     }
 
     /// Returns one SAT literal representing the Boolean term `term = true`.
-    fn bool_term_literal(&mut self, term: euf::TermId) -> Literal {
+    fn bool_term_literal(&mut self, term: euf::Term) -> Literal {
         let true_term = self.true_term().expect("true term must be available");
         self.equality_literal(term, true_term)
     }
 
     /// Reifies one Boolean view into one Bool-sorted term.
-    fn bool_view_term(&mut self, view: BoolView) -> Result<euf::TermId, String> {
+    fn bool_view_term(&mut self, view: BoolView) -> Result<euf::Term, String> {
         match view {
             BoolView::True => self.true_term(),
             BoolView::False => self.false_term(),
@@ -548,26 +548,26 @@ impl Driver {
     }
 
     /// Interns one term without adding any extra Boolean-domain constraints.
-    fn intern_term_unchecked(&mut self, term: TermRef<'_>, sort: euf::SortId) -> euf::TermId {
-        let term_id = self.euf.intern_term(term, sort);
-        self.term_sorts.insert(term_id, sort);
-        term_id
+    fn intern_term_unchecked(&mut self, term: TermRef<'_>, sort: euf::Sort) -> euf::Term {
+        let term = self.euf.intern_term(term, sort);
+        self.term_sorts.insert(term, sort);
+        term
     }
 
     /// Interns one term and records its sort locally.
-    fn intern_term(&mut self, term: TermRef<'_>, sort: euf::SortId) -> euf::TermId {
-        let term_id = self.intern_term_unchecked(term, sort);
+    fn intern_term(&mut self, term: TermRef<'_>, sort: euf::Sort) -> euf::Term {
+        let term = self.intern_term_unchecked(term, sort);
         if Some(sort) == self.bool_sort
-            && self.true_term != Some(term_id)
-            && self.false_term != Some(term_id)
+            && self.true_term != Some(term)
+            && self.false_term != Some(term)
         {
-            self.enforce_bool_term_domain(term_id);
+            self.enforce_bool_term_domain(term);
         }
-        term_id
+        term
     }
 
     /// Returns the sort of one previously interned term.
-    fn term_sort(&self, term: euf::TermId) -> Result<euf::SortId, String> {
+    fn term_sort(&self, term: euf::Term) -> Result<euf::Sort, String> {
         self.term_sorts
             .get(&term)
             .copied()
@@ -575,7 +575,7 @@ impl Driver {
     }
 
     /// Returns the canonical Boolean sort.
-    fn bool_sort(&mut self) -> euf::SortId {
+    fn bool_sort(&mut self) -> euf::Sort {
         if let Some(sort) = self.bool_sort {
             return sort;
         }
@@ -585,7 +585,7 @@ impl Driver {
     }
 
     /// Returns the canonical true term.
-    fn true_term(&mut self) -> Result<euf::TermId, String> {
+    fn true_term(&mut self) -> Result<euf::Term, String> {
         if let Some(term) = self.true_term {
             return Ok(term);
         }
@@ -602,7 +602,7 @@ impl Driver {
     }
 
     /// Returns the canonical false term.
-    fn false_term(&mut self) -> Result<euf::TermId, String> {
+    fn false_term(&mut self) -> Result<euf::Term, String> {
         if let Some(term) = self.false_term {
             return Ok(term);
         }
@@ -619,7 +619,7 @@ impl Driver {
     }
 
     /// Interns one fresh solver-internal constant term of the requested sort.
-    fn fresh_const_term(&mut self, sort: euf::SortId) -> euf::TermId {
+    fn fresh_const_term(&mut self, sort: euf::Sort) -> euf::Term {
         let name = format!("|@qfuf.{}|", self.fresh_const_counter);
         self.fresh_const_counter += 1;
         let symbol = self.euf.intern_symbol(SymbolRef {
@@ -647,7 +647,7 @@ impl Driver {
     }
 
     /// Adds the two-valued Boolean-domain clauses for one Bool-sorted term.
-    fn enforce_bool_term_domain(&mut self, term: euf::TermId) {
+    fn enforce_bool_term_domain(&mut self, term: euf::Term) {
         if !self.bool_terms_constrained.insert(term) {
             return;
         }

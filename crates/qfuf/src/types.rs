@@ -50,12 +50,12 @@ pub(crate) enum Command {
 /// One declared function symbol.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct FunDecl {
-    /// Canonical symbol identifier.
-    pub(crate) symbol: euf::SymbolId,
+    /// Canonical symbol handle.
+    pub(crate) symbol: euf::Symbol,
     /// Declared argument count.
     pub(crate) arity: u32,
     /// Result sort.
-    pub(crate) result_sort: euf::SortId,
+    pub(crate) result_sort: euf::Sort,
 }
 
 /// One lowered Boolean subexpression.
@@ -76,10 +76,10 @@ pub(crate) enum LocalBinding {
     Bool(BoolView),
     /// One term binding cached as a canonical term and its sort.
     Term {
-        /// Canonical term identifier.
-        term: euf::TermId,
+        /// Canonical term handle.
+        term: euf::Term,
         /// Sort of the cached term.
-        sort: euf::SortId,
+        sort: euf::Sort,
     },
 }
 

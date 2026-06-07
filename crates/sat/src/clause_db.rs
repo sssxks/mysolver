@@ -7,8 +7,8 @@ const COMPACTION_WASTE_DIVISOR: usize = 2;
 
 /// A generational handle into one [`ClauseArena`] slot.
 ///
-/// Resolving a clause id against a particular arena state either yields the live
-/// clause occupying this (slot, generation) pair or reports the id as stale.
+/// Resolving a clause handle against a particular arena state either yields the live
+/// clause occupying this (slot, generation) pair or reports the handle as stale.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub(crate) struct Clause {
     /// Physical slot inside the arena header table.
@@ -18,17 +18,17 @@ pub(crate) struct Clause {
 }
 
 impl Clause {
-    /// Creates one clause identifier from one (slot, generation) pair.
+    /// Creates one clause handle from one (slot, generation) pair.
     fn new(slot: u32, generation: u32) -> Self {
         Self { slot, generation }
     }
 
-    /// Returns the zero-based header-table index of this clause id.
+    /// Returns the zero-based header-table index of this clause handle.
     fn slot_index(self) -> usize {
         self.slot as usize
     }
 
-    /// Returns the physical slot named by this clause id.
+    /// Returns the physical slot named by this clause handle.
     pub(crate) fn slot(self) -> u32 {
         self.slot
     }
@@ -246,7 +246,7 @@ impl ClauseMut<'_> {
 /// A clause arena with stable physical slots and relocatable literal payloads.
 #[derive(Debug, Default)]
 pub(crate) struct ClauseArena {
-    /// Clause slots indexed by [`ClauseId::slot`].
+    /// Clause slots indexed by [`Clause::slot`].
     headers: Vec<ClauseHeader>,
     /// VSIDS activity per physical clause slot.
     ///
@@ -303,7 +303,7 @@ impl ClauseArena {
     ) -> Clause {
         assert!(
             self.headers.len() < ClauseHeader::FREE_LIST_END as usize,
-            "clause arena exhausted u32 ids",
+            "clause arena exhausted u32 handles",
         );
         let offset = u32::try_from(self.words.len()).expect("clause arena exhausted u32 offsets");
         let len = u32::try_from(lits.len()).expect("clause length exceeds u32::MAX");
@@ -319,7 +319,8 @@ impl ClauseArena {
             self.lbds[free_slot as usize] = lbd;
             Clause::new(free_slot, generation)
         } else {
-            let slot = u32::try_from(self.headers.len()).expect("clause arena exhausted u32 ids");
+            let slot =
+                u32::try_from(self.headers.len()).expect("clause arena exhausted u32 handles");
             let generation = 0;
             let cid = Clause::new(slot, generation);
             self.headers
@@ -402,7 +403,7 @@ impl ClauseArena {
     #[inline(always)]
     fn try_live_slot(&self, cid: Clause) -> Option<usize> {
         // Slots are never truncated, so out-of-bounds signals a caller bug rather
-        // than a stale id, which is expected and tracked generationally.
+        // than a stale handle, which is expected and tracked generationally.
         let header = self
             .headers
             .get(cid.slot_index())
@@ -420,21 +421,21 @@ impl ClauseArena {
         self.try_live_slot(cid).is_some()
     }
 
-    /// Returns the live slot index named by `cid`, panicking if the id is stale.
+    /// Returns the live slot index named by `cid`, panicking if the handle is stale.
     #[inline(always)]
     pub(crate) fn live_slot(&self, cid: Clause) -> usize {
         self.try_live_slot(cid)
-            .unwrap_or_else(|| panic!("stale clause id: {cid:?}"))
+            .unwrap_or_else(|| panic!("stale clause handle: {cid:?}"))
     }
 
-    /// Returns the live header for `cid`, if the id is not stale.
+    /// Returns the live header for `cid`, if the handle is not stale.
     #[inline(always)]
     fn try_header(&self, cid: Clause) -> Option<&ClauseHeader> {
         let slot = self.try_live_slot(cid)?;
         Some(&self.headers[slot])
     }
 
-    /// Returns the live header for `cid`, panicking if the id is stale.
+    /// Returns the live header for `cid`, panicking if the handle is stale.
     pub(crate) fn header(&self, cid: Clause) -> &ClauseHeader {
         let slot = self.live_slot(cid);
         &self.headers[slot]
@@ -488,7 +489,7 @@ impl ClauseArena {
         self.lbds[slot] = lbd;
     }
 
-    /// Returns an immutable view over `cid`, if the id is not stale.
+    /// Returns an immutable view over `cid`, if the handle is not stale.
     #[inline(always)]
     fn try_clause(&self, cid: Clause) -> Option<ClauseRef<'_>> {
         let header = self.try_header(cid)?;
@@ -498,13 +499,13 @@ impl ClauseArena {
         })
     }
 
-    /// Returns an immutable view over `cid`, panicking if the id is stale.
+    /// Returns an immutable view over `cid`, panicking if the handle is stale.
     pub(crate) fn clause(&self, cid: Clause) -> ClauseRef<'_> {
         self.try_clause(cid)
-            .unwrap_or_else(|| panic!("stale clause id: {cid:?}"))
+            .unwrap_or_else(|| panic!("stale clause handle: {cid:?}"))
     }
 
-    /// Returns a mutable view over `cid`, if the id is not stale.
+    /// Returns a mutable view over `cid`, if the handle is not stale.
     pub(crate) fn try_clause_mut(&mut self, cid: Clause) -> Option<ClauseMut<'_>> {
         let slot = self.try_live_slot(cid)?;
         let range = Self::literal_range_from_header(&self.headers[slot]);
@@ -603,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_compacts_payload_without_rewriting_live_clause_ids() {
+    fn delete_compacts_payload_without_rewriting_live_clause_handles() {
         let mut arena = ClauseArena::new();
 
         let make_clause =

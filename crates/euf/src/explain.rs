@@ -3,16 +3,16 @@
 use sat::Literal;
 
 use crate::registry::Registry;
-use crate::search_state::{DirectedMergeEdgeId, DisequalityEntry, MergeReason, SearchState};
-use crate::types::TermId;
+use crate::search_state::{DirectedMergeEdge, DisequalityEntry, MergeReason, SearchState};
+use crate::types::Term;
 
 impl SearchState {
     /// Explains why `lhs == rhs` currently holds as a multiset of input literals.
     pub(crate) fn explain_equality(
         &mut self,
         registry: &Registry,
-        lhs: TermId,
-        rhs: TermId,
+        lhs: Term,
+        rhs: Term,
         out: &mut Vec<Literal>,
     ) {
         out.clear();
@@ -25,8 +25,8 @@ impl SearchState {
     fn collect_equality_explanation(
         &mut self,
         registry: &Registry,
-        lhs: TermId,
-        rhs: TermId,
+        lhs: Term,
+        rhs: Term,
         out: &mut Vec<Literal>,
     ) {
         if lhs == rhs {
@@ -67,8 +67,8 @@ impl SearchState {
     fn find_equality_explanation_path(
         &mut self,
         registry: &Registry,
-        lhs: TermId,
-        rhs: TermId,
+        lhs: Term,
+        rhs: Term,
     ) -> Option<Vec<crate::search_state::MergeEdge>> {
         self.prepare_explanation_bfs(registry.num_terms());
 
@@ -77,7 +77,7 @@ impl SearchState {
         self.explain_queue.push(lhs);
         self.explain_visits[lhs.index()] = crate::search_state::ExplainVisit {
             epoch,
-            parent_edge: DirectedMergeEdgeId::NONE,
+            parent_edge: DirectedMergeEdge::NONE,
         };
 
         let mut qhead = 0;
@@ -130,7 +130,7 @@ impl SearchState {
             num_terms,
             crate::search_state::ExplainVisit {
                 epoch: 0,
-                parent_edge: DirectedMergeEdgeId::NONE,
+                parent_edge: DirectedMergeEdge::NONE,
             },
         );
 

@@ -837,13 +837,13 @@ For QF-UF, the theory should register only atoms that SAT can mention in clauses
 
 Recommended atom normalization:
 
-- equality atom: `Eq(TermId, TermId)` with sorted endpoints for commutativity,
+- equality atom: `Eq(Term, Term)` with sorted endpoints for commutativity,
 - Boolean term atom: `Eq(term_bool, term_true)`.
 
 Recommended atom-to-SAT mapping:
 
 - `theory_atom_to_var: Vec<Var>`
-- `var_to_theory_atom: Vec<Option<TheoryAtomId>>`
+- `var_to_theory_atom: Vec<Option<TheoryAtom>>`
 
 This mapping belongs at the SAT/theory boundary, not inside the pure term registry.
 
@@ -866,19 +866,19 @@ The following pseudocode is the recommended direction for `crates/euf`. It delib
 
 ```rust
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct SortId(u32);
+pub struct Sort(u32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct SymbolId(u32);
+pub struct Symbol(u32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct TermId(u32);
+pub struct Term(u32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct TheoryAtomId(u32);
+pub struct TheoryAtom(u32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct EClassId(u32);
+pub struct EClass(u32);
 ```
 
 #### Permanent Registry Sketch
@@ -906,19 +906,19 @@ pub enum Sort {
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct Symbol {
     name: ArenaStr,
-    arg_sorts: ArenaSlice<SortId>,
-    result_sort: SortId,
+    arg_sorts: ArenaSlice<Sort>,
+    result_sort: Sort,
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Term {
-    Const(SymbolId),
-    App { fun: SymbolId, args: ArenaSlice<TermId> },
+    Const(Symbol),
+    App { fun: Symbol, args: ArenaSlice<Term> },
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Atom {
-    Eq(TermId, TermId),
+    Eq(Term, Term),
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -930,19 +930,19 @@ pub enum SortRef<'a> {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct SymbolRef<'a> {
     name: &'a str,
-    arg_sorts: &'a [SortId],
-    result_sort: SortId,
+    arg_sorts: &'a [Sort],
+    result_sort: Sort,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum TermRef<'a> {
-    Const(SymbolId),
-    App { fun: SymbolId, args: &'a [TermId] },
+    Const(Symbol),
+    App { fun: Symbol, args: &'a [Term] },
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum AtomRef {
-    Eq(TermId, TermId),
+    Eq(Term, Term),
 }
 
 #[derive(Debug, Default)]
@@ -951,32 +951,32 @@ pub struct RegistryStorage {
 }
 
 #[derive(Debug, Default)]
-pub struct Interner<Id, T> {
+pub struct Interner<Key, T> {
     values: Vec<T>,
-    index: HashMap<T, Id>,
+    index: HashMap<T, Key>,
 }
 
 #[derive(Debug, Default)]
 pub struct Registry {
     storage: RegistryStorage,
 
-    sorts: Interner<SortId, Sort>,
-    symbols: Interner<SymbolId, Symbol>,
-    terms: Interner<TermId, Term>,
-    atoms: Interner<TheoryAtomId, Atom>,
+    sorts: Interner<Sort, Sort>,
+    symbols: Interner<Symbol, Symbol>,
+    terms: Interner<Term, Term>,
+    atoms: Interner<TheoryAtom, Atom>,
 
     /// Sort of each interned term. This is derived metadata, not term identity.
-    term_sort: Vec<SortId>,
+    term_sort: Vec<Sort>,
     /// Permanent atom incidence lists.
     /// `term_atoms[t]` contains every canonical equality atom that mentions `t`.
-    term_atoms: Vec<Vec<TheoryAtomId>>,
+    term_atoms: Vec<Vec<TheoryAtom>>,
 
     /// Permanent structural use-lists for congruence repair.
     /// `parent_apps[t]` contains every application term that mentions `t` as an argument.
-    parent_apps: Vec<Vec<TermId>>,
+    parent_apps: Vec<Vec<Term>>,
 
-    bool_sort: Option<SortId>,
-    true_term: Option<TermId>,
+    bool_sort: Option<Sort>,
+    true_term: Option<Term>,
 }
 ```
 
@@ -984,27 +984,27 @@ The registry API should be shaped roughly like:
 
 ```rust
 impl Registry {
-    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId;
-    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> SymbolId;
-    pub fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId;
-    pub fn intern_atom(&mut self, atom: AtomRef) -> TheoryAtomId;
+    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> Sort;
+    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> Symbol;
+    pub fn intern_term(&mut self, term: TermRef<'_>, sort: Sort) -> Term;
+    pub fn intern_atom(&mut self, atom: AtomRef) -> TheoryAtom;
 
-    pub fn find_sort(&self, sort: SortRef<'_>) -> Option<SortId>;
-    pub fn find_symbol(&self, symbol: SymbolRef<'_>) -> Option<SymbolId>;
-    pub fn find_term(&self, term: TermRef<'_>) -> Option<TermId>;
-    pub fn find_atom(&self, atom: AtomRef) -> Option<TheoryAtomId>;
+    pub fn find_sort(&self, sort: SortRef<'_>) -> Option<Sort>;
+    pub fn find_symbol(&self, symbol: SymbolRef<'_>) -> Option<Symbol>;
+    pub fn find_term(&self, term: TermRef<'_>) -> Option<Term>;
+    pub fn find_atom(&self, atom: AtomRef) -> Option<TheoryAtom>;
 
-    pub fn sort_ref(&self, id: SortId) -> SortRef<'_>;
-    pub fn symbol_ref(&self, id: SymbolId) -> SymbolRef<'_>;
-    pub fn term_ref(&self, id: TermId) -> TermRef<'_>;
-    pub fn atom_ref(&self, id: TheoryAtomId) -> AtomRef;
+    pub fn sort_ref(&self, sort: Sort) -> SortRef<'_>;
+    pub fn symbol_ref(&self, symbol: Symbol) -> SymbolRef<'_>;
+    pub fn term_ref(&self, term: Term) -> TermRef<'_>;
+    pub fn atom_ref(&self, atom: TheoryAtom) -> AtomRef;
     pub fn num_terms(&self) -> usize;
     pub fn num_atoms(&self) -> usize;
-    pub fn term_sort(&self, id: TermId) -> SortId;
-    pub fn term_atoms(&self, id: TermId) -> &[TheoryAtomId];
-    pub fn parent_apps(&self, id: TermId) -> &[TermId];
-    pub fn bool_sort(&mut self) -> SortId;
-    pub fn true_term(&mut self) -> TermId;
+    pub fn term_sort(&self, term: Term) -> Sort;
+    pub fn term_atoms(&self, term: Term) -> &[TheoryAtom];
+    pub fn parent_apps(&self, term: Term) -> &[Term];
+    pub fn bool_sort(&mut self) -> Sort;
+    pub fn true_term(&mut self) -> Term;
 }
 ```
 
@@ -1020,22 +1020,22 @@ The intended storage discipline is:
 
 The intended lookup discipline is:
 
-- `find_*()` and `intern_*()` accept borrowed query shapes such as `&str`, `&[SortId]`, and `&[TermId]`,
+- `find_*()` and `intern_*()` accept borrowed query shapes such as `&str`, `&[Sort]`, and `&[Term]`,
 - lookup must not allocate temporary boxed keys,
 - on an interner miss, the registry copies the borrowed payload into `storage.bump`, constructs the nominal object, and inserts it.
 
-The `Interner<Id, T>` sketch above is schematic. The important requirement is allocation-free borrowed probing, not the exact internal `HashMap` API shape. In practice this likely means using raw-entry or equivalent borrowed-key lookup so that probing `SymbolRef<'_>` or `TermRef<'_>` does not first materialize an owned `Symbol` or `Term`.
+The `Interner<Key, T>` sketch above is schematic. The important requirement is allocation-free borrowed probing, not the exact internal `HashMap` API shape. In practice this likely means using raw-entry or equivalent borrowed-key lookup so that probing `SymbolRef<'_>` or `TermRef<'_>` does not first materialize an owned `Symbol` or `Term`.
 
 For example:
 
 - `intern_symbol(SymbolRef { name, arg_sorts, result_sort })`
-  probes the symbol interner with `name: &str` and `arg_sorts: &[SortId]` directly,
+  probes the symbol interner with `name: &str` and `arg_sorts: &[Sort]` directly,
 - only if the symbol is missing does it copy `name` and `arg_sorts` into the bump arena,
 - the resulting `Symbol` then becomes both the canonical stored object and the interner key.
 
 When interning `TermRef::App { fun, args }`, the registry should also append the new parent term ID to `parent_apps[arg]` for each child argument. This relation is structural and solver-lifetime permanent, so it should not live in the backtrackable search state.
 
-When interning a canonical equality atom `Atom::Eq(lhs, rhs)`, the registry should append that `TheoryAtomId` to `term_atoms[lhs]` and `term_atoms[rhs]`. If `lhs == rhs`, it should append only once. This relation is also permanent and does not backtrack with SAT search.
+When interning a canonical equality atom `Atom::Eq(lhs, rhs)`, the registry should append that `TheoryAtom` to `term_atoms[lhs]` and `term_atoms[rhs]`. If `lhs == rhs`, it should append only once. This relation is also permanent and does not backtrack with SAT search.
 
 The theory-atom to SAT-variable mapping is intentionally **not** part of `Registry`. It belongs to the SAT/theory boundary owned by `EufTheory`, because the same canonical atom identity is theory-side structure while the attached SAT variable is frontend/lowering metadata.
 
@@ -1055,50 +1055,50 @@ All lowering and theory-atom registration for the currently active SMT-LIB asser
 ```rust
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct MergeInput {
-    lhs: TermId,
-    rhs: TermId,
+    lhs: Term,
+    rhs: Term,
     reason_lit: Lit,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct DiseqInput {
-    lhs: TermId,
-    rhs: TermId,
+    lhs: Term,
+    rhs: Term,
     reason_lit: Lit,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct CongruenceSigRef<'a> {
-    fun: SymbolId,
-    arg_reps: &'a [EClassId],
+    fun: Symbol,
+    arg_reps: &'a [EClass],
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct CongruenceSig {
-    fun: SymbolId,
-    arg_reps: ArenaSlice<EClassId>,
+    fun: Symbol,
+    arg_reps: ArenaSlice<EClass>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum MergeReason {
     InputEq { reason_lit: Lit },
     Congruence {
-        left_parent: TermId,
-        right_parent: TermId,
+        left_parent: Term,
+        right_parent: Term,
     },
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct MergeEdge {
-    lhs: TermId,
-    rhs: TermId,
+    lhs: Term,
+    rhs: Term,
     reason: MergeReason,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct DisequalityEntry {
-    lhs: TermId,
-    rhs: TermId,
+    lhs: Term,
+    rhs: Term,
     reason_lit: Lit,
 }
 
@@ -1115,11 +1115,11 @@ pub struct LevelMarker {
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Undo {
-    Parent { node: TermId, old_parent: EClassId },
-    Rank { root: EClassId, old_rank: u32 },
-    ClassHead { root: EClassId, old_head: TermId },
-    ClassTail { root: EClassId, old_tail: TermId },
-    ClassNext { node: TermId, old_next: Option<TermId> },
+    Parent { node: Term, old_parent: EClass },
+    Rank { root: EClass, old_rank: u32 },
+    ClassHead { root: EClass, old_head: Term },
+    ClassTail { root: EClass, old_tail: Term },
+    ClassNext { node: Term, old_next: Option<Term> },
     CongruenceInsert { key: CongruenceSig },
 }
 
@@ -1128,25 +1128,25 @@ pub struct SearchState {
     /// Search-lifetime arena for owned congruence signatures.
     congruence_storage: Bump,
     /// Union-find representative for each term.
-    parent: Vec<EClassId>,
+    parent: Vec<EClass>,
     /// Rank or size heuristic for each representative.
     rank: Vec<u32>,
     /// Linked membership list for each equivalence class.
-    class_head: Vec<TermId>,
-    class_tail: Vec<TermId>,
-    next_in_class: Vec<Option<TermId>>,
+    class_head: Vec<Term>,
+    class_tail: Vec<Term>,
+    next_in_class: Vec<Option<Term>>,
 
     /// Congruence table keyed by function symbol and representative arguments.
-    congruence_table: HashMap<CongruenceSig, TermId>,
+    congruence_table: HashMap<CongruenceSig, Term>,
     /// Scratch buffer used to build borrowed congruence signatures without allocation.
-    congruence_sig_scratch: Vec<EClassId>,
+    congruence_sig_scratch: Vec<EClass>,
 
     /// Pending merges still to process.
     pending_merges: VecDeque<MergeInput>,
     /// Parent applications that must be reconsidered after some merge.
-    pending_repairs: VecDeque<TermId>,
+    pending_repairs: VecDeque<Term>,
     /// Theory atoms affected by recent class changes.
-    pending_atom_triggers: Vec<TheoryAtomId>,
+    pending_atom_triggers: Vec<TheoryAtom>,
     pending_atom_qhead: usize,
     atom_is_enqueued: Vec<bool>,
     /// Pending theory clauses to return to SAT.
@@ -1178,8 +1178,8 @@ impl SearchState {
         self.congruence_storage.reset();
 
         for i in 0..nterms {
-            let term = TermId(i as u32);
-            let rep = EClassId(i as u32);
+            let term = Term(i as u32);
+            let rep = EClass(i as u32);
             self.parent.push(rep);
             self.rank.push(0);
             self.class_head.push(term);
@@ -1248,18 +1248,18 @@ The first implementation should expose helpers roughly like:
 
 ```rust
 impl SearchState {
-    pub fn find(&self, term: TermId) -> EClassId;
+    pub fn find(&self, term: Term) -> EClass;
     pub fn union_roots(
         &mut self,
-        lhs_root: EClassId,
-        rhs_root: EClassId,
-    ) -> EClassId;
+        lhs_root: EClass,
+        rhs_root: EClass,
+    ) -> EClass;
     pub fn make_congruence_sig<'a>(
         &'a mut self,
         registry: &Registry,
-        parent: TermId,
+        parent: Term,
     ) -> CongruenceSigRef<'a>;
-    pub fn enqueue_atom_trigger(&mut self, atom: TheoryAtomId);
+    pub fn enqueue_atom_trigger(&mut self, atom: TheoryAtom);
     pub fn enqueue_input_equality(&mut self, input: MergeInput);
     pub fn enqueue_input_disequality(&mut self, input: DiseqInput);
     pub fn rollback_to(&mut self, undo_len: usize);
@@ -1307,16 +1307,16 @@ impl EufTheory {
     fn merge_input(&mut self, input: MergeInput);
     fn merge_due_to_congruence(
         &mut self,
-        lhs_parent: TermId,
-        rhs_parent: TermId,
+        lhs_parent: Term,
+        rhs_parent: Term,
     );
     fn repair_congruence(&mut self);
-    fn enqueue_repairs_for_class(&mut self, root: EClassId);
-    fn enqueue_atom_triggers_for_class(&mut self, root: EClassId);
-    fn repair_parent_app(&mut self, parent: TermId);
+    fn enqueue_repairs_for_class(&mut self, root: EClass);
+    fn enqueue_atom_triggers_for_class(&mut self, root: EClass);
+    fn repair_parent_app(&mut self, parent: Term);
     fn check_active_disequalities(&mut self);
     fn process_pending_atom_triggers(&mut self);
-    fn evaluate_atom_trigger(&mut self, atom: TheoryAtomId);
+    fn evaluate_atom_trigger(&mut self, atom: TheoryAtom);
 }
 ```
 
@@ -1350,9 +1350,9 @@ The search state should reconstruct clauses over SAT literals only. EUF should n
 pub enum EqualityExplanation {
     InputLiteral(Lit),
     Congruence {
-        left_parent: TermId,
-        right_parent: TermId,
-        child_pairs: Box<[(TermId, TermId)]>,
+        left_parent: Term,
+        right_parent: Term,
+        child_pairs: Box<[(Term, Term)]>,
     },
 }
 
@@ -1396,8 +1396,8 @@ impl SearchState {
     pub fn explain_equality(
         &self,
         registry: &Registry,
-        lhs: TermId,
-        rhs: TermId,
+        lhs: Term,
+        rhs: Term,
         out: &mut Vec<Lit>,
     );
 
@@ -1435,7 +1435,7 @@ pub struct EufTheory {
     search: SearchState,
 
     theory_atom_to_var: Vec<Var>,
-    var_to_theory_atom: Vec<Option<TheoryAtomId>>,
+    var_to_theory_atom: Vec<Option<TheoryAtom>>,
 
     /// Queue of assigned theory literals not yet processed by EUF.
     pending_assignments: VecDeque<Lit>,
@@ -1448,19 +1448,19 @@ The frontend-facing API should be roughly:
 impl EufTheory {
     pub fn new() -> Self;
 
-    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId;
-    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> SymbolId;
-    pub fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId;
+    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> Sort;
+    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> Symbol;
+    pub fn intern_term(&mut self, term: TermRef<'_>, sort: Sort) -> Term;
 
-    pub fn intern_equality_atom(&mut self, lhs: TermId, rhs: TermId, sat_var: Var) -> TheoryAtomId;
-    pub fn theory_atom_for_var(&self, var: Var) -> Option<TheoryAtomId>;
+    pub fn intern_equality_atom(&mut self, lhs: Term, rhs: Term, sat_var: Var) -> TheoryAtom;
+    pub fn theory_atom_for_var(&self, var: Var) -> Option<TheoryAtom>;
 
     pub fn atom_literal_kind(&self, lit: Lit) -> Option<AtomLiteralKind>;
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum AtomLiteralKind {
-    Eq { lhs: TermId, rhs: TermId, positive: bool },
+    Eq { lhs: Term, rhs: Term, positive: bool },
 }
 ```
 
@@ -1628,7 +1628,7 @@ Recommended Boolean lowering data:
   - existing SAT literal,
   - newly created Tseitin literal
 - `AssertFrame`
-  - current scope frame id,
+  - current scope frame handle,
   - vector of asserted root literals or clauses
 
 This keeps EUF focused only on equalities, not on parsing or CNF encoding.

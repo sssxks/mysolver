@@ -133,23 +133,23 @@ impl BumpStorage {
 
 /// One canonical interner table.
 #[derive(Debug)]
-pub struct Interner<Id, T> {
+pub struct Interner<Key, T> {
     /// Stored canonical values in insertion order.
     values: Vec<T>,
     /// Fast lookup by stored value.
-    index: HashMap<T, Id>,
+    index: HashMap<T, Key>,
 }
 
 /// Result of one interning attempt.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Interned<Id> {
-    /// Identifier of the canonical stored value.
-    pub(crate) id: Id,
+pub(crate) struct Interned<Key> {
+    /// Key of the canonical stored value.
+    pub(crate) key: Key,
     /// Whether the value was inserted during this call.
     pub(crate) is_new: bool,
 }
 
-impl<Id, T> Default for Interner<Id, T> {
+impl<Key, T> Default for Interner<Key, T> {
     fn default() -> Self {
         Self {
             values: Vec::new(),
@@ -158,9 +158,9 @@ impl<Id, T> Default for Interner<Id, T> {
     }
 }
 
-/// Internal helper for interner identifier construction.
-pub trait InternId: Copy {
-    /// Creates one identifier from a zero-based insertion index.
+/// Internal helper for interner key construction.
+pub trait InternKey: Copy {
+    /// Creates one key from a zero-based insertion index.
     fn from_index(index: usize) -> Self;
 }
 
@@ -180,7 +180,7 @@ pub(crate) trait MatchesRef {
     fn matches_ref(&self, query: Self::Query<'_>) -> bool;
 }
 
-impl<Id: InternId + Eq + Hash, T: Clone + Eq + Hash> Interner<Id, T> {
+impl<Key: InternKey + Eq + Hash, T: Clone + Eq + Hash> Interner<Key, T> {
     /// Interns one borrowed probe, constructing the owned value only on miss.
     ///
     /// # Panics
@@ -188,13 +188,13 @@ impl<Id: InternId + Eq + Hash, T: Clone + Eq + Hash> Interner<Id, T> {
     /// Panics in debug builds if `make_value()` does not produce a value matching
     /// `query`. This protects the contract between the borrowed probe and the owned
     /// value inserted into the canonical table.
-    pub(crate) fn intern<F>(&mut self, query: T::Query<'_>, make_value: F) -> Interned<Id>
+    pub(crate) fn intern<F>(&mut self, query: T::Query<'_>, make_value: F) -> Interned<Key>
     where
         T: MatchesRef,
         F: FnOnce() -> T,
     {
-        if let Some(id) = self.find_ref(query) {
-            return Interned { id, is_new: false };
+        if let Some(key) = self.find_ref(query) {
+            return Interned { key, is_new: false };
         }
 
         let value = make_value();
@@ -203,13 +203,13 @@ impl<Id: InternId + Eq + Hash, T: Clone + Eq + Hash> Interner<Id, T> {
             "intern closure must produce a value matching its query"
         );
 
-        let id = Id::from_index(self.values.len());
+        let key = Key::from_index(self.values.len());
         self.values.push(value.clone());
-        self.index.insert(value, id);
-        Interned { id, is_new: true }
+        self.index.insert(value, key);
+        Interned { key, is_new: true }
     }
     /// Finds one interned value matching the borrowed `query`.
-    fn find_ref(&self, query: T::Query<'_>) -> Option<Id>
+    fn find_ref(&self, query: T::Query<'_>) -> Option<Key>
     where
         T: MatchesRef,
     {
@@ -217,10 +217,10 @@ impl<Id: InternId + Eq + Hash, T: Clone + Eq + Hash> Interner<Id, T> {
         self.index
             .raw_entry()
             .from_hash(hash, |stored| stored.matches_ref(query))
-            .map(|(_, &id)| id)
+            .map(|(_, &key)| key)
     }
 
-    /// Returns the value named by `id`.
+    /// Returns the value at `index`.
     pub(crate) fn get(&self, index: usize) -> &T {
         &self.values[index]
     }
