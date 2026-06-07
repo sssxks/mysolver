@@ -10,14 +10,14 @@ const COMPACTION_WASTE_DIVISOR: usize = 2;
 /// Resolving a clause id against a particular arena state either yields the live
 /// clause occupying this (slot, generation) pair or reports the id as stale.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub(crate) struct ClauseId {
+pub(crate) struct Clause {
     /// Physical slot inside the arena header table.
     slot: u32,
     /// Generation expected to occupy [`Self::slot`].
     generation: u32,
 }
 
-impl ClauseId {
+impl Clause {
     /// Creates one clause identifier from one (slot, generation) pair.
     fn new(slot: u32, generation: u32) -> Self {
         Self { slot, generation }
@@ -274,7 +274,7 @@ impl ClauseArena {
     }
 
     /// Allocates one irredundant clause slot and appends its literal payload.
-    pub(crate) fn alloc_irredundant(&mut self, lits: &[Literal], scope: Scope) -> ClauseId {
+    pub(crate) fn alloc_irredundant(&mut self, lits: &[Literal], scope: Scope) -> Clause {
         self.alloc_with(lits, ClauseHeader::new_irredundant, 0.0, 0, scope)
     }
 
@@ -287,7 +287,7 @@ impl ClauseArena {
         activity: f32,
         lbd: u32,
         scope: Scope,
-    ) -> ClauseId {
+    ) -> Clause {
         assert!(lbd > 0, "learned clauses must store a positive LBD");
         self.alloc_with(lits, ClauseHeader::new_learnt, activity, lbd, scope)
     }
@@ -300,7 +300,7 @@ impl ClauseArena {
         activity: f32,
         lbd: u32,
         scope: Scope,
-    ) -> ClauseId {
+    ) -> Clause {
         assert!(
             self.headers.len() < ClauseHeader::FREE_LIST_END as usize,
             "clause arena exhausted u32 ids",
@@ -317,11 +317,11 @@ impl ClauseArena {
             self.headers[free_slot as usize] = make_header(generation, offset, len, scope);
             self.activities[free_slot as usize] = activity;
             self.lbds[free_slot as usize] = lbd;
-            ClauseId::new(free_slot, generation)
+            Clause::new(free_slot, generation)
         } else {
             let slot = u32::try_from(self.headers.len()).expect("clause arena exhausted u32 ids");
             let generation = 0;
-            let cid = ClauseId::new(slot, generation);
+            let cid = Clause::new(slot, generation);
             self.headers
                 .push(make_header(generation, offset, len, scope));
             self.activities.push(activity);
@@ -334,7 +334,7 @@ impl ClauseArena {
     }
 
     /// Deletes one live clause and either recycles or retires its slot.
-    pub(crate) fn delete(&mut self, cid: ClauseId) {
+    pub(crate) fn delete(&mut self, cid: Clause) {
         let slot = self.live_slot(cid);
         let header = self.headers[slot];
         self.wasted_words += header.len();
@@ -400,7 +400,7 @@ impl ClauseArena {
     /// # Panics
     /// Panics if slot index is out of bounds.
     #[inline(always)]
-    fn try_live_slot(&self, cid: ClauseId) -> Option<usize> {
+    fn try_live_slot(&self, cid: Clause) -> Option<usize> {
         // Slots are never truncated, so out-of-bounds signals a caller bug rather
         // than a stale id, which is expected and tracked generationally.
         let header = self
@@ -416,38 +416,38 @@ impl ClauseArena {
     }
 
     /// Returns whether `cid` still resolves to a live clause.
-    pub(crate) fn is_live(&self, cid: ClauseId) -> bool {
+    pub(crate) fn is_live(&self, cid: Clause) -> bool {
         self.try_live_slot(cid).is_some()
     }
 
     /// Returns the live slot index named by `cid`, panicking if the id is stale.
     #[inline(always)]
-    pub(crate) fn live_slot(&self, cid: ClauseId) -> usize {
+    pub(crate) fn live_slot(&self, cid: Clause) -> usize {
         self.try_live_slot(cid)
             .unwrap_or_else(|| panic!("stale clause id: {cid:?}"))
     }
 
     /// Returns the live header for `cid`, if the id is not stale.
     #[inline(always)]
-    fn try_header(&self, cid: ClauseId) -> Option<&ClauseHeader> {
+    fn try_header(&self, cid: Clause) -> Option<&ClauseHeader> {
         let slot = self.try_live_slot(cid)?;
         Some(&self.headers[slot])
     }
 
     /// Returns the live header for `cid`, panicking if the id is stale.
-    pub(crate) fn header(&self, cid: ClauseId) -> &ClauseHeader {
+    pub(crate) fn header(&self, cid: Clause) -> &ClauseHeader {
         let slot = self.live_slot(cid);
         &self.headers[slot]
     }
 
     /// Returns every live long clause whose scope is deeper than `scope`.
-    pub(crate) fn live_clauses_above_scope(&self, scope: Scope) -> Vec<ClauseId> {
+    pub(crate) fn live_clauses_above_scope(&self, scope: Scope) -> Vec<Clause> {
         self.headers
             .iter()
             .enumerate()
             .filter_map(|(slot, header)| {
                 if header.is_live() && header.scope() > scope {
-                    Some(ClauseId::new(slot as u32, header.generation()))
+                    Some(Clause::new(slot as u32, header.generation()))
                 } else {
                     None
                 }
@@ -456,7 +456,7 @@ impl ClauseArena {
     }
 
     /// Returns the stored activity score for one live learned clause.
-    pub(crate) fn activity(&self, cid: ClauseId) -> f32 {
+    pub(crate) fn activity(&self, cid: Clause) -> f32 {
         let slot = self.live_slot(cid);
         let header = self.headers[slot];
         debug_assert!(header.is_learnt());
@@ -464,7 +464,7 @@ impl ClauseArena {
     }
 
     /// Overwrites the stored activity score for one live learned clause.
-    pub(crate) fn set_activity(&mut self, cid: ClauseId, activity: f32) {
+    pub(crate) fn set_activity(&mut self, cid: Clause, activity: f32) {
         let slot = self.live_slot(cid);
         let header = self.headers[slot];
         debug_assert!(header.is_learnt());
@@ -474,13 +474,13 @@ impl ClauseArena {
     /// Returns the stored LBD score for one live clause.
     ///
     /// Irredundant clauses always report `0`.
-    pub(crate) fn lbd(&self, cid: ClauseId) -> u32 {
+    pub(crate) fn lbd(&self, cid: Clause) -> u32 {
         let slot = self.live_slot(cid);
         self.lbds[slot]
     }
 
     /// Overwrites the stored LBD score for one live learned clause.
-    pub(crate) fn set_lbd(&mut self, cid: ClauseId, lbd: u32) {
+    pub(crate) fn set_lbd(&mut self, cid: Clause, lbd: u32) {
         let slot = self.live_slot(cid);
         let header = self.headers[slot];
         debug_assert!(header.is_learnt());
@@ -490,7 +490,7 @@ impl ClauseArena {
 
     /// Returns an immutable view over `cid`, if the id is not stale.
     #[inline(always)]
-    fn try_clause(&self, cid: ClauseId) -> Option<ClauseRef<'_>> {
+    fn try_clause(&self, cid: Clause) -> Option<ClauseRef<'_>> {
         let header = self.try_header(cid)?;
         let range = Self::literal_range_from_header(header);
         Some(ClauseRef {
@@ -499,13 +499,13 @@ impl ClauseArena {
     }
 
     /// Returns an immutable view over `cid`, panicking if the id is stale.
-    pub(crate) fn clause(&self, cid: ClauseId) -> ClauseRef<'_> {
+    pub(crate) fn clause(&self, cid: Clause) -> ClauseRef<'_> {
         self.try_clause(cid)
             .unwrap_or_else(|| panic!("stale clause id: {cid:?}"))
     }
 
     /// Returns a mutable view over `cid`, if the id is not stale.
-    pub(crate) fn try_clause_mut(&mut self, cid: ClauseId) -> Option<ClauseMut<'_>> {
+    pub(crate) fn try_clause_mut(&mut self, cid: Clause) -> Option<ClauseMut<'_>> {
         let slot = self.try_live_slot(cid)?;
         let range = Self::literal_range_from_header(&self.headers[slot]);
         Some(ClauseMut {
@@ -637,7 +637,7 @@ mod tests {
     fn delete_retires_slot_when_generation_overflows() {
         let mut arena = ClauseArena::new();
         let cid = arena.alloc_irredundant(&[lit(0), lit(1), lit(2)], Scope::ROOT);
-        let retired = super::ClauseId::new(cid.slot(), super::ClauseHeader::MAX_GENERATION);
+        let retired = super::Clause::new(cid.slot(), super::ClauseHeader::MAX_GENERATION);
         arena.headers[cid.slot_index()] = super::ClauseHeader::new_irredundant(
             super::ClauseHeader::MAX_GENERATION,
             0,

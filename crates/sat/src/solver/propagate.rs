@@ -2,7 +2,7 @@
 use std::mem;
 
 use crate::Literal;
-use crate::clause_db::ClauseId;
+use crate::clause_db::Clause;
 use crate::telemetry;
 
 use super::{Reason, Solver, TruthValue};
@@ -21,7 +21,7 @@ pub(crate) enum Watcher {
     /// Watches a long clause together with a blocker literal.
     Long {
         /// The watched long clause.
-        clause: ClauseId,
+        clause: Clause,
         /// A literal that can satisfy the clause without reopening it.
         blocker: Literal,
     },
@@ -40,7 +40,7 @@ pub(crate) enum Conflict {
         scope: Scope,
     },
     /// A conflict caused by a falsified long clause.
-    Clause(ClauseId),
+    Clause(Clause),
 }
 
 /// The result of updating a watched long clause.
@@ -233,7 +233,7 @@ impl Solver {
     }
 
     /// Reprocesses a watched long clause whose second watcher became false.
-    fn process_long_watch(&mut self, cid: ClauseId, false_lit: Literal) -> LongAction {
+    fn process_long_watch(&mut self, cid: Clause, false_lit: Literal) -> LongAction {
         // This cid may be stale. If so, delete it from the watch list.
         let Some(mut clause) = self.clauses.try_clause_mut(cid) else {
             return LongAction::Drop;

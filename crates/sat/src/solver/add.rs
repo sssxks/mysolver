@@ -1,6 +1,6 @@
 use std::cmp::max;
 
-use crate::clause_db::ClauseId;
+use crate::clause_db::Clause;
 use crate::telemetry;
 use crate::{Level, Literal};
 
@@ -188,7 +188,7 @@ impl Solver {
     }
 
     /// Stores and watches one irredundant long clause.
-    fn attach_irredundant_long(&mut self, lits: &[Literal], scope: Scope) -> ClauseId {
+    fn attach_irredundant_long(&mut self, lits: &[Literal], scope: Scope) -> Clause {
         debug_assert!(lits.len() >= 3);
         let w0 = lits[0];
         let w1 = lits[1];
@@ -211,7 +211,7 @@ impl Solver {
         lits: &[Literal],
         lbd: u32,
         scope: Scope,
-    ) -> ClauseId {
+    ) -> Clause {
         debug_assert!(lits.len() >= 3);
         debug_assert!(lbd > 0);
         let w0 = lits[0];

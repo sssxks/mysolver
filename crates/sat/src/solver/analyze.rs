@@ -1,5 +1,5 @@
 use crate::Var;
-use crate::clause_db::ClauseId;
+use crate::clause_db::Clause;
 use crate::{Level, Literal};
 
 use super::propagate::Conflict;
@@ -19,7 +19,7 @@ enum AnalyzeSource<'a> {
         scope: Scope,
     },
     /// Treat a long clause as an analysis source.
-    Clause(ClauseId),
+    Clause(Clause),
     /// Treat one unstored theory explanation clause as an analysis source.
     TheoryClause {
         /// The falsified theory clause literals.
@@ -212,7 +212,7 @@ impl Solver {
     }
 
     /// Accounts for one clause touched during conflict analysis.
-    fn note_clause_analysis(&mut self, cid: ClauseId) {
+    fn note_clause_analysis(&mut self, cid: Clause) {
         self.bump_clause_activity(cid);
 
         if !self.clauses.header(cid).is_learnt() {
@@ -375,7 +375,7 @@ impl Solver {
     }
 
     /// Counts distinct levels in one live clause currently stored in the arena.
-    fn clause_lbd(&mut self, cid: ClauseId) -> u32 {
+    fn clause_lbd(&mut self, cid: Clause) -> u32 {
         let epoch = self.next_lbd_epoch();
         let mut count = 0u32;
         let len = self.clauses.header(cid).len();

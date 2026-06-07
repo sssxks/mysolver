@@ -1,4 +1,4 @@
-use crate::clause_db::ClauseId;
+use crate::clause_db::Clause;
 use crate::telemetry;
 use crate::{Level, Literal, Var};
 
@@ -74,7 +74,7 @@ impl Solver {
     }
 
     /// Increases the activity score of a learned clause.
-    pub(crate) fn bump_clause_activity(&mut self, cid: ClauseId) {
+    pub(crate) fn bump_clause_activity(&mut self, cid: Clause) {
         if !self.clauses.header(cid).is_learnt() {
             return;
         }
@@ -97,7 +97,7 @@ impl Solver {
     ///
     /// Stale long-clause watchers are cleaned up lazily the next time their watched
     /// literal becomes false.
-    fn delete_clause(&mut self, cid: ClauseId) {
+    fn delete_clause(&mut self, cid: Clause) {
         if !self.clauses.is_live(cid) {
             return;
         }
@@ -276,7 +276,7 @@ mod tests {
     #[cfg(feature = "telemetry")]
     use crate::Scope;
     #[cfg(feature = "telemetry")]
-    use crate::clause_db::ClauseId;
+    use crate::clause_db::Clause;
     #[cfg(feature = "telemetry")]
     use crate::telemetry;
     #[cfg(feature = "telemetry")]
@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[cfg(feature = "telemetry")]
-    fn long_watch_count(solver: &Solver, watched: Literal, cid: ClauseId) -> usize {
+    fn long_watch_count(solver: &Solver, watched: Literal, cid: Clause) -> usize {
         solver.watches[watched.index()]
             .iter()
             .filter(|watcher| {

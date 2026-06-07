@@ -9,7 +9,7 @@ mod search;
 
 use std::ops::Range;
 
-use crate::clause_db::{ClauseArena, ClauseId};
+use crate::clause_db::{ClauseArena, Clause};
 use crate::heap::VarHeap;
 use crate::telemetry;
 #[cfg(feature = "telemetry")]
@@ -45,7 +45,7 @@ pub(crate) enum Reason {
         scope: Scope,
     },
     /// The assignment came from a long clause stored in the clause arena.
-    Clause(ClauseId),
+    Clause(Clause),
     /// The assignment came from one unit theory clause kept only as an
     /// implication-graph reason.
     Theory(usize),
@@ -257,7 +257,7 @@ pub struct Solver {
     /// Watch lists indexed by packed literal, may contain invalid [`ClauseId`]s.
     watches: Vec<Vec<Watcher>>,
     /// Active learned clauses, eagerly maintained [`ClauseId`] liveness.
-    learnts: Vec<ClauseId>,
+    learnts: Vec<Clause>,
     /// Arena storing all long clauses.
     clauses: ClauseArena,
 

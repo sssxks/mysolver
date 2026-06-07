@@ -314,7 +314,7 @@ pub(crate) enum Reason {
         scope: Scope,
     },
     /// Long clause stored in the clause arena.
-    Clause(ClauseId),
+    Clause(Clause),
 }
 
 /// One pushed assertion-stack scope frame.
@@ -334,7 +334,7 @@ pub(crate) enum Watcher {
         scope: Scope,
     },
     Long {
-        clause: ClauseId,
+        clause: Clause,
         blocker: Lit,
     },
 }
@@ -347,7 +347,7 @@ pub(crate) enum Conflict {
         other: Lit,
         scope: Scope,
     },
-    Clause(ClauseId),
+    Clause(Clause),
 }
 
 /// One theory clause waiting to be inserted into SAT.
@@ -404,7 +404,7 @@ pub struct Solver {
     watches: Vec<Vec<Watcher>>,
 
     /// Long learned clauses that are still live.
-    learnts: Vec<ClauseId>,
+    learnts: Vec<Clause>,
     /// Long clause arena. Long clauses must carry their own scope.
     clauses: ClauseArena,
 
@@ -630,7 +630,7 @@ impl Solver {
         &mut self,
         lits: &[Lit],
         scope: Scope,
-    ) -> ClauseId {
+    ) -> Clause {
         let cid = self.clauses.alloc_irredundant(lits, scope);
         let w0 = lits[0];
         let w1 = lits[1];
@@ -650,7 +650,7 @@ impl Solver {
         lits: &[Lit],
         lbd: u32,
         scope: Scope,
-    ) -> ClauseId {
+    ) -> Clause {
         let cid = self.clauses.alloc_learnt(lits, self.clause_inc, lbd, scope);
         // Watch attachment same as above.
         cid
