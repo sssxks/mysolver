@@ -1,106 +1,106 @@
-//! Identifier newtypes and borrowed EUF query views.
+//! Handle newtypes and borrowed EUF query views.
 
-use crate::arena::InternId;
+use crate::arena::InternKey;
 
-/// One uninterpreted or built-in sort identifier.
+/// One uninterpreted or built-in sort handle.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct SortId(u32);
+pub struct Sort(u32);
 
-impl SortId {
-    /// Creates one sort identifier from a zero-based index.
+impl Sort {
+    /// Creates one sort handle from a zero-based index.
     fn from_index(index: usize) -> Self {
         debug_assert!(u32::try_from(index).is_ok());
         Self(index as u32)
     }
 }
 
-/// One function symbol identifier.
+/// One function symbol handle.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct SymbolId(u32);
+pub struct Symbol(u32);
 
-impl SymbolId {
-    /// Returns the zero-based index named by this identifier.
+impl Symbol {
+    /// Returns the zero-based index named by this handle.
     pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
-    /// Creates one symbol identifier from a zero-based index.
+    /// Creates one symbol handle from a zero-based index.
     fn from_index(index: usize) -> Self {
         debug_assert!(u32::try_from(index).is_ok());
         Self(index as u32)
     }
 }
 
-/// One canonical term identifier.
+/// One canonical term handle.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct TermId(u32);
+pub struct Term(u32);
 
-impl TermId {
-    /// Returns the zero-based index named by this identifier.
+impl Term {
+    /// Returns the zero-based index named by this handle.
     pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
-    /// Creates one term identifier from a zero-based index.
+    /// Creates one term handle from a zero-based index.
     pub(crate) fn from_index(index: usize) -> Self {
         debug_assert!(u32::try_from(index).is_ok());
         Self(index as u32)
     }
 }
 
-/// One canonical theory atom identifier.
+/// One canonical theory atom handle.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct TheoryAtomId(u32);
+pub struct TheoryAtom(u32);
 
-impl TheoryAtomId {
-    /// Returns the zero-based index named by this identifier.
+impl TheoryAtom {
+    /// Returns the zero-based index named by this handle.
     pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
-    /// Creates one atom identifier from a zero-based index.
+    /// Creates one atom handle from a zero-based index.
     fn from_index(index: usize) -> Self {
         debug_assert!(u32::try_from(index).is_ok());
         Self(index as u32)
     }
 }
 
-/// One current equivalence-class representative identifier.
+/// One current equivalence-class representative handle.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct EClassId(u32);
+pub struct EClass(u32);
 
-impl EClassId {
-    /// Returns the zero-based index named by this identifier.
+impl EClass {
+    /// Returns the zero-based index named by this handle.
     pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
 
-    /// Creates one class identifier from a zero-based index.
+    /// Creates one class handle from a zero-based index.
     pub(crate) fn from_index(index: usize) -> Self {
         debug_assert!(u32::try_from(index).is_ok());
         Self(index as u32)
     }
 }
 
-impl InternId for SortId {
+impl InternKey for Sort {
     fn from_index(index: usize) -> Self {
         Self::from_index(index)
     }
 }
 
-impl InternId for SymbolId {
+impl InternKey for Symbol {
     fn from_index(index: usize) -> Self {
         Self::from_index(index)
     }
 }
 
-impl InternId for TermId {
+impl InternKey for Term {
     fn from_index(index: usize) -> Self {
         Self::from_index(index)
     }
 }
 
-impl InternId for TheoryAtomId {
+impl InternKey for TheoryAtom {
     fn from_index(index: usize) -> Self {
         Self::from_index(index)
     }
@@ -124,14 +124,14 @@ pub struct SymbolRef<'a> {
     /// Symbol name.
     pub name: &'a str,
     /// Borrowed argument-sort slice.
-    pub arg_sorts: &'a [SortId],
+    pub arg_sorts: &'a [Sort],
     /// Result sort.
-    pub result_sort: SortId,
+    pub result_sort: Sort,
 }
 
 /// Borrowed query view for one canonical EUF term.
 ///
-/// Semantically, a term is one application in `Symbol × Vec<TermId>`.
+/// Semantically, a term is one application in `Symbol × Vec<Term>`.
 ///
 /// # Encoding
 ///
@@ -142,14 +142,14 @@ pub struct SymbolRef<'a> {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct TermRef<'a> {
     /// The applied symbol.
-    pub fun: SymbolId,
+    pub fun: Symbol,
     /// Borrowed child-term slice.
-    pub args: &'a [TermId],
+    pub args: &'a [Term],
 }
 
 impl<'a> TermRef<'a> {
     /// Returns one borrowed nullary application view.
-    pub fn nullary(fun: SymbolId) -> Self {
+    pub fn nullary(fun: Symbol) -> Self {
         Self { fun, args: &[] }
     }
 }
@@ -158,7 +158,7 @@ impl<'a> TermRef<'a> {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum AtomRef {
     /// Equality between two terms.
-    Eq(TermId, TermId),
+    Eq(Term, Term),
 }
 
 /// Kind of theory atom represented by one SAT literal.
@@ -167,9 +167,9 @@ pub enum AtomLiteralKind {
     /// Equality atom over two term endpoints.
     Eq {
         /// Left endpoint.
-        lhs: TermId,
+        lhs: Term,
         /// Right endpoint.
-        rhs: TermId,
+        rhs: Term,
         /// Whether the literal is positive.
         positive: bool,
     },

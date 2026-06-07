@@ -25,7 +25,7 @@ Current implementation choice:
 
 - `EufTheory` additionally keeps:
   - `atom_value: Vec<Option<bool>>`
-  - `atom_trail: Vec<TheoryAtomId>`
+  - `atom_trail: Vec<TheoryAtom>`
   - `atom_trail_lim: Vec<usize>`
 
 These fields are updated by `notify_assignment()` / `notify_backtrack()` and are

@@ -12,7 +12,7 @@ mod arena;
 mod registry;
 /// EUF-local telemetry adapters.
 mod telemetry;
-/// Identifier newtypes and canonical EUF objects.
+/// Handle newtypes and canonical EUF objects.
 mod types;
 
 /// Equality and theory-clause explanation support.
@@ -24,8 +24,8 @@ mod theory;
 
 pub use registry::Registry;
 pub use search_state::{
-    CongruenceSig, DisequalityEntry, MergeEdge, MergeInput, MergeReason, SatLevelMarker,
-    SearchState, Undo,
+    CongruenceSig, DisequalityEntry, LevelMarker, MergeEdge, MergeInput, MergeReason, SearchState,
+    Undo,
 };
 pub use theory::EufTheory;
-pub use types::{EClassId, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId};
+pub use types::{EClass, Sort, SortRef, Symbol, SymbolRef, Term, TermRef, TheoryAtom};

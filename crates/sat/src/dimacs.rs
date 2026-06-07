@@ -1,6 +1,6 @@
 use std::mem;
 
-use crate::{Lit, Solver};
+use crate::{Literal, Solver};
 
 /// Parses a DIMACS CNF document into a [`Solver`].
 ///
@@ -9,8 +9,8 @@ use crate::{Lit, Solver};
 pub fn parse_dimacs(input: &str) -> Result<Solver, String> {
     let mut declared_vars: Option<usize> = None;
     let mut declared_clauses: Option<usize> = None;
-    let mut clauses: Vec<Vec<Lit>> = Vec::new();
-    let mut current: Vec<Lit> = Vec::new();
+    let mut clauses: Vec<Vec<Literal>> = Vec::new();
+    let mut current: Vec<Literal> = Vec::new();
 
     for line in input.lines() {
         let line = line.trim();
@@ -45,7 +45,7 @@ pub fn parse_dimacs(input: &str) -> Result<Solver, String> {
             if x == 0 {
                 clauses.push(mem::take(&mut current));
             } else {
-                current.push(Lit::from_dimacs(x));
+                current.push(Literal::from_dimacs(x));
             }
         }
     }

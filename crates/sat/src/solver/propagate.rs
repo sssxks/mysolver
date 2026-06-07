@@ -1,12 +1,12 @@
 //! Single hotspot of the entire solver: Boolean constraint propagation, accounting for around 90% of the runtime in pure sat cases. The implementation is based on classical two-literal watching.
 use std::mem;
 
-use crate::Lit;
-use crate::clause_db::ClauseId;
+use crate::Literal;
+use crate::clause_db::Clause;
 use crate::telemetry;
 
-use super::{LBool, Reason, Solver};
-use crate::AssertionLevel;
+use super::{Reason, Solver, TruthValue};
+use crate::Scope;
 
 /// A watched-literal entry attached to a literal's watch list.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -14,16 +14,16 @@ pub(crate) enum Watcher {
     /// Watches a binary clause via the other literal in the clause.
     Binary {
         /// The other literal in the watched binary clause.
-        other: Lit,
-        /// User scope in which this binary clause exists.
-        assertion_level: AssertionLevel,
+        other: Literal,
+        /// Scope in which this binary clause exists.
+        scope: Scope,
     },
     /// Watches a long clause together with a blocker literal.
     Long {
         /// The watched long clause.
-        clause: ClauseId,
+        clause: Clause,
         /// A literal that can satisfy the clause without reopening it.
-        blocker: Lit,
+        blocker: Literal,
     },
 }
 
@@ -33,14 +33,14 @@ pub(crate) enum Conflict {
     /// A conflict caused by a falsified binary clause.
     Binary {
         /// The literal that became false.
-        false_lit: Lit,
+        false_lit: Literal,
         /// The opposite endpoint of the binary clause.
-        other: Lit,
-        /// User scope in which this binary clause exists.
-        assertion_level: AssertionLevel,
+        other: Literal,
+        /// Scope in which this binary clause exists.
+        scope: Scope,
     },
     /// A conflict caused by a falsified long clause.
-    Clause(ClauseId),
+    Clause(Clause),
 }
 
 /// The result of updating a watched long clause.
@@ -51,19 +51,19 @@ enum LongAction {
     /// Keep the watcher on the current literal with an updated blocker.
     Keep {
         /// A literal currently satisfying or otherwise blocking the clause.
-        blocker: Lit,
+        blocker: Literal,
     },
     /// Move the watcher to a different literal.
     Move {
         /// The literal that should receive the moved watcher.
-        new_watch: Lit,
+        new_watch: Literal,
         /// The blocker paired with the moved watcher.
-        blocker: Lit,
+        blocker: Literal,
     },
     /// The clause became unit and now forces the given literal.
     Unit {
         /// The unit literal implied by the clause.
-        lit: Lit,
+        lit: Literal,
     },
     /// The clause became conflicting under the current assignment.
     Conflict,
@@ -71,19 +71,19 @@ enum LongAction {
 
 impl Solver {
     /// Assigns `lit` if it is undefined and checks for immediate contradiction.
-    pub(crate) fn enqueue(&mut self, lit: Lit, reason: Reason) -> bool {
+    pub(crate) fn enqueue(&mut self, lit: Literal, reason: Reason) -> bool {
         match self.value_lit(lit) {
-            LBool::True => true,
-            LBool::False => false,
-            LBool::Undef => {
+            TruthValue::True => true,
+            TruthValue::False => false,
+            TruthValue::Unknown => {
                 let v = lit.var().index();
                 self.assigns[v] = if lit.is_negated() {
-                    LBool::False
+                    TruthValue::False
                 } else {
-                    LBool::True
+                    TruthValue::True
                 };
-                self.sat_level[v] = self.decision_level();
-                self.user_level[v] = self.assertion_level;
+                self.level[v] = self.level();
+                self.assignment_scope[v] = self.current_scope;
                 self.reason[v] = reason;
                 self.phase[v] = !lit.is_negated();
                 self.trail.push(lit);
@@ -97,26 +97,26 @@ impl Solver {
     }
 
     /// Evaluates the current truth value of `lit`.
-    pub(crate) fn value_lit(&self, lit: Lit) -> LBool {
+    pub(crate) fn value_lit(&self, lit: Literal) -> TruthValue {
         Self::value_lit_in(&self.assigns, lit)
     }
 
     /// Evaluates `lit` against an arbitrary assignment slice.
-    fn value_lit_in(assigns: &[LBool], lit: Lit) -> LBool {
+    fn value_lit_in(assigns: &[TruthValue], lit: Literal) -> TruthValue {
         match assigns[lit.var().index()] {
-            LBool::Undef => LBool::Undef,
-            LBool::True => {
+            TruthValue::Unknown => TruthValue::Unknown,
+            TruthValue::True => {
                 if lit.is_negated() {
-                    LBool::False
+                    TruthValue::False
                 } else {
-                    LBool::True
+                    TruthValue::True
                 }
             }
-            LBool::False => {
+            TruthValue::False => {
                 if lit.is_negated() {
-                    LBool::True
+                    TruthValue::True
                 } else {
-                    LBool::False
+                    TruthValue::False
                 }
             }
         }
@@ -140,41 +140,38 @@ impl Solver {
                 let mut conflict: Option<Conflict> = None;
 
                 match watcher {
-                    Watcher::Binary {
-                        other,
-                        assertion_level,
-                    } => match self.value_lit(other) {
-                        LBool::True => {
+                    Watcher::Binary { other, scope } => match self.value_lit(other) {
+                        TruthValue::True => {
                             keep = Some(watcher);
                         }
-                        LBool::Undef => {
+                        TruthValue::Unknown => {
                             keep = Some(watcher);
                             if !self.enqueue(
                                 other,
                                 Reason::Binary {
                                     false_lit,
                                     other,
-                                    assertion_level,
+                                    scope,
                                 },
                             ) {
                                 conflict = Some(Conflict::Binary {
                                     false_lit,
                                     other,
-                                    assertion_level,
+                                    scope,
                                 });
                             }
                         }
-                        LBool::False => {
+                        TruthValue::False => {
                             keep = Some(watcher);
                             conflict = Some(Conflict::Binary {
                                 false_lit,
                                 other,
-                                assertion_level,
+                                scope,
                             });
                         }
                     },
                     Watcher::Long { clause, blocker } => {
-                        if self.value_lit(blocker) == LBool::True {
+                        if self.value_lit(blocker) == TruthValue::True {
                             keep = Some(watcher);
                         } else {
                             match self.process_long_watch(clause, false_lit) {
@@ -236,7 +233,7 @@ impl Solver {
     }
 
     /// Reprocesses a watched long clause whose second watcher became false.
-    fn process_long_watch(&mut self, cid: ClauseId, false_lit: Lit) -> LongAction {
+    fn process_long_watch(&mut self, cid: Clause, false_lit: Literal) -> LongAction {
         // This cid may be stale. If so, delete it from the watch list.
         let Some(mut clause) = self.clauses.try_clause_mut(cid) else {
             return LongAction::Drop;
@@ -249,13 +246,13 @@ impl Solver {
         debug_assert_eq!(clause.lit(1), false_lit);
 
         let other = clause.lit(0);
-        if Self::value_lit_in(assigns, other) == LBool::True {
+        if Self::value_lit_in(assigns, other) == TruthValue::True {
             return LongAction::Keep { blocker: other };
         }
 
         for k in 2..clause.len() {
             let candidate = clause.lit(k);
-            if Self::value_lit_in(assigns, candidate) != LBool::False {
+            if Self::value_lit_in(assigns, candidate) != TruthValue::False {
                 clause.swap_lits(1, k);
                 let new_watch = clause.lit(1);
                 return LongAction::Move {
@@ -266,9 +263,9 @@ impl Solver {
         }
 
         match Self::value_lit_in(assigns, other) {
-            LBool::Undef => LongAction::Unit { lit: other },
-            LBool::False => LongAction::Conflict,
-            LBool::True => LongAction::Keep { blocker: other },
+            TruthValue::Unknown => LongAction::Unit { lit: other },
+            TruthValue::False => LongAction::Conflict,
+            TruthValue::True => LongAction::Keep { blocker: other },
         }
     }
 }

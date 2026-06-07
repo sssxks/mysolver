@@ -6,10 +6,9 @@
 //! `matches_ref()` may safely reborrow those handles only because callers outside this
 //! module cannot construct canonical objects with shorter-lived arena storage.
 //!
-//! Public and crate-visible code should interact with the registry through
-//! identifiers such as [`crate::ids::SortId`] and borrowed query views such as
-//! [`crate::ids::SortRef`], leaving ownership and arena-liveness invariants confined
-//! to this module.
+//! Public and crate-visible code should interact with the registry through handles
+//! such as [`crate::Sort`] and borrowed query views such as [`crate::SortRef`],
+//! leaving ownership and arena-liveness invariants confined to this module.
 
 mod object;
 mod storage;

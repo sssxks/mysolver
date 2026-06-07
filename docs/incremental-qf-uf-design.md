@@ -19,7 +19,7 @@ The design below follows the same coarse layering used by `cvc5`:
 - an SMT command driver at the top,
 - a propositional engine in the middle,
 - one or more theory solvers underneath,
-- strict separation between user-level incremental scopes and SAT search backtracking.
+- strict separation between incremental scopes and SAT search backtracking.
 
 ## Baseline Constraints In This Repository
 
@@ -34,7 +34,7 @@ The current `sat::Solver` owns the whole search loop internally. It can:
 
 It cannot currently represent:
 
-- user-level `push` and `pop`,
+- scoped `push` and `pop`,
 - solving under assumptions,
 - callbacks into a theory solver,
 - repeated `check-sat` with preserved clause database but fresh search state.
@@ -73,7 +73,7 @@ The recommended architecture is four layers.
 Responsibility:
 
 - parse incremental SMT-LIB commands,
-- maintain the user assertion stack,
+- maintain the assertion stack,
 - lower Boolean structure into SAT,
 - register theory atoms with EUF,
 - call `check_sat` repeatedly,
@@ -87,7 +87,7 @@ Responsibility:
 
 - own CNF variables and clauses,
 - do CDCL,
-- support user-level incremental assertion frames,
+- support incremental assertion frames,
 - notify registered theories about relevant assignments,
 - absorb theory-generated explanation clauses.
 
@@ -122,20 +122,20 @@ This is the part most likely to go wrong if the design stays implicit.
 
 There are two unrelated notions of “scope”:
 
-1. User assertion scopes.
-   These come from SMT-LIB `assert`, `push`, and `pop`. They must survive across multiple `check-sat` calls until popped by the user.
+1. SMT assertion scopes.
+   These come from SMT-LIB `assert`, `push`, and `pop`. They must survive across multiple `check-sat` calls until popped by the caller.
 2. SAT search scopes.
    These come from CDCL decision levels during one `check-sat`. They are temporary and must be discarded at the end of the search.
 
 These two scopes must not be represented by the same stack.
 
-`cvc5` solves this by separating user context from SAT context. This repository should do the same conceptually, even if the Rust implementation is lighter-weight.
+`cvc5` solves this by separating assertion-stack context from SAT context. This repository should do the same conceptually, even if the Rust implementation is lighter-weight.
 
 ## SAT Incrementality Design
 
 ### Choice
 
-For SMT-LIB user-level incrementality, prefer **native SAT `push` and `pop`** over encoding user frames with activation literals.
+For SMT-LIB incrementality, prefer **native SAT `push` and `pop`** over encoding scope frames with activation literals.
 
 Keep a separate **assumptions API** as well, but use it for transient per-check assumptions such as future `check-sat-assuming`, not as the primary encoding of the SMT-LIB assertion stack.
 
@@ -145,11 +145,11 @@ Activation literals are easy to prototype and fit IPASIR-style APIs well, but th
 
 Native `push`/`pop` means the SAT engine itself becomes responsible for:
 
-- tracking the current user assertion level,
+- tracking the current scope,
 - removing clauses and variables that leave scope on `pop`,
-- preserving only those learned facts that remain valid below the new user level.
+- preserving only those learned facts that remain valid below the new scope.
 
-This is more implementation work inside `sat`, but it avoids baking user-frame control literals into every scoped clause.
+This is more implementation work inside `sat`, but it avoids baking scope-frame control literals into every scoped clause.
 
 ### Core Consequence
 
@@ -167,18 +167,18 @@ The `sat` crate should expose an incremental API roughly shaped like this:
 - `add_clause(&[Lit]) -> AddClauseResult`
 - `push()`
 - `pop(n: usize)`
-- `current_assertion_level() -> AssertionLevel`
+- `current_scope() -> Scope`
 - `add_scoped_clause(&[Lit]) -> AddClauseResult`
 - `solve_with_assumptions(&[Lit], theory: &mut impl Theory) -> SatResult`
 - `reset_search()`
 
 The important semantic split is:
 
-- user scope is native solver state,
+- scope is native solver state,
 - assumptions are transient per-check state,
 - some clauses and variables may be removed on `pop`,
 - the search trail is per-check,
-- CDCL decision levels remain strictly separate from user assertion levels.
+- CDCL decision levels remain strictly separate from scopes.
 
 ### SAT Internal State
 
@@ -189,7 +189,7 @@ Persistent state:
 - watch lists,
 - variable activities,
 - learned clauses,
-- user frame stack,
+- scope frame stack,
 - per-frame variable and clause boundaries or equivalent rollback metadata.
 
 Per-check search state:
@@ -209,52 +209,52 @@ The current solver already has most of the per-check state. The design change is
 Following the old cvc5 MiniSat integration, scope should be represented on the objects that survive across `check-sat` calls:
 
 - long clauses carry a `clause.level`,
-- variables carry at least an `intro_level`,
-- assigned variables should also record the `user_level` of their current assignment,
-- learned clauses carry the maximum user-level dependency discovered by conflict analysis.
+- variables carry at least an `variable_scope`,
+- assigned variables should also record the `assignment_scope` of their current assignment,
+- learned clauses carry the maximum scope dependency discovered by conflict analysis.
 
 This metadata is what makes native `pop` sound.
 
 ### Inline Binary Clauses
 
-The current `sat` crate stores binary clauses inline in the watchlists instead of allocating them in the long-clause arena. That is acceptable for the current design target, but only if user-level scope metadata is carried on the inline binary representation as well.
+The current `sat` crate stores binary clauses inline in the watchlists instead of allocating them in the long-clause arena. That is acceptable for the current design target, but only if scope metadata is carried on the inline binary representation as well.
 
 The minimum sound design is:
 
-- `Watcher::Binary` carries `other: Lit` and `assertion_level`,
-- `Reason::Binary` carries the same `assertion_level`,
-- `pop()` removes inline binary watchers whose `assertion_level` is above the new current user level,
-- `analyze()` incorporates the binary reason's `assertion_level` when computing the learned clause scope.
+- `Watcher::Binary` carries `other: Lit` and `scope`,
+- `Reason::Binary` carries the same `scope`,
+- `pop()` removes inline binary watchers whose `scope` is above the new current scope,
+- `analyze()` incorporates the binary reason's `scope` when computing the learned clause scope.
 
 No binary-clause identity is required for soundness under this plan. The tradeoff is simply that `pop()` must scan the watchlists and filter stale inline binary entries. This is acceptable because `pop()` is low-frequency compared with Boolean propagation.
 
 ### Variable Lifetime On `pop`
 
-`pop()` must not only remove stale clauses; it must also ensure that variables introduced in higher user frames cannot participate in later searches.
+`pop()` must not only remove stale clauses; it must also ensure that variables introduced in higher scope frames cannot participate in later searches.
 
 The recommended and default strategy is:
 
-- record `vars_base` when each user frame is pushed,
+- record `vars_base` when each scope frame is pushed,
 - on `pop`, shrink the variable arrays back to the restored frame boundary.
 
-This avoids reusing `intro_level` as a proxy for variable liveness across unrelated frames of the same depth. In particular, it avoids the ambiguity in sequences such as `push(); ...; pop(); push();`, where the second push returns to the same depth but must not make variables from the first frame visible again.
+This avoids reusing `variable_scope` as a proxy for variable liveness across unrelated frames of the same depth. In particular, it avoids the ambiguity in sequences such as `push(); ...; pop(); push();`, where the second push returns to the same depth but must not make variables from the first frame visible again.
 
 Under this design:
 
-- `intro_level` is used for clause-scope computation,
+- `variable_scope` is used for clause-scope computation,
 - variable liveness is determined by array membership after shrink,
 - popped variables simply stop existing in the SAT core.
 
-### `intro_level` vs `user_level`
+### `variable_scope` vs `assignment_scope`
 
 The two fields serve different purposes and should not be conflated.
 
-- `intro_level`
-  - the user assertion level where a SAT variable was created,
+- `variable_scope`
+  - the scope where a SAT variable was created,
   - immutable after allocation,
   - used for clause-scope computation.
-- `user_level`
-  - the user assertion level where the variable's current assignment was produced,
+- `assignment_scope`
+  - the scope where the variable's current assignment was produced,
   - changes as the solver backtracks and re-propagates,
   - used to decide which trail assignments must be removed on `pop()`.
 
@@ -267,27 +267,27 @@ Example:
 
 At that point:
 
-- `intro_level(t) = 1`
-- `user_level(t) = 2`
+- `variable_scope(t) = 1`
+- `assignment_scope(t) = 2`
 
 The variable exists because it was introduced at level 1, but its current assignment must still be removed when popping from level 2 back to level 1.
 
 Under the recommended shrink-on-pop design:
 
-- `intro_level` does not decide whether a variable is still alive,
+- `variable_scope` does not decide whether a variable is still alive,
 - variable liveness comes from shrinking the arrays back to `vars_base`,
-- `intro_level` remains useful because theory clauses and learned clauses must still know how deep their referenced variables were introduced.
+- `variable_scope` remains useful because theory clauses and learned clauses must still know how deep their referenced variables were introduced.
 
 ### SAT  Sketch
 
 The following pseudocode is the recommended direction for the current `sat` crate. It is intentionally close to the existing code layout in `crates/sat/src/solver`.
 
 ```rust
-/// User-level assertion depth created by SMT-LIB `push` / `pop`.
+/// SMT assertion-stack scope created by SMT-LIB `push` / `pop`.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Default)]
-pub struct AssertionLevel(u32);
+pub struct Scope(u32);
 
-impl AssertionLevel {
+impl Scope {
     pub const ROOT: Self = Self(0);
 
     pub fn index(self) -> usize {
@@ -310,18 +310,18 @@ pub(crate) enum Reason {
         false_lit: Lit,
         /// The propagated literal.
         other: Lit,
-        /// User scope in which this binary clause exists.
-        assertion_level: AssertionLevel,
+        /// Scope in which this binary clause exists.
+        scope: Scope,
     },
     /// Long clause stored in the clause arena.
-    Clause(ClauseId),
+    Clause(Clause),
 }
 
-/// One pushed SMT-LIB assertion frame.
+/// One pushed assertion-stack scope frame.
 #[derive(Clone, Debug)]
-pub(crate) struct UserFrame {
-    /// Level represented by this frame.
-    level: AssertionLevel,
+pub(crate) struct ScopeFrame {
+    /// Scope represented by this frame.
+    scope: Scope,
     /// Number of variables allocated before the frame was pushed.
     vars_base: usize,
 }
@@ -331,10 +331,10 @@ pub(crate) struct UserFrame {
 pub(crate) enum Watcher {
     Binary {
         other: Lit,
-        assertion_level: AssertionLevel,
+        scope: Scope,
     },
     Long {
-        clause: ClauseId,
+        clause: Clause,
         blocker: Lit,
     },
 }
@@ -345,9 +345,9 @@ pub(crate) enum Conflict {
     Binary {
         false_lit: Lit,
         other: Lit,
-        assertion_level: AssertionLevel,
+        scope: Scope,
     },
-    Clause(ClauseId),
+    Clause(Clause),
 }
 
 /// One theory clause waiting to be inserted into SAT.
@@ -355,8 +355,8 @@ pub(crate) enum Conflict {
 pub struct TheoryClause {
     /// Fully explained clause over SAT literals.
     lits: Box<[Lit]>,
-    /// User level where this clause must remain valid.
-    assertion_level: AssertionLevel,
+    /// Scope where this clause must remain valid.
+    scope: Scope,
     /// Classification used only for metrics and debugging.
     kind: TheoryClauseKind,
 }
@@ -372,26 +372,26 @@ pub enum TheoryClauseKind {
 /// Incremental SAT solver state.
 #[derive(Debug)]
 pub struct Solver {
-    /// The shallowest user scope currently known to be immediately inconsistent.
-    inconsistent_assertion_level: Option<AssertionLevel>,
+    /// The shallowest scope currently known to be immediately inconsistent.
+    inconsistent_scope: Option<Scope>,
 
-    /// Current user assertion level.
-    assertion_level: AssertionLevel,
-    /// Stack of pushed user frames above root.
-    user_frames: Vec<UserFrame>,
+    /// Current assertion-stack scope.
+    current_scope: Scope,
+    /// Stack of pushed scope frames above root.
+    scope_frames: Vec<ScopeFrame>,
 
     /// Number of variables currently allocated and in scope.
     nvars: usize,
     /// Current truth value for each variable.
-    assigns: Vec<LBool>,
+    assigns: Vec<TruthValue>,
     /// CDCL decision level of each current assignment.
     sat_level: Vec<usize>,
-    /// User assertion level of each current assignment.
-    user_level: Vec<AssertionLevel>,
+    /// Scope of each current assignment.
+    assignment_scope: Vec<Scope>,
     /// Antecedent reason for each current assignment.
     reason: Vec<Reason>,
-    /// User level where each variable was introduced.
-    intro_level: Vec<AssertionLevel>,
+    /// Scope where each variable was introduced.
+    variable_scope: Vec<Scope>,
 
     /// CDCL trail.
     trail: Vec<Lit>,
@@ -404,9 +404,9 @@ pub struct Solver {
     watches: Vec<Vec<Watcher>>,
 
     /// Long learned clauses that are still live.
-    learnts: Vec<ClauseId>,
-    /// Long clause arena. Long clauses must carry their own assertion level.
-    clauses: ClauseArena,
+    learnts: Vec<Clause>,
+    /// Long clause arena. Long clauses must carry their own scope.
+    clauses: Clauses,
 
     /// VSIDS data and branching heap.
     var_activity: Vec<f64>,
@@ -428,7 +428,7 @@ pub struct Solver {
 }
 ```
 
-The current `ClauseArena` should be extended conceptually so that each long clause header carries:
+The current `Clauses` should be extended conceptually so that each long clause header carries:
 
 ```rust
 pub(crate) struct ClauseHeader {
@@ -436,12 +436,12 @@ pub(crate) struct ClauseHeader {
     learnt: bool,
     activity: f32,
     lbd: u32,
-    assertion_level: AssertionLevel,
+    scope: Scope,
     deleted: bool,
 }
 ```
 
-Only the additional `assertion_level` field is required by native `push`/`pop`. The other fields already exist today in some form.
+Only the additional `scope` field is required by native `push`/`pop`. The other fields already exist today in some form.
 
 ### SAT API Sketch
 
@@ -454,7 +454,7 @@ impl Solver {
 
     pub fn push(&mut self);
     pub fn pop(&mut self, n: usize) -> Result<(), PopError>;
-    pub fn current_assertion_level(&self) -> AssertionLevel;
+    pub fn current_scope(&self) -> Scope;
 
     pub fn add_clause(&mut self, lits: &[Lit]) -> bool;
     pub fn solve(&mut self) -> SatResult;
@@ -467,13 +467,13 @@ impl Solver {
     pub(crate) fn add_scoped_clause(
         &mut self,
         lits: &[Lit],
-        assertion_level: AssertionLevel,
+        scope: Scope,
         origin: ClauseOrigin,
     ) -> AddClauseResult;
 
-    pub(crate) fn pop_to_assertion_level(
+    pub(crate) fn pop_to_scope(
         &mut self,
-        new_level: AssertionLevel,
+        new_scope: Scope,
     ) -> Result<(), PopError>;
 
     pub(crate) fn reset_search(&mut self);
@@ -496,24 +496,24 @@ pub(crate) enum ClauseOrigin {
 The SAT core should maintain these invariants at all times:
 
 ```rust
-/// Every assigned variable has a user-level assignment that is still in scope.
-assert!(solver.assigns[v.index()] == LBool::Undef
-    || solver.user_level[v.index()] <= solver.assertion_level);
+/// Every assigned variable has a scoped assignment that is still in scope.
+assert!(solver.assigns[v.index()] == TruthValue::Unassigned
+    || solver.assignment_scope[v.index()] <= solver.current_scope);
 
 /// Every allocated variable was introduced in a frame that still exists.
-assert!(solver.intro_level[v.index()] <= solver.assertion_level);
+assert!(solver.variable_scope[v.index()] <= solver.current_scope);
 
 /// Every inline binary watcher still present in a watchlist is in scope.
-assert!(matches!(watcher, Watcher::Binary { assertion_level, .. } if assertion_level <= solver.assertion_level));
+assert!(matches!(watcher, Watcher::Binary { scope, .. } if scope <= solver.current_scope));
 
 /// Every live long clause still present in the clause arena is in scope.
-assert!(solver.clauses.header(cid).assertion_level <= solver.assertion_level);
+assert!(solver.clauses.header(cid).scope <= solver.current_scope);
 
-/// Every reason references an antecedent that is still valid at the current user level.
+/// Every reason references an antecedent that is still valid at the current scope.
 assert!(match solver.reason[v.index()] {
     Reason::None => true,
-    Reason::Binary { assertion_level, .. } => assertion_level <= solver.assertion_level,
-    Reason::Clause(cid) => solver.clauses.header(cid).assertion_level <= solver.assertion_level,
+    Reason::Binary { scope, .. } => scope <= solver.current_scope,
+    Reason::Clause(cid) => solver.clauses.header(cid).scope <= solver.current_scope,
 });
 ```
 
@@ -526,12 +526,12 @@ impl Solver {
     pub fn push(&mut self) {
         debug_assert_eq!(self.decision_level(), 0);
 
-        let new_level = self.assertion_level.next();
-        self.user_frames.push(UserFrame {
-            level: new_level,
+        let new_scope = self.current_scope.next();
+        self.scope_frames.push(ScopeFrame {
+            scope: new_scope,
             vars_base: self.nvars,
         });
-        self.assertion_level = new_level;
+        self.current_scope = new_scope;
     }
 }
 ```
@@ -542,62 +542,62 @@ impl Solver {
 impl Solver {
     pub fn pop(&mut self, n: usize) -> Result<(), PopError> {
         let target_depth = self
-            .assertion_level
+            .current_scope
             .index()
             .checked_sub(n)
             .ok_or(PopError::Underflow)?;
-        self.pop_to_assertion_level(AssertionLevel(target_depth as u32))
+        self.pop_to_scope(Scope(target_depth as u32))
     }
 
-    pub(crate) fn pop_to_assertion_level(
+    pub(crate) fn pop_to_scope(
         &mut self,
-        new_level: AssertionLevel,
+        new_scope: Scope,
     ) -> Result<(), PopError> {
         debug_assert_eq!(self.decision_level(), 0);
-        debug_assert!(new_level <= self.assertion_level);
+        debug_assert!(new_scope <= self.current_scope);
 
-        self.assertion_level = new_level;
+        self.current_scope = new_scope;
 
-        // 1. Drop user-frame records.
+        // 1. Drop scope-frame records.
         while self
-            .user_frames
+            .scope_frames
             .last()
-            .is_some_and(|frame| frame.level > new_level)
+            .is_some_and(|frame| frame.scope > new_scope)
         {
-            self.user_frames.pop();
+            self.scope_frames.pop();
         }
 
-        // 2. Unassign variables whose current assignment was made above new_level.
+        // 2. Unassign variables whose current assignment was made above new_scope.
         while self
             .trail
             .last()
-            .is_some_and(|&lit| self.user_level[lit.var().index()] > new_level)
+            .is_some_and(|&lit| self.assignment_scope[lit.var().index()] > new_scope)
         {
             let lit = self.trail.pop().unwrap();
             let vi = lit.var().index();
-            self.assigns[vi] = LBool::Undef;
+            self.assigns[vi] = TruthValue::Unassigned;
             self.sat_level[vi] = 0;
-            self.user_level[vi] = AssertionLevel::ROOT;
+            self.assignment_scope[vi] = Scope::ROOT;
             self.reason[vi] = Reason::None;
         }
         self.qhead = self.trail.len();
 
-        // 3. Delete long clauses whose assertion_level left scope.
-        self.delete_long_clauses_above_level(new_level);
+        // 3. Delete long clauses whose scope is deeper than the restored scope.
+        self.delete_long_clauses_above_scope(new_scope);
 
         // 4. Remove stale watchers by scanning each watchlist.
         for watchers in &mut self.watches {
             watchers.retain(|watcher| match watcher {
-                Watcher::Binary { assertion_level, .. } => *assertion_level <= new_level,
+                Watcher::Binary { scope, .. } => *scope <= new_scope,
                 Watcher::Long { clause, .. } => {
                     self.clauses.is_live(*clause)
-                        && self.clauses.header(*clause).assertion_level <= new_level
+                        && self.clauses.header(*clause).scope <= new_scope
                 }
             });
         }
 
         // 5. Shrink variables back to the restored frame boundary.
-        self.shrink_vars_to_frame_boundary(new_level);
+        self.shrink_vars_to_frame_boundary(new_scope);
 
         Ok(())
     }
@@ -614,24 +614,24 @@ impl Solver {
         &mut self,
         a: Lit,
         b: Lit,
-        assertion_level: AssertionLevel,
+        scope: Scope,
     ) {
         self.watches[a.index()].push(Watcher::Binary {
             other: b,
-            assertion_level,
+            scope,
         });
         self.watches[b.index()].push(Watcher::Binary {
             other: a,
-            assertion_level,
+            scope,
         });
     }
 
     fn attach_irredundant_long(
         &mut self,
         lits: &[Lit],
-        assertion_level: AssertionLevel,
-    ) -> ClauseId {
-        let cid = self.clauses.alloc_irredundant(lits, assertion_level);
+        scope: Scope,
+    ) -> Clause {
+        let cid = self.clauses.alloc_irredundant(lits, scope);
         let w0 = lits[0];
         let w1 = lits[1];
         self.watches[w0.index()].push(Watcher::Long {
@@ -649,9 +649,9 @@ impl Solver {
         &mut self,
         lits: &[Lit],
         lbd: u32,
-        assertion_level: AssertionLevel,
-    ) -> ClauseId {
-        let cid = self.clauses.alloc_learnt(lits, self.clause_inc, lbd, assertion_level);
+        scope: Scope,
+    ) -> Clause {
+        let cid = self.clauses.alloc_learnt(lits, self.clause_inc, lbd, scope);
         // Watch attachment same as above.
         cid
     }
@@ -660,45 +660,45 @@ impl Solver {
 
 ### Clause-Level Computation Sketch
 
-The solver should compute assertion levels as follows:
+The solver should compute scopes as follows:
 
 ```rust
 impl Solver {
-    fn current_clause_assertion_level(&self, lits: &[Lit]) -> AssertionLevel {
+    fn input_clause_scope(&self, lits: &[Lit]) -> Scope {
         lits.iter()
-            .map(|lit| self.intro_level[lit.var().index()])
+            .map(|lit| self.variable_scope[lit.var().index()])
             .max()
-            .unwrap_or(self.assertion_level)
-            .max(self.assertion_level)
+            .unwrap_or(self.current_scope)
+            .max(self.current_scope)
     }
 
-    fn explanation_assertion_level(&self, lits: &[Lit]) -> AssertionLevel {
+    fn explanation_scope(&self, lits: &[Lit]) -> Scope {
         lits.iter()
-            .map(|lit| self.intro_level[lit.var().index()])
+            .map(|lit| self.variable_scope[lit.var().index()])
             .max()
-            .unwrap_or(AssertionLevel::ROOT)
+            .unwrap_or(Scope::ROOT)
     }
 }
 ```
 
 The rule is:
 
-- input clauses are scoped to the current user level and any deeper `intro_level` they mention,
-- in the recommended shrink-on-pop design, such deeper `intro_level`s can only come from variables introduced in the current frame,
-- theory explanation clauses are scoped to the maximum `intro_level` of their explanation literals,
-- learned clauses are scoped to the maximum assertion level seen among the reasons used by conflict analysis.
+- input clauses are scoped to the current scope and any deeper `variable_scope` they mention,
+- in the recommended shrink-on-pop design, such deeper `variable_scope`s can only come from variables introduced in the current frame,
+- theory explanation clauses are scoped to the maximum `variable_scope` of their explanation literals,
+- learned clauses are scoped to the maximum scope seen among the reasons used by conflict analysis.
 
 ### Conflict-Analysis Sketch
 
-The analysis return type should be extended so that learned clauses carry both SAT and user-level backtracking information:
+The analysis return type should be extended so that learned clauses carry both SAT and scope backtracking information:
 
 ```rust
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub(crate) struct AnalyzeSummary {
     /// CDCL backtrack level before asserting the learned clause.
     backtrack_level: usize,
-    /// User-level scope required for the learned clause to remain sound.
-    assertion_level: AssertionLevel,
+    /// Scope required for the learned clause to remain sound.
+    scope: Scope,
     /// Number of distinct CDCL levels in the learned clause.
     lbd: u32,
 }
@@ -713,24 +713,24 @@ impl Solver {
         conflict: Conflict,
         learnt: &mut Vec<Lit>,
     ) -> AnalyzeSummary {
-        let mut max_assertion_level = AssertionLevel::ROOT;
+        let mut required_scope = Scope::ROOT;
 
         // Existing first-UIP traversal remains in place.
         // The additional work is:
-        // - if resolving a long clause reason, update with clause.assertion_level
-        // - if resolving a binary reason, update with reason.assertion_level
-        // - if a literal from level 0 remains relevant, update with its user-level provenance
+        // - if resolving a long clause reason, update with clause.scope
+        // - if resolving a binary reason, update with reason.scope
+        // - if a literal from level 0 remains relevant, update with its scope provenance
 
         AnalyzeSummary {
             backtrack_level,
-            assertion_level: max_assertion_level,
+            scope: required_scope,
             lbd,
         }
     }
 }
 ```
 
-The exact implementation can continue to follow the current first-UIP code. The important structural change is that user-level dependency is computed in parallel with ordinary CDCL analysis.
+The exact implementation can continue to follow the current first-UIP code. The important structural change is that scope dependency is computed in parallel with ordinary CDCL analysis.
 
 ### Theory Trait Sketch
 
@@ -753,12 +753,12 @@ And SAT should ingest them through:
 ```rust
 impl Solver {
     fn add_theory_clause(&mut self, clause: TheoryClause) -> AddClauseResult {
-        self.add_scoped_clause(&clause.lits, clause.assertion_level, ClauseOrigin::Theory)
+        self.add_scoped_clause(&clause.lits, clause.scope, ClauseOrigin::Theory)
     }
 }
 ```
 
-This keeps all user-scope computation inside SAT, while requiring the theory to provide enough provenance to compute a correct clause level.
+This keeps all scope computation inside SAT, while requiring the theory to provide enough provenance to compute a correct clause level.
 
 ## SAT/Theory Integration Design
 
@@ -805,7 +805,7 @@ SAT responsibilities:
 - notify the theory only for literals that correspond to theory atoms,
 - call `notify_backtrack(level)` after backtracking to SAT decision level `level`,
 - add theory clauses through the same clause-ingestion path used by learned clauses,
-- assign each theory clause a sound user assertion level.
+- assign each theory clause a sound scope.
 
 Theory responsibilities:
 
@@ -813,7 +813,7 @@ Theory responsibilities:
 - every propagated theory fact must have a clause that becomes unit under the current assignment,
 - every conflict must have a clause falsified under the current assignment.
 
-For native `push`/`pop`, the theory boundary must preserve enough provenance for SAT to assign a scope to every returned clause. In practice, the scope should be the maximum `intro_level` of the literals appearing in the explanation.
+For native `push`/`pop`, the theory boundary must preserve enough provenance for SAT to assign a scope to every returned clause. In practice, the scope should be the maximum `variable_scope` of the literals appearing in the explanation.
 
 ## EUF Design
 
@@ -837,13 +837,13 @@ For QF-UF, the theory should register only atoms that SAT can mention in clauses
 
 Recommended atom normalization:
 
-- equality atom: `Eq(TermId, TermId)` with sorted endpoints for commutativity,
+- equality atom: `Eq(Term, Term)` with sorted endpoints for commutativity,
 - Boolean term atom: `Eq(term_bool, term_true)`.
 
 Recommended atom-to-SAT mapping:
 
 - `theory_atom_to_var: Vec<Var>`
-- `var_to_theory_atom: Vec<Option<TheoryAtomId>>`
+- `var_to_theory_atom: Vec<Option<TheoryAtom>>`
 
 This mapping belongs at the SAT/theory boundary, not inside the pure term registry.
 
@@ -866,19 +866,19 @@ The following pseudocode is the recommended direction for `crates/euf`. It delib
 
 ```rust
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct SortId(u32);
+pub struct Sort(u32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct SymbolId(u32);
+pub struct Symbol(u32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct TermId(u32);
+pub struct Term(u32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct TheoryAtomId(u32);
+pub struct TheoryAtom(u32);
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
-pub struct EClassId(u32);
+pub struct EClass(u32);
 ```
 
 #### Permanent Registry Sketch
@@ -906,19 +906,19 @@ pub enum Sort {
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct Symbol {
     name: ArenaStr,
-    arg_sorts: ArenaSlice<SortId>,
-    result_sort: SortId,
+    arg_sorts: ArenaSlice<Sort>,
+    result_sort: Sort,
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Term {
-    Const(SymbolId),
-    App { fun: SymbolId, args: ArenaSlice<TermId> },
+    Const(Symbol),
+    App { fun: Symbol, args: ArenaSlice<Term> },
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum Atom {
-    Eq(TermId, TermId),
+    Eq(Term, Term),
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -930,19 +930,19 @@ pub enum SortRef<'a> {
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct SymbolRef<'a> {
     name: &'a str,
-    arg_sorts: &'a [SortId],
-    result_sort: SortId,
+    arg_sorts: &'a [Sort],
+    result_sort: Sort,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum TermRef<'a> {
-    Const(SymbolId),
-    App { fun: SymbolId, args: &'a [TermId] },
+    Const(Symbol),
+    App { fun: Symbol, args: &'a [Term] },
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum AtomRef {
-    Eq(TermId, TermId),
+    Eq(Term, Term),
 }
 
 #[derive(Debug, Default)]
@@ -951,32 +951,32 @@ pub struct RegistryStorage {
 }
 
 #[derive(Debug, Default)]
-pub struct Interner<Id, T> {
+pub struct Interner<Key, T> {
     values: Vec<T>,
-    index: HashMap<T, Id>,
+    index: HashMap<T, Key>,
 }
 
 #[derive(Debug, Default)]
 pub struct Registry {
     storage: RegistryStorage,
 
-    sorts: Interner<SortId, Sort>,
-    symbols: Interner<SymbolId, Symbol>,
-    terms: Interner<TermId, Term>,
-    atoms: Interner<TheoryAtomId, Atom>,
+    sorts: Interner<Sort, Sort>,
+    symbols: Interner<Symbol, Symbol>,
+    terms: Interner<Term, Term>,
+    atoms: Interner<TheoryAtom, Atom>,
 
     /// Sort of each interned term. This is derived metadata, not term identity.
-    term_sort: Vec<SortId>,
+    term_sort: Vec<Sort>,
     /// Permanent atom incidence lists.
     /// `term_atoms[t]` contains every canonical equality atom that mentions `t`.
-    term_atoms: Vec<Vec<TheoryAtomId>>,
+    term_atoms: Vec<Vec<TheoryAtom>>,
 
     /// Permanent structural use-lists for congruence repair.
     /// `parent_apps[t]` contains every application term that mentions `t` as an argument.
-    parent_apps: Vec<Vec<TermId>>,
+    parent_apps: Vec<Vec<Term>>,
 
-    bool_sort: Option<SortId>,
-    true_term: Option<TermId>,
+    bool_sort: Option<Sort>,
+    true_term: Option<Term>,
 }
 ```
 
@@ -984,27 +984,27 @@ The registry API should be shaped roughly like:
 
 ```rust
 impl Registry {
-    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId;
-    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> SymbolId;
-    pub fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId;
-    pub fn intern_atom(&mut self, atom: AtomRef) -> TheoryAtomId;
+    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> Sort;
+    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> Symbol;
+    pub fn intern_term(&mut self, term: TermRef<'_>, sort: Sort) -> Term;
+    pub fn intern_atom(&mut self, atom: AtomRef) -> TheoryAtom;
 
-    pub fn find_sort(&self, sort: SortRef<'_>) -> Option<SortId>;
-    pub fn find_symbol(&self, symbol: SymbolRef<'_>) -> Option<SymbolId>;
-    pub fn find_term(&self, term: TermRef<'_>) -> Option<TermId>;
-    pub fn find_atom(&self, atom: AtomRef) -> Option<TheoryAtomId>;
+    pub fn find_sort(&self, sort: SortRef<'_>) -> Option<Sort>;
+    pub fn find_symbol(&self, symbol: SymbolRef<'_>) -> Option<Symbol>;
+    pub fn find_term(&self, term: TermRef<'_>) -> Option<Term>;
+    pub fn find_atom(&self, atom: AtomRef) -> Option<TheoryAtom>;
 
-    pub fn sort_ref(&self, id: SortId) -> SortRef<'_>;
-    pub fn symbol_ref(&self, id: SymbolId) -> SymbolRef<'_>;
-    pub fn term_ref(&self, id: TermId) -> TermRef<'_>;
-    pub fn atom_ref(&self, id: TheoryAtomId) -> AtomRef;
+    pub fn sort_ref(&self, sort: Sort) -> SortRef<'_>;
+    pub fn symbol_ref(&self, symbol: Symbol) -> SymbolRef<'_>;
+    pub fn term_ref(&self, term: Term) -> TermRef<'_>;
+    pub fn atom_ref(&self, atom: TheoryAtom) -> AtomRef;
     pub fn num_terms(&self) -> usize;
     pub fn num_atoms(&self) -> usize;
-    pub fn term_sort(&self, id: TermId) -> SortId;
-    pub fn term_atoms(&self, id: TermId) -> &[TheoryAtomId];
-    pub fn parent_apps(&self, id: TermId) -> &[TermId];
-    pub fn bool_sort(&mut self) -> SortId;
-    pub fn true_term(&mut self) -> TermId;
+    pub fn term_sort(&self, term: Term) -> Sort;
+    pub fn term_atoms(&self, term: Term) -> &[TheoryAtom];
+    pub fn parent_apps(&self, term: Term) -> &[Term];
+    pub fn bool_sort(&mut self) -> Sort;
+    pub fn true_term(&mut self) -> Term;
 }
 ```
 
@@ -1020,22 +1020,22 @@ The intended storage discipline is:
 
 The intended lookup discipline is:
 
-- `find_*()` and `intern_*()` accept borrowed query shapes such as `&str`, `&[SortId]`, and `&[TermId]`,
+- `find_*()` and `intern_*()` accept borrowed query shapes such as `&str`, `&[Sort]`, and `&[Term]`,
 - lookup must not allocate temporary boxed keys,
 - on an interner miss, the registry copies the borrowed payload into `storage.bump`, constructs the nominal object, and inserts it.
 
-The `Interner<Id, T>` sketch above is schematic. The important requirement is allocation-free borrowed probing, not the exact internal `HashMap` API shape. In practice this likely means using raw-entry or equivalent borrowed-key lookup so that probing `SymbolRef<'_>` or `TermRef<'_>` does not first materialize an owned `Symbol` or `Term`.
+The `Interner<Key, T>` sketch above is schematic. The important requirement is allocation-free borrowed probing, not the exact internal `HashMap` API shape. In practice this likely means using raw-entry or equivalent borrowed-key lookup so that probing `SymbolRef<'_>` or `TermRef<'_>` does not first materialize an owned `Symbol` or `Term`.
 
 For example:
 
 - `intern_symbol(SymbolRef { name, arg_sorts, result_sort })`
-  probes the symbol interner with `name: &str` and `arg_sorts: &[SortId]` directly,
+  probes the symbol interner with `name: &str` and `arg_sorts: &[Sort]` directly,
 - only if the symbol is missing does it copy `name` and `arg_sorts` into the bump arena,
 - the resulting `Symbol` then becomes both the canonical stored object and the interner key.
 
 When interning `TermRef::App { fun, args }`, the registry should also append the new parent term ID to `parent_apps[arg]` for each child argument. This relation is structural and solver-lifetime permanent, so it should not live in the backtrackable search state.
 
-When interning a canonical equality atom `Atom::Eq(lhs, rhs)`, the registry should append that `TheoryAtomId` to `term_atoms[lhs]` and `term_atoms[rhs]`. If `lhs == rhs`, it should append only once. This relation is also permanent and does not backtrack with SAT search.
+When interning a canonical equality atom `Atom::Eq(lhs, rhs)`, the registry should append that `TheoryAtom` to `term_atoms[lhs]` and `term_atoms[rhs]`. If `lhs == rhs`, it should append only once. This relation is also permanent and does not backtrack with SAT search.
 
 The theory-atom to SAT-variable mapping is intentionally **not** part of `Registry`. It belongs to the SAT/theory boundary owned by `EufTheory`, because the same canonical atom identity is theory-side structure while the attached SAT variable is frontend/lowering metadata.
 
@@ -1055,55 +1055,55 @@ All lowering and theory-atom registration for the currently active SMT-LIB asser
 ```rust
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct MergeInput {
-    lhs: TermId,
-    rhs: TermId,
+    lhs: Term,
+    rhs: Term,
     reason_lit: Lit,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct DiseqInput {
-    lhs: TermId,
-    rhs: TermId,
+    lhs: Term,
+    rhs: Term,
     reason_lit: Lit,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub struct CongruenceSigRef<'a> {
-    fun: SymbolId,
-    arg_reps: &'a [EClassId],
+    fun: Symbol,
+    arg_reps: &'a [EClass],
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct CongruenceSig {
-    fun: SymbolId,
-    arg_reps: ArenaSlice<EClassId>,
+    fun: Symbol,
+    arg_reps: ArenaSlice<EClass>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum MergeReason {
     InputEq { reason_lit: Lit },
     Congruence {
-        left_parent: TermId,
-        right_parent: TermId,
+        left_parent: Term,
+        right_parent: Term,
     },
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct MergeEdge {
-    lhs: TermId,
-    rhs: TermId,
+    lhs: Term,
+    rhs: Term,
     reason: MergeReason,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct DisequalityEntry {
-    lhs: TermId,
-    rhs: TermId,
+    lhs: Term,
+    rhs: Term,
     reason_lit: Lit,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
-pub struct SatLevelMarker {
+pub struct LevelMarker {
     undo_len: usize,
     merge_edges_len: usize,
     active_disequalities_len: usize,
@@ -1115,11 +1115,11 @@ pub struct SatLevelMarker {
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Undo {
-    Parent { node: TermId, old_parent: EClassId },
-    Rank { root: EClassId, old_rank: u32 },
-    ClassHead { root: EClassId, old_head: TermId },
-    ClassTail { root: EClassId, old_tail: TermId },
-    ClassNext { node: TermId, old_next: Option<TermId> },
+    Parent { node: Term, old_parent: EClass },
+    Rank { root: EClass, old_rank: u32 },
+    ClassHead { root: EClass, old_head: Term },
+    ClassTail { root: EClass, old_tail: Term },
+    ClassNext { node: Term, old_next: Option<Term> },
     CongruenceInsert { key: CongruenceSig },
 }
 
@@ -1128,25 +1128,25 @@ pub struct SearchState {
     /// Search-lifetime arena for owned congruence signatures.
     congruence_storage: Bump,
     /// Union-find representative for each term.
-    parent: Vec<EClassId>,
+    parent: Vec<EClass>,
     /// Rank or size heuristic for each representative.
     rank: Vec<u32>,
     /// Linked membership list for each equivalence class.
-    class_head: Vec<TermId>,
-    class_tail: Vec<TermId>,
-    next_in_class: Vec<Option<TermId>>,
+    class_head: Vec<Term>,
+    class_tail: Vec<Term>,
+    next_in_class: Vec<Option<Term>>,
 
     /// Congruence table keyed by function symbol and representative arguments.
-    congruence_table: HashMap<CongruenceSig, TermId>,
+    congruence_table: HashMap<CongruenceSig, Term>,
     /// Scratch buffer used to build borrowed congruence signatures without allocation.
-    congruence_sig_scratch: Vec<EClassId>,
+    congruence_sig_scratch: Vec<EClass>,
 
     /// Pending merges still to process.
     pending_merges: VecDeque<MergeInput>,
     /// Parent applications that must be reconsidered after some merge.
-    pending_repairs: VecDeque<TermId>,
+    pending_repairs: VecDeque<Term>,
     /// Theory atoms affected by recent class changes.
-    pending_atom_triggers: Vec<TheoryAtomId>,
+    pending_atom_triggers: Vec<TheoryAtom>,
     pending_atom_qhead: usize,
     atom_is_enqueued: Vec<bool>,
     /// Pending theory clauses to return to SAT.
@@ -1158,9 +1158,9 @@ pub struct SearchState {
     /// The active prefix of this vector is the current proof graph.
     merge_edges: Vec<MergeEdge>,
 
-    /// SAT-decision-level rollback support.
+    /// SAT level rollback support.
     undo_log: Vec<Undo>,
-    level_markers: Vec<SatLevelMarker>,
+    level_markers: Vec<LevelMarker>,
 }
 ```
 
@@ -1178,8 +1178,8 @@ impl SearchState {
         self.congruence_storage.reset();
 
         for i in 0..nterms {
-            let term = TermId(i as u32);
-            let rep = EClassId(i as u32);
+            let term = Term(i as u32);
+            let rep = EClass(i as u32);
             self.parent.push(rep);
             self.rank.push(0);
             self.class_head.push(term);
@@ -1202,8 +1202,8 @@ impl SearchState {
         self.level_markers.clear();
     }
 
-    pub fn push_sat_level(&mut self) {
-        self.level_markers.push(SatLevelMarker {
+    pub fn push_level(&mut self) {
+        self.level_markers.push(LevelMarker {
             undo_len: self.undo_log.len(),
             merge_edges_len: self.merge_edges.len(),
             active_disequalities_len: self.active_disequalities.len(),
@@ -1214,8 +1214,8 @@ impl SearchState {
         });
     }
 
-    pub fn pop_sat_levels(&mut self, new_level: usize) {
-        while self.level_markers.len() > new_level {
+    pub fn pop_levels(&mut self, new_level: sat::Level) {
+        while self.level_markers.len() > new_level.index() {
             let marker = self.level_markers.pop().unwrap();
             self.pending_clauses.truncate(marker.pending_clauses_len);
             for &atom in &self.pending_atom_triggers[marker.pending_atom_triggers_len..] {
@@ -1235,12 +1235,12 @@ impl SearchState {
 }
 ```
 
-`level_markers.len()` should always equal the current SAT decision level. Root level `0` has no marker. SAT must therefore call `notify_new_decision_level()` exactly when it creates a new CDCL decision level, and `notify_backtrack(level)` with the target SAT decision level after analysis.
+`level_markers.len()` should always equal the current SAT level. Root level `0` has no marker. SAT must therefore call `notify_new_level()` exactly when it creates a new CDCL level, and `notify_backtrack(level)` with the target SAT level after analysis.
 
 The intended rollback split is:
 
 - `undo_log` handles in-place mutations of union-find, class membership, and congruence-table ownership,
-- `SatLevelMarker` truncation handles append-only vectors and queues.
+- `LevelMarker` truncation handles append-only vectors and queues.
 
 That keeps the undo records small and avoids encoding every queue push as its own `Undo` variant.
 
@@ -1248,18 +1248,18 @@ The first implementation should expose helpers roughly like:
 
 ```rust
 impl SearchState {
-    pub fn find(&self, term: TermId) -> EClassId;
+    pub fn find(&self, term: Term) -> EClass;
     pub fn union_roots(
         &mut self,
-        lhs_root: EClassId,
-        rhs_root: EClassId,
-    ) -> EClassId;
+        lhs_root: EClass,
+        rhs_root: EClass,
+    ) -> EClass;
     pub fn make_congruence_sig<'a>(
         &'a mut self,
         registry: &Registry,
-        parent: TermId,
+        parent: Term,
     ) -> CongruenceSigRef<'a>;
-    pub fn enqueue_atom_trigger(&mut self, atom: TheoryAtomId);
+    pub fn enqueue_atom_trigger(&mut self, atom: TheoryAtom);
     pub fn enqueue_input_equality(&mut self, input: MergeInput);
     pub fn enqueue_input_disequality(&mut self, input: DiseqInput);
     pub fn rollback_to(&mut self, undo_len: usize);
@@ -1307,16 +1307,16 @@ impl EufTheory {
     fn merge_input(&mut self, input: MergeInput);
     fn merge_due_to_congruence(
         &mut self,
-        lhs_parent: TermId,
-        rhs_parent: TermId,
+        lhs_parent: Term,
+        rhs_parent: Term,
     );
     fn repair_congruence(&mut self);
-    fn enqueue_repairs_for_class(&mut self, root: EClassId);
-    fn enqueue_atom_triggers_for_class(&mut self, root: EClassId);
-    fn repair_parent_app(&mut self, parent: TermId);
+    fn enqueue_repairs_for_class(&mut self, root: EClass);
+    fn enqueue_atom_triggers_for_class(&mut self, root: EClass);
+    fn repair_parent_app(&mut self, parent: Term);
     fn check_active_disequalities(&mut self);
     fn process_pending_atom_triggers(&mut self);
-    fn evaluate_atom_trigger(&mut self, atom: TheoryAtomId);
+    fn evaluate_atom_trigger(&mut self, atom: TheoryAtom);
 }
 ```
 
@@ -1350,9 +1350,9 @@ The search state should reconstruct clauses over SAT literals only. EUF should n
 pub enum EqualityExplanation {
     InputLiteral(Lit),
     Congruence {
-        left_parent: TermId,
-        right_parent: TermId,
-        child_pairs: Box<[(TermId, TermId)]>,
+        left_parent: Term,
+        right_parent: Term,
+        child_pairs: Box<[(Term, Term)]>,
     },
 }
 
@@ -1375,14 +1375,14 @@ impl ExplanationClause {
         if let Some(prop) = self.propagated {
             lits.push(prop);
         }
-        let assertion_level = lits
+        let scope = lits
             .iter()
-            .map(|lit| solver.intro_level_of(lit.var()))
+            .map(|lit| solver.variable_scope_of(lit.var()))
             .max()
-            .unwrap_or(AssertionLevel::ROOT);
+            .unwrap_or(Scope::ROOT);
         TheoryClause {
             lits: lits.into_boxed_slice(),
-            assertion_level,
+            scope,
             kind,
         }
     }
@@ -1396,8 +1396,8 @@ impl SearchState {
     pub fn explain_equality(
         &self,
         registry: &Registry,
-        lhs: TermId,
-        rhs: TermId,
+        lhs: Term,
+        rhs: Term,
         out: &mut Vec<Lit>,
     );
 
@@ -1435,7 +1435,7 @@ pub struct EufTheory {
     search: SearchState,
 
     theory_atom_to_var: Vec<Var>,
-    var_to_theory_atom: Vec<Option<TheoryAtomId>>,
+    var_to_theory_atom: Vec<Option<TheoryAtom>>,
 
     /// Queue of assigned theory literals not yet processed by EUF.
     pending_assignments: VecDeque<Lit>,
@@ -1448,19 +1448,19 @@ The frontend-facing API should be roughly:
 impl EufTheory {
     pub fn new() -> Self;
 
-    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId;
-    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> SymbolId;
-    pub fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId;
+    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> Sort;
+    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> Symbol;
+    pub fn intern_term(&mut self, term: TermRef<'_>, sort: Sort) -> Term;
 
-    pub fn intern_equality_atom(&mut self, lhs: TermId, rhs: TermId, sat_var: Var) -> TheoryAtomId;
-    pub fn theory_atom_for_var(&self, var: Var) -> Option<TheoryAtomId>;
+    pub fn intern_equality_atom(&mut self, lhs: Term, rhs: Term, sat_var: Var) -> TheoryAtom;
+    pub fn theory_atom_for_var(&self, var: Var) -> Option<TheoryAtom>;
 
     pub fn atom_literal_kind(&self, lit: Lit) -> Option<AtomLiteralKind>;
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum AtomLiteralKind {
-    Eq { lhs: TermId, rhs: TermId, positive: bool },
+    Eq { lhs: Term, rhs: Term, positive: bool },
 }
 ```
 
@@ -1628,7 +1628,7 @@ Recommended Boolean lowering data:
   - existing SAT literal,
   - newly created Tseitin literal
 - `AssertFrame`
-  - current user frame id,
+  - current scope frame handle,
   - vector of asserted root literals or clauses
 
 This keeps EUF focused only on equalities, not on parsing or CNF encoding.
@@ -1638,7 +1638,7 @@ This keeps EUF focused only on equalities, not on parsing or CNF encoding.
 One `check-sat` should conceptually do this:
 
 1. SAT resets per-check search state.
-2. SAT starts from the currently active native user assertion stack.
+2. SAT starts from the currently active native assertion stack.
 3. EUF resets search-local state.
 4. SAT starts CDCL.
 5. Boolean propagation runs.
@@ -1651,7 +1651,7 @@ One `check-sat` should conceptually do this:
 
 The important point is that EUF is not replayed from scratch for every propagation step. It is reset once per top-level `check-sat`, and then it backtracks with SAT decision levels during that search.
 
-If `solve_with_assumptions()` is used, those assumptions are an extra transient layer on top of the native user assertion stack, not the representation of the stack itself.
+If `solve_with_assumptions()` is used, those assumptions are an extra transient layer on top of the native assertion stack, not the representation of the stack itself.
 
 ## Harness Redesign
 
@@ -1770,15 +1770,15 @@ This is more maintainable than making `euf` parse SMT-LIB directly or making `sa
 
 ## Key Design Decisions And Alternatives
 
-### Decision 1: Activation Literals For User Frames
+### Decision 1: Activation Literals For Scope Frames
 
 Recommended:
 
-- use native SAT `push`/`pop` for SMT-LIB user scopes, and keep assumptions only as a separate transient API.
+- use native SAT `push`/`pop` for SMT-LIB scopes, and keep assumptions only as a separate transient API.
 
 Alternative:
 
-- encode user frames via activation literals and assumptions.
+- encode scope frames via activation literals and assumptions.
 
 Why not the alternative:
 
@@ -1841,6 +1841,6 @@ The central refactor is not “teach EUF a bit of incrementality”. The central
 - make `euf` a pure theory module with explained consequences,
 - introduce a real SMT driver above them,
 - model one benchmark file as a multi-query interaction instead of a single result,
-- make native SAT `push`/`pop` the mechanism that represents SMT-LIB user scopes.
+- make native SAT `push`/`pop` the mechanism that represents SMT-LIB scopes.
 
 If those four points are done with the boundaries described above, the repository shape becomes compatible with incremental QF-UF benchmarking and remains extensible to additional theories later.

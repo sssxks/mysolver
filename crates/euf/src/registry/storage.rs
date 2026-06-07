@@ -4,9 +4,9 @@
 //! backs variable-sized payloads such as names and argument lists.
 
 use crate::arena::{BumpStorage, Interned, Interner};
-use crate::types::{AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId};
+use crate::types::{AtomRef, Sort, SortRef, Symbol, SymbolRef, Term, TermRef, TheoryAtom};
 
-use super::object::{Atom, Sort, Symbol, Term};
+use super::object::{AtomEntry, SortEntry, SymbolEntry, TermEntry};
 
 /// Permanent registry of canonical terms, symbols, sorts, and atoms.
 #[derive(Debug, Default)]
@@ -15,50 +15,50 @@ pub struct Registry {
     storage: BumpStorage,
 
     /// Canonical sort table.
-    sorts: Interner<SortId, Sort>,
+    sorts: Interner<Sort, SortEntry>,
     /// Canonical symbol table.
-    symbols: Interner<SymbolId, Symbol>,
+    symbols: Interner<Symbol, SymbolEntry>,
     /// Canonical term table.
-    terms: Interner<TermId, Term>,
+    terms: Interner<Term, TermEntry>,
     /// Canonical atom table.
-    atoms: Interner<TheoryAtomId, Atom>,
+    atoms: Interner<TheoryAtom, AtomEntry>,
 
     /// Derived sort for each interned term.
-    term_sort: Vec<SortId>,
+    term_sort: Vec<Sort>,
     /// Permanent atom incidence lists.
-    term_atoms: Vec<Vec<TheoryAtomId>>,
+    term_atoms: Vec<Vec<TheoryAtom>>,
     /// Permanent structural parent use-lists.
-    parent_apps: Vec<Vec<TermId>>,
+    parent_apps: Vec<Vec<Term>>,
 }
 
 impl Registry {
     /// Interns one sort.
-    pub(crate) fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId {
+    pub(crate) fn intern_sort(&mut self, sort: SortRef<'_>) -> Sort {
         self.sorts
             .intern(sort, || match sort {
-                SortRef::Bool => Sort::Bool,
-                SortRef::Uninterpreted { name } => Sort::Uninterpreted {
+                SortRef::Bool => SortEntry::Bool,
+                SortRef::Uninterpreted { name } => SortEntry::Uninterpreted {
                     name: self.storage.alloc_str(name),
                 },
             })
-            .id
+            .key
     }
 
     /// Interns one symbol.
-    pub(crate) fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> SymbolId {
+    pub(crate) fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> Symbol {
         self.symbols
-            .intern(symbol, || Symbol {
+            .intern(symbol, || SymbolEntry {
                 name: self.storage.alloc_str(symbol.name),
                 arg_sorts: self.storage.alloc_slice(symbol.arg_sorts),
                 result_sort: symbol.result_sort,
             })
-            .id
+            .key
     }
 
     /// Interns one term together with its already-known sort.
-    pub(crate) fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId {
+    pub(crate) fn intern_term(&mut self, term: TermRef<'_>, sort: Sort) -> Term {
         let symbol = self.symbols.get(term.fun.index());
-        // SAFETY: `Symbol` is registry-private, so `arg_sorts` can only point into
+        // SAFETY: `SymbolEntry` is registry-private, so `arg_sorts` can only point into
         // `self.storage`.
         let expected_arg_sorts = unsafe { symbol.arg_sorts.as_slice() };
         assert_eq!(
@@ -80,12 +80,12 @@ impl Registry {
             );
         }
 
-        let interned = self.terms.intern(term, || Term {
+        let interned = self.terms.intern(term, || TermEntry {
             fun: term.fun,
             args: self.storage.alloc_slice(term.args),
         });
 
-        let Interned { id, is_new } = interned;
+        let Interned { key, is_new } = interned;
 
         if is_new {
             self.term_sort.push(sort);
@@ -93,50 +93,50 @@ impl Registry {
             self.parent_apps.push(Vec::new());
 
             for &arg in term.args {
-                self.parent_apps[arg.index()].push(id);
+                self.parent_apps[arg.index()].push(key);
             }
         }
 
-        id
+        key
     }
 
     /// Interns one theory atom.
-    pub(crate) fn intern_atom(&mut self, atom: AtomRef) -> TheoryAtomId {
+    pub(crate) fn intern_atom(&mut self, atom: AtomRef) -> TheoryAtom {
         let normalized = match atom {
-            AtomRef::Eq(lhs, rhs) if rhs < lhs => Atom::Eq(rhs, lhs),
-            AtomRef::Eq(lhs, rhs) => Atom::Eq(lhs, rhs),
+            AtomRef::Eq(lhs, rhs) if rhs < lhs => AtomEntry::Eq(rhs, lhs),
+            AtomRef::Eq(lhs, rhs) => AtomEntry::Eq(lhs, rhs),
         };
         let query = match normalized {
-            Atom::Eq(lhs, rhs) => AtomRef::Eq(lhs, rhs),
+            AtomEntry::Eq(lhs, rhs) => AtomRef::Eq(lhs, rhs),
         };
-        let Interned { id, is_new } = self.atoms.intern(query, || normalized);
+        let Interned { key, is_new } = self.atoms.intern(query, || normalized);
 
         if is_new {
-            let Atom::Eq(lhs, rhs) = normalized;
-            self.term_atoms[lhs.index()].push(id);
+            let AtomEntry::Eq(lhs, rhs) = normalized;
+            self.term_atoms[lhs.index()].push(key);
             if lhs != rhs {
-                self.term_atoms[rhs.index()].push(id);
+                self.term_atoms[rhs.index()].push(key);
             }
         }
 
-        id
+        key
     }
 
-    /// Returns one borrowed view over the canonical term named by `id`.
-    pub(crate) fn term_ref(&self, id: TermId) -> TermRef<'_> {
-        let term = self.terms.get(id.index());
+    /// Returns one borrowed view over the canonical term.
+    pub(crate) fn term_ref(&self, term_key: Term) -> TermRef<'_> {
+        let term = self.terms.get(term_key.index());
         TermRef {
             fun: term.fun,
-            // SAFETY: `Term` is registry-private, so `args` can only point into
+            // SAFETY: `TermEntry` is registry-private, so `args` can only point into
             // `self.storage`.
             args: unsafe { term.args.as_slice() },
         }
     }
 
-    /// Returns one borrowed view over the canonical atom named by `id`.
-    pub(crate) fn atom_ref(&self, id: TheoryAtomId) -> AtomRef {
-        match *self.atoms.get(id.index()) {
-            Atom::Eq(lhs, rhs) => AtomRef::Eq(lhs, rhs),
+    /// Returns one borrowed view over the canonical atom.
+    pub(crate) fn atom_ref(&self, atom: TheoryAtom) -> AtomRef {
+        match *self.atoms.get(atom.index()) {
+            AtomEntry::Eq(lhs, rhs) => AtomRef::Eq(lhs, rhs),
         }
     }
 
@@ -152,17 +152,17 @@ impl Registry {
 
     /// Returns the sort of one interned term.
     #[cfg(test)]
-    pub(crate) fn term_sort(&self, id: TermId) -> SortId {
-        self.term_sort[id.index()]
+    pub(crate) fn term_sort(&self, term: Term) -> Sort {
+        self.term_sort[term.index()]
     }
 
-    /// Returns the permanent incidence list for `id`.
-    pub(crate) fn term_atoms(&self, id: TermId) -> &[TheoryAtomId] {
-        &self.term_atoms[id.index()]
+    /// Returns the permanent incidence list for `term`.
+    pub(crate) fn term_atoms(&self, term: Term) -> &[TheoryAtom] {
+        &self.term_atoms[term.index()]
     }
 
-    /// Returns the permanent structural parent list for `id`.
-    pub(crate) fn parent_apps(&self, id: TermId) -> &[TermId] {
-        &self.parent_apps[id.index()]
+    /// Returns the permanent structural parent list for `term`.
+    pub(crate) fn parent_apps(&self, term: Term) -> &[Term] {
+        &self.parent_apps[term.index()]
     }
 }

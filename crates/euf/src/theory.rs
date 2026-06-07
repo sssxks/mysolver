@@ -1,6 +1,6 @@
 //! SAT-facing EUF theory integration.
 
-use sat::{AssertionLevel, Lit, Theory, TheoryClause, TheoryClauseKind, Var};
+use sat::{Literal, Scope, Theory, TheoryClause, TheoryClauseKind, Var};
 
 use crate::registry::Registry;
 use crate::search_state::{
@@ -8,7 +8,7 @@ use crate::search_state::{
 };
 use crate::telemetry;
 use crate::types::{
-    AtomLiteralKind, AtomRef, SortId, SortRef, SymbolId, SymbolRef, TermId, TermRef, TheoryAtomId,
+    AtomLiteralKind, AtomRef, Sort, SortRef, Symbol, SymbolRef, Term, TermRef, TheoryAtom,
 };
 
 /// The EUF theory module exposed to the SAT engine.
@@ -23,27 +23,27 @@ pub struct EufTheory {
     /// Forward map from theory atoms to SAT variables.
     theory_atom_to_var: Vec<Var>,
     /// Reverse map from SAT variables to theory atoms.
-    var_to_theory_atom: Vec<Option<TheoryAtomId>>,
+    var_to_theory_atom: Vec<Option<TheoryAtom>>,
 }
 
 impl EufTheory {
     /// Interns one sort.
-    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> SortId {
+    pub fn intern_sort(&mut self, sort: SortRef<'_>) -> Sort {
         self.registry.intern_sort(sort)
     }
 
     /// Interns one symbol.
-    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> SymbolId {
+    pub fn intern_symbol(&mut self, symbol: SymbolRef<'_>) -> Symbol {
         self.registry.intern_symbol(symbol)
     }
 
     /// Interns one term.
-    pub fn intern_term(&mut self, term: TermRef<'_>, sort: SortId) -> TermId {
+    pub fn intern_term(&mut self, term: TermRef<'_>, sort: Sort) -> Term {
         self.registry.intern_term(term, sort)
     }
 
     /// Interns one equality atom and binds it to `sat_var`.
-    pub fn intern_equality_atom(&mut self, lhs: TermId, rhs: TermId, sat_var: Var) -> TheoryAtomId {
+    pub fn intern_equality_atom(&mut self, lhs: Term, rhs: Term, sat_var: Var) -> TheoryAtom {
         let atom = self.registry.intern_atom(AtomRef::Eq(lhs, rhs));
 
         if self.theory_atom_to_var.len() <= atom.index() {
@@ -66,12 +66,12 @@ impl EufTheory {
     }
 
     /// Returns the canonical atom, if any, bound to `var`.
-    fn theory_atom_for_var(&self, var: Var) -> Option<TheoryAtomId> {
+    fn theory_atom_for_var(&self, var: Var) -> Option<TheoryAtom> {
         self.var_to_theory_atom.get(var.index()).copied().flatten()
     }
 
     /// Decodes one SAT literal as one EUF atom literal, if applicable.
-    fn atom_literal_kind(&self, lit: Lit) -> Option<AtomLiteralKind> {
+    fn atom_literal_kind(&self, lit: Literal) -> Option<AtomLiteralKind> {
         let atom = self.theory_atom_for_var(lit.var())?;
         match self.registry.atom_ref(atom) {
             AtomRef::Eq(lhs, rhs) => Some(AtomLiteralKind::Eq {
@@ -178,7 +178,7 @@ impl EufTheory {
     }
 
     /// Applies one congruence-driven merge.
-    fn merge_due_to_congruence(&mut self, lhs_parent: TermId, rhs_parent: TermId) {
+    fn merge_due_to_congruence(&mut self, lhs_parent: Term, rhs_parent: Term) {
         let lhs_root = self.search.find(lhs_parent);
         let rhs_root = self.search.find(rhs_parent);
         if lhs_root == rhs_root {
@@ -200,7 +200,7 @@ impl EufTheory {
     /// Emits any conflict found while queueing work for one successful merge.
     fn after_class_merge(&mut self, merge: ClassMerge) {
         debug_assert_eq!(
-            self.search.find(TermId::from_index(merge.absorbed.index())),
+            self.search.find(Term::from_index(merge.absorbed.index())),
             merge.survivor,
         );
         if let Some(diseq) = merge.disequality_conflict {
@@ -216,7 +216,7 @@ impl EufTheory {
     }
 
     /// Rechecks one parent application under current child representatives.
-    fn repair_parent_app(&mut self, parent: TermId) {
+    fn repair_parent_app(&mut self, parent: Term) {
         if self.registry.term_ref(parent).args.is_empty() {
             return;
         }
@@ -274,12 +274,12 @@ impl EufTheory {
     }
 
     /// Re-evaluates one registered atom under current equality classes.
-    fn evaluate_atom_trigger(&mut self, atom: TheoryAtomId) {
+    fn evaluate_atom_trigger(&mut self, atom: TheoryAtom) {
         let AtomRef::Eq(lhs, rhs) = self.registry.atom_ref(atom);
         let Some(&sat_var) = self.theory_atom_to_var.get(atom.index()) else {
             return;
         };
-        let lit = Lit::new(sat_var, false);
+        let lit = Literal::new(sat_var, false);
         let equal_now = self.search.find(lhs) == self.search.find(rhs);
         let current_value = self.search.atom_value(atom);
 
@@ -316,8 +316,8 @@ impl EufTheory {
     /// Builds one SAT-facing theory clause from already explained premise literals.
     fn build_theory_clause(
         &self,
-        premises: &[Lit],
-        propagated: Option<Lit>,
+        premises: &[Literal],
+        propagated: Option<Literal>,
         kind: TheoryClauseKind,
     ) -> TheoryClause {
         let mut lits = Vec::with_capacity(premises.len() + usize::from(propagated.is_some()));
@@ -329,7 +329,7 @@ impl EufTheory {
         }
         TheoryClause {
             lits: lits.into_boxed_slice(),
-            assertion_level: AssertionLevel::ROOT,
+            scope: Scope::ROOT,
             kind,
         }
     }
@@ -362,18 +362,18 @@ impl Theory for EufTheory {
         self.search.reset_for_registry(&self.registry);
     }
 
-    fn notify_new_decision_level(&mut self) {
-        self.search.push_sat_level();
+    fn notify_new_level(&mut self) {
+        self.search.push_level();
     }
 
-    fn notify_assignment(&mut self, lit: Lit) {
+    fn notify_assignment(&mut self, lit: Literal) {
         if self.theory_atom_for_var(lit.var()).is_some() {
             self.search.enqueue_pending_assignment(lit);
         }
     }
 
-    fn notify_backtrack(&mut self, level: usize) {
-        self.search.pop_sat_levels(level);
+    fn notify_backtrack(&mut self, level: sat::Level) {
+        self.search.pop_levels(level);
     }
 
     fn drain_clauses(&mut self, out: &mut Vec<TheoryClause>) {
@@ -400,19 +400,19 @@ impl Theory for EufTheory {
 
 #[cfg(test)]
 mod tests {
-    use sat::{Lit, Var};
+    use sat::{Literal, Var};
 
     use super::EufTheory;
     use crate::{SortRef, SymbolRef, TermRef};
 
     /// Creates one positive Boolean literal for `var`.
-    fn bool_lit(var: Var) -> Lit {
-        Lit::new(var, false)
+    fn bool_lit(var: Var) -> Literal {
+        Literal::new(var, false)
     }
 
     /// Creates one negated Boolean literal for `var`.
-    fn neg_bool_lit(var: Var) -> Lit {
-        Lit::new(var, true)
+    fn neg_bool_lit(var: Var) -> Literal {
+        Literal::new(var, true)
     }
 
     #[test]

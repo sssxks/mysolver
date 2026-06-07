@@ -1,34 +1,34 @@
-use crate::{AssertionLevel, Lit};
+use crate::{Literal, Scope};
 
 /// Minimum amount of dead literal payload before compaction becomes worthwhile.
 const MIN_COMPACTION_WASTE_WORDS: usize = 1_024;
 /// Fraction of the payload arena that may be dead before triggering compaction.
 const COMPACTION_WASTE_DIVISOR: usize = 2;
 
-/// A generational handle into one [`ClauseArena`] slot.
+/// A generational handle into one [`Clauses`] slot.
 ///
-/// Resolving a clause id against a particular arena state either yields the live
-/// clause occupying this (slot, generation) pair or reports the id as stale.
+/// Resolving a clause handle against a particular arena state either yields the live
+/// clause occupying this (slot, generation) pair or reports the handle as stale.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub(crate) struct ClauseId {
+pub(crate) struct Clause {
     /// Physical slot inside the arena header table.
     slot: u32,
     /// Generation expected to occupy [`Self::slot`].
     generation: u32,
 }
 
-impl ClauseId {
-    /// Creates one clause identifier from one (slot, generation) pair.
+impl Clause {
+    /// Creates one clause handle from one (slot, generation) pair.
     fn new(slot: u32, generation: u32) -> Self {
         Self { slot, generation }
     }
 
-    /// Returns the zero-based header-table index of this clause id.
+    /// Returns the zero-based header-table index of this clause handle.
     fn slot_index(self) -> usize {
         self.slot as usize
     }
 
-    /// Returns the physical slot named by this clause id.
+    /// Returns the physical slot named by this clause handle.
     pub(crate) fn slot(self) -> u32 {
         self.slot
     }
@@ -58,8 +58,8 @@ pub(crate) struct ClauseHeader {
     len: u32,
     /// Offset of the first literal word for live clauses, or the next free slot.
     offset_or_next: u32,
-    /// User assertion level where this clause remains sound.
-    assertion_level: AssertionLevel,
+    /// Scope where this clause remains sound.
+    scope: Scope,
 }
 
 impl ClauseHeader {
@@ -82,27 +82,22 @@ impl ClauseHeader {
     const FREE_LIST_END: u32 = u32::MAX;
 
     /// Creates one live irredundant clause header for a payload beginning at `offset`.
-    fn new_irredundant(
-        generation: u32,
-        offset: u32,
-        len: u32,
-        assertion_level: AssertionLevel,
-    ) -> Self {
+    fn new_irredundant(generation: u32, offset: u32, len: u32, scope: Scope) -> Self {
         Self {
             len,
             generation_state: Self::pack_generation_state(generation, Self::LIVE_STATE),
             offset_or_next: offset,
-            assertion_level,
+            scope,
         }
     }
 
     /// Creates one live learned clause header for a payload beginning at `offset`.
-    fn new_learnt(generation: u32, offset: u32, len: u32, assertion_level: AssertionLevel) -> Self {
+    fn new_learnt(generation: u32, offset: u32, len: u32, scope: Scope) -> Self {
         Self {
             len,
             generation_state: Self::pack_generation_state(generation, Self::LEARNT_STATE),
             offset_or_next: offset,
-            assertion_level,
+            scope,
         }
     }
 
@@ -112,7 +107,7 @@ impl ClauseHeader {
             len: 0,
             generation_state: Self::pack_generation_state(generation, Self::FREE_STATE),
             offset_or_next: next_free_slot.unwrap_or(Self::FREE_LIST_END),
-            assertion_level: AssertionLevel::ROOT,
+            scope: Scope::ROOT,
         }
     }
 
@@ -122,7 +117,7 @@ impl ClauseHeader {
             len: 0,
             generation_state: Self::pack_generation_state(generation, Self::RETIRED_STATE),
             offset_or_next: 0,
-            assertion_level: AssertionLevel::ROOT,
+            scope: Scope::ROOT,
         }
     }
 
@@ -191,10 +186,10 @@ impl ClauseHeader {
         self.len as usize
     }
 
-    /// Returns the user assertion level carried by this live clause.
-    pub(crate) fn assertion_level(self) -> AssertionLevel {
+    /// Returns the scope carried by this live clause.
+    pub(crate) fn scope(self) -> Scope {
         debug_assert!(self.is_live());
-        self.assertion_level
+        self.scope
     }
 
     /// Returns the next free slot in the intrusive free list.
@@ -210,14 +205,14 @@ impl ClauseHeader {
 #[derive(Debug)]
 pub(crate) struct ClauseRef<'a> {
     /// Trailing clause literals stored in the payload arena.
-    lits: &'a [Lit],
+    lits: &'a [Literal],
 }
 
 impl ClauseRef<'_> {
     /// Returns literal `idx` from the clause payload.
     ///
     /// Preconditoin: `idx` must be less than `len()`.
-    pub(crate) fn lit(&self, idx: usize) -> Lit {
+    pub(crate) fn lit(&self, idx: usize) -> Literal {
         self.lits[idx]
     }
 }
@@ -226,7 +221,7 @@ impl ClauseRef<'_> {
 #[derive(Debug)]
 pub(crate) struct ClauseMut<'a> {
     /// Trailing clause literals stored in the payload arena.
-    lits: &'a mut [Lit],
+    lits: &'a mut [Literal],
 }
 
 impl ClauseMut<'_> {
@@ -238,7 +233,7 @@ impl ClauseMut<'_> {
     /// Returns literal `idx` from the clause payload.
     ///
     /// Preconditoin: `idx` must be less than `len()`.
-    pub(crate) fn lit(&self, idx: usize) -> Lit {
+    pub(crate) fn lit(&self, idx: usize) -> Literal {
         self.lits[idx]
     }
 
@@ -250,8 +245,8 @@ impl ClauseMut<'_> {
 
 /// A clause arena with stable physical slots and relocatable literal payloads.
 #[derive(Debug, Default)]
-pub(crate) struct ClauseArena {
-    /// Clause slots indexed by [`ClauseId::slot`].
+pub(crate) struct Clauses {
+    /// Clause slots indexed by [`Clause::slot`].
     headers: Vec<ClauseHeader>,
     /// VSIDS activity per physical clause slot.
     ///
@@ -265,26 +260,22 @@ pub(crate) struct ClauseArena {
     lbds: Vec<u32>,
 
     /// Dense literal payload storage for all long clauses.
-    words: Vec<Lit>,
+    words: Vec<Literal>,
     /// Head of the intrusive free list inside [`Self::headers`].
     free_head: Option<u32>,
     /// Number of literal words currently stranded behind deleted clauses.
     wasted_words: usize,
 }
 
-impl ClauseArena {
+impl Clauses {
     /// Creates an empty clause arena.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Allocates one irredundant clause slot and appends its literal payload.
-    pub(crate) fn alloc_irredundant(
-        &mut self,
-        lits: &[Lit],
-        assertion_level: AssertionLevel,
-    ) -> ClauseId {
-        self.alloc_with(lits, ClauseHeader::new_irredundant, 0.0, 0, assertion_level)
+    pub(crate) fn alloc_irredundant(&mut self, lits: &[Literal], scope: Scope) -> Clause {
+        self.alloc_with(lits, ClauseHeader::new_irredundant, 0.0, 0, scope)
     }
 
     /// Allocates one learned clause slot and appends its literal payload.
@@ -292,33 +283,27 @@ impl ClauseArena {
     /// Learned clauses must carry a positive LBD score.
     pub(crate) fn alloc_learnt(
         &mut self,
-        lits: &[Lit],
+        lits: &[Literal],
         activity: f32,
         lbd: u32,
-        assertion_level: AssertionLevel,
-    ) -> ClauseId {
+        scope: Scope,
+    ) -> Clause {
         assert!(lbd > 0, "learned clauses must store a positive LBD");
-        self.alloc_with(
-            lits,
-            ClauseHeader::new_learnt,
-            activity,
-            lbd,
-            assertion_level,
-        )
+        self.alloc_with(lits, ClauseHeader::new_learnt, activity, lbd, scope)
     }
 
     /// Allocates one clause slot and appends its literal payload.
     fn alloc_with(
         &mut self,
-        lits: &[Lit],
-        make_header: impl Fn(u32, u32, u32, AssertionLevel) -> ClauseHeader,
+        lits: &[Literal],
+        make_header: impl Fn(u32, u32, u32, Scope) -> ClauseHeader,
         activity: f32,
         lbd: u32,
-        assertion_level: AssertionLevel,
-    ) -> ClauseId {
+        scope: Scope,
+    ) -> Clause {
         assert!(
             self.headers.len() < ClauseHeader::FREE_LIST_END as usize,
-            "clause arena exhausted u32 ids",
+            "clause arena exhausted u32 handles",
         );
         let offset = u32::try_from(self.words.len()).expect("clause arena exhausted u32 offsets");
         let len = u32::try_from(lits.len()).expect("clause length exceeds u32::MAX");
@@ -329,17 +314,17 @@ impl ClauseArena {
             let next_free = header.next_free_slot();
             self.free_head = next_free;
             let generation = header.generation();
-            self.headers[free_slot as usize] =
-                make_header(generation, offset, len, assertion_level);
+            self.headers[free_slot as usize] = make_header(generation, offset, len, scope);
             self.activities[free_slot as usize] = activity;
             self.lbds[free_slot as usize] = lbd;
-            ClauseId::new(free_slot, generation)
+            Clause::new(free_slot, generation)
         } else {
-            let slot = u32::try_from(self.headers.len()).expect("clause arena exhausted u32 ids");
+            let slot =
+                u32::try_from(self.headers.len()).expect("clause arena exhausted u32 handles");
             let generation = 0;
-            let cid = ClauseId::new(slot, generation);
+            let cid = Clause::new(slot, generation);
             self.headers
-                .push(make_header(generation, offset, len, assertion_level));
+                .push(make_header(generation, offset, len, scope));
             self.activities.push(activity);
             self.lbds.push(lbd);
             cid
@@ -350,7 +335,7 @@ impl ClauseArena {
     }
 
     /// Deletes one live clause and either recycles or retires its slot.
-    pub(crate) fn delete(&mut self, cid: ClauseId) {
+    pub(crate) fn delete(&mut self, cid: Clause) {
         let slot = self.live_slot(cid);
         let header = self.headers[slot];
         self.wasted_words += header.len();
@@ -416,9 +401,9 @@ impl ClauseArena {
     /// # Panics
     /// Panics if slot index is out of bounds.
     #[inline(always)]
-    fn try_live_slot(&self, cid: ClauseId) -> Option<usize> {
+    fn try_live_slot(&self, cid: Clause) -> Option<usize> {
         // Slots are never truncated, so out-of-bounds signals a caller bug rather
-        // than a stale id, which is expected and tracked generationally.
+        // than a stale handle, which is expected and tracked generationally.
         let header = self
             .headers
             .get(cid.slot_index())
@@ -432,38 +417,38 @@ impl ClauseArena {
     }
 
     /// Returns whether `cid` still resolves to a live clause.
-    pub(crate) fn is_live(&self, cid: ClauseId) -> bool {
+    pub(crate) fn is_live(&self, cid: Clause) -> bool {
         self.try_live_slot(cid).is_some()
     }
 
-    /// Returns the live slot index named by `cid`, panicking if the id is stale.
+    /// Returns the live slot index named by `cid`, panicking if the handle is stale.
     #[inline(always)]
-    pub(crate) fn live_slot(&self, cid: ClauseId) -> usize {
+    pub(crate) fn live_slot(&self, cid: Clause) -> usize {
         self.try_live_slot(cid)
-            .unwrap_or_else(|| panic!("stale clause id: {cid:?}"))
+            .unwrap_or_else(|| panic!("stale clause handle: {cid:?}"))
     }
 
-    /// Returns the live header for `cid`, if the id is not stale.
+    /// Returns the live header for `cid`, if the handle is not stale.
     #[inline(always)]
-    fn try_header(&self, cid: ClauseId) -> Option<&ClauseHeader> {
+    fn try_header(&self, cid: Clause) -> Option<&ClauseHeader> {
         let slot = self.try_live_slot(cid)?;
         Some(&self.headers[slot])
     }
 
-    /// Returns the live header for `cid`, panicking if the id is stale.
-    pub(crate) fn header(&self, cid: ClauseId) -> &ClauseHeader {
+    /// Returns the live header for `cid`, panicking if the handle is stale.
+    pub(crate) fn header(&self, cid: Clause) -> &ClauseHeader {
         let slot = self.live_slot(cid);
         &self.headers[slot]
     }
 
-    /// Returns every live long clause whose user scope is deeper than `level`.
-    pub(crate) fn live_clauses_above_level(&self, level: AssertionLevel) -> Vec<ClauseId> {
+    /// Returns every live long clause whose scope is deeper than `scope`.
+    pub(crate) fn live_clauses_above_scope(&self, scope: Scope) -> Vec<Clause> {
         self.headers
             .iter()
             .enumerate()
             .filter_map(|(slot, header)| {
-                if header.is_live() && header.assertion_level() > level {
-                    Some(ClauseId::new(slot as u32, header.generation()))
+                if header.is_live() && header.scope() > scope {
+                    Some(Clause::new(slot as u32, header.generation()))
                 } else {
                     None
                 }
@@ -472,7 +457,7 @@ impl ClauseArena {
     }
 
     /// Returns the stored activity score for one live learned clause.
-    pub(crate) fn activity(&self, cid: ClauseId) -> f32 {
+    pub(crate) fn activity(&self, cid: Clause) -> f32 {
         let slot = self.live_slot(cid);
         let header = self.headers[slot];
         debug_assert!(header.is_learnt());
@@ -480,7 +465,7 @@ impl ClauseArena {
     }
 
     /// Overwrites the stored activity score for one live learned clause.
-    pub(crate) fn set_activity(&mut self, cid: ClauseId, activity: f32) {
+    pub(crate) fn set_activity(&mut self, cid: Clause, activity: f32) {
         let slot = self.live_slot(cid);
         let header = self.headers[slot];
         debug_assert!(header.is_learnt());
@@ -490,13 +475,13 @@ impl ClauseArena {
     /// Returns the stored LBD score for one live clause.
     ///
     /// Irredundant clauses always report `0`.
-    pub(crate) fn lbd(&self, cid: ClauseId) -> u32 {
+    pub(crate) fn lbd(&self, cid: Clause) -> u32 {
         let slot = self.live_slot(cid);
         self.lbds[slot]
     }
 
     /// Overwrites the stored LBD score for one live learned clause.
-    pub(crate) fn set_lbd(&mut self, cid: ClauseId, lbd: u32) {
+    pub(crate) fn set_lbd(&mut self, cid: Clause, lbd: u32) {
         let slot = self.live_slot(cid);
         let header = self.headers[slot];
         debug_assert!(header.is_learnt());
@@ -504,9 +489,9 @@ impl ClauseArena {
         self.lbds[slot] = lbd;
     }
 
-    /// Returns an immutable view over `cid`, if the id is not stale.
+    /// Returns an immutable view over `cid`, if the handle is not stale.
     #[inline(always)]
-    fn try_clause(&self, cid: ClauseId) -> Option<ClauseRef<'_>> {
+    fn try_clause(&self, cid: Clause) -> Option<ClauseRef<'_>> {
         let header = self.try_header(cid)?;
         let range = Self::literal_range_from_header(header);
         Some(ClauseRef {
@@ -514,14 +499,14 @@ impl ClauseArena {
         })
     }
 
-    /// Returns an immutable view over `cid`, panicking if the id is stale.
-    pub(crate) fn clause(&self, cid: ClauseId) -> ClauseRef<'_> {
+    /// Returns an immutable view over `cid`, panicking if the handle is stale.
+    pub(crate) fn clause(&self, cid: Clause) -> ClauseRef<'_> {
         self.try_clause(cid)
-            .unwrap_or_else(|| panic!("stale clause id: {cid:?}"))
+            .unwrap_or_else(|| panic!("stale clause handle: {cid:?}"))
     }
 
-    /// Returns a mutable view over `cid`, if the id is not stale.
-    pub(crate) fn try_clause_mut(&mut self, cid: ClauseId) -> Option<ClauseMut<'_>> {
+    /// Returns a mutable view over `cid`, if the handle is not stale.
+    pub(crate) fn try_clause_mut(&mut self, cid: Clause) -> Option<ClauseMut<'_>> {
         let slot = self.try_live_slot(cid)?;
         let range = Self::literal_range_from_header(&self.headers[slot]);
         Some(ClauseMut {
@@ -590,21 +575,21 @@ impl ClauseArena {
 
 #[cfg(test)]
 mod tests {
-    use super::ClauseArena;
-    use crate::{AssertionLevel, Lit, Var};
+    use super::Clauses;
+    use crate::{Literal, Scope, Var};
 
-    fn lit(index: usize) -> Lit {
-        Lit::new(Var::from_index(index), false)
+    fn lit(index: usize) -> Literal {
+        Literal::new(Var::from_index(index), false)
     }
 
     #[test]
     fn delete_reuses_header_slot_and_bumps_generation() {
-        let mut arena = ClauseArena::new();
-        let a = arena.alloc_irredundant(&[lit(0), lit(1), lit(2)], AssertionLevel::ROOT);
-        let b = arena.alloc_learnt(&[lit(3), lit(4), lit(5)], 7.0, 5, AssertionLevel::ROOT);
+        let mut arena = Clauses::new();
+        let a = arena.alloc_irredundant(&[lit(0), lit(1), lit(2)], Scope::ROOT);
+        let b = arena.alloc_learnt(&[lit(3), lit(4), lit(5)], 7.0, 5, Scope::ROOT);
 
         arena.delete(a);
-        let c = arena.alloc_learnt(&[lit(6), lit(7), lit(8)], 9.0, 2, AssertionLevel::ROOT);
+        let c = arena.alloc_learnt(&[lit(6), lit(7), lit(8)], 9.0, 2, Scope::ROOT);
 
         assert_eq!(c.slot(), a.slot());
         assert_ne!(c, a);
@@ -619,19 +604,19 @@ mod tests {
     }
 
     #[test]
-    fn delete_compacts_payload_without_rewriting_live_clause_ids() {
-        let mut arena = ClauseArena::new();
+    fn delete_compacts_payload_without_rewriting_live_clause_handles() {
+        let mut arena = Clauses::new();
 
         let make_clause =
-            |base: usize| -> Vec<Lit> { (0..600).map(|idx| lit(base + idx)).collect() };
+            |base: usize| -> Vec<Literal> { (0..600).map(|idx| lit(base + idx)).collect() };
 
         let a_lits = make_clause(0);
         let b_lits = make_clause(1_000);
         let c_lits = make_clause(2_000);
 
-        let a = arena.alloc_irredundant(&a_lits, AssertionLevel::ROOT);
-        let b = arena.alloc_irredundant(&b_lits, AssertionLevel::ROOT);
-        let c = arena.alloc_learnt(&c_lits, 3.0, 4, AssertionLevel::ROOT);
+        let a = arena.alloc_irredundant(&a_lits, Scope::ROOT);
+        let b = arena.alloc_irredundant(&b_lits, Scope::ROOT);
+        let c = arena.alloc_learnt(&c_lits, 3.0, 4, Scope::ROOT);
 
         arena.delete(a);
         arena.delete(b);
@@ -644,22 +629,21 @@ mod tests {
             c_lits[c_lits.len() - 1]
         );
 
-        let reused =
-            arena.alloc_irredundant(&[lit(9_000), lit(9_001), lit(9_002)], AssertionLevel::ROOT);
+        let reused = arena.alloc_irredundant(&[lit(9_000), lit(9_001), lit(9_002)], Scope::ROOT);
         assert!(matches!(reused.slot(), 0 | 1));
         assert_eq!(reused.generation(), 1);
     }
 
     #[test]
     fn delete_retires_slot_when_generation_overflows() {
-        let mut arena = ClauseArena::new();
-        let cid = arena.alloc_irredundant(&[lit(0), lit(1), lit(2)], AssertionLevel::ROOT);
-        let retired = super::ClauseId::new(cid.slot(), super::ClauseHeader::MAX_GENERATION);
+        let mut arena = Clauses::new();
+        let cid = arena.alloc_irredundant(&[lit(0), lit(1), lit(2)], Scope::ROOT);
+        let retired = super::Clause::new(cid.slot(), super::ClauseHeader::MAX_GENERATION);
         arena.headers[cid.slot_index()] = super::ClauseHeader::new_irredundant(
             super::ClauseHeader::MAX_GENERATION,
             0,
             3,
-            AssertionLevel::ROOT,
+            Scope::ROOT,
         );
 
         arena.delete(retired);

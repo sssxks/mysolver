@@ -1,12 +1,12 @@
 use std::cmp::max;
 
-use crate::Lit;
-use crate::clause_db::ClauseId;
+use crate::clause_db::Clause;
 use crate::telemetry;
+use crate::{Level, Literal};
 
 use super::propagate::Watcher;
-use super::{AddClauseResult, Reason, Solver, TheoryClause, TheoryClauseKind};
-use crate::AssertionLevel;
+use super::{AddClauseResult, Reason, Solver, TheoryClause, TheoryClauseKind, TruthValue};
+use crate::Scope;
 
 /// Drop false literals during ordinary clause normalization.
 const DROP_FALSE: bool = false;
@@ -20,17 +20,13 @@ impl Solver {
     /// The method returns `false` when the clause makes the formula immediately
     /// inconsistent; otherwise it returns `true`. Tautological and already-satisfied
     /// clauses are ignored.
-    pub fn add_clause(&mut self, lits: &[Lit]) -> AddClauseResult {
+    pub fn add_clause(&mut self, lits: &[Literal]) -> AddClauseResult {
         self.reset_search();
-        self.add_scoped_clause(lits, self.current_clause_assertion_level(lits))
+        self.add_scoped_clause(lits, self.input_clause_scope(lits))
     }
 
-    /// Adds one input clause carrying an explicit user-scope level.
-    fn add_scoped_clause(
-        &mut self,
-        lits: &[Lit],
-        assertion_level: AssertionLevel,
-    ) -> AddClauseResult {
+    /// Adds one input clause carrying an explicit scope level.
+    fn add_scoped_clause(&mut self, lits: &[Literal], scope: Scope) -> AddClauseResult {
         if self.not_ok() {
             return AddClauseResult::Inconsistent;
         }
@@ -39,22 +35,22 @@ impl Solver {
         };
         match ps.len() {
             0 => {
-                self.inconsistent_assertion_level = Some(assertion_level);
+                self.inconsistent_scope = Some(scope);
                 AddClauseResult::Inconsistent
             }
             1 => {
                 if !self.enqueue(ps[0], Reason::None) {
-                    self.inconsistent_assertion_level = Some(assertion_level);
+                    self.inconsistent_scope = Some(scope);
                     return AddClauseResult::Inconsistent;
                 }
                 AddClauseResult::Added
             }
             2 => {
-                self.attach_binary(ps[0], ps[1], assertion_level);
+                self.attach_binary(ps[0], ps[1], scope);
                 AddClauseResult::Added
             }
             _ => {
-                self.attach_irredundant_long(&ps, assertion_level);
+                self.attach_irredundant_long(&ps, scope);
                 AddClauseResult::Added
             }
         }
@@ -62,7 +58,7 @@ impl Solver {
 
     /// Classifies one SAT-facing theory clause after reason-preserving normalization.
     pub(crate) fn classify_theory_clause(&self, clause: &TheoryClause) -> ClassifiedTheoryClause {
-        let assertion_level = self.theory_clause_assertion_level(clause);
+        let scope = self.theory_clause_scope(clause);
         let Some(lits) = self.normalize_clause::<KEEP_FALSE>(&clause.lits) else {
             return ClassifiedTheoryClause::Satisfied;
         };
@@ -70,7 +66,7 @@ impl Solver {
         let mut first = None;
         let mut second = None;
         for (index, &lit) in lits.iter().enumerate() {
-            if self.value_lit(lit) == super::LBool::False {
+            if self.value_lit(lit) == TruthValue::False {
                 continue;
             }
             if first.is_none() {
@@ -82,20 +78,17 @@ impl Solver {
         }
 
         match (first, second) {
-            (None, _) => ClassifiedTheoryClause::Conflict {
-                lits,
-                assertion_level,
-            },
+            (None, _) => ClassifiedTheoryClause::Conflict { lits, scope },
             (Some(unit_index), None) => ClassifiedTheoryClause::Unit {
                 lits,
                 unit_index,
-                assertion_level,
+                scope,
             },
             (Some(first), Some(second)) => ClassifiedTheoryClause::Watch {
                 lits,
                 first,
                 second,
-                assertion_level,
+                scope,
             },
         }
     }
@@ -103,9 +96,9 @@ impl Solver {
     /// Inserts one currently unit theory clause and keeps its full reason when needed.
     pub(crate) fn insert_unit_theory_clause(
         &mut self,
-        mut lits: Vec<Lit>,
+        mut lits: Vec<Literal>,
         unit_index: usize,
-        assertion_level: AssertionLevel,
+        scope: Scope,
     ) -> AddClauseResult {
         if self.not_ok() {
             return AddClauseResult::Inconsistent;
@@ -115,10 +108,10 @@ impl Solver {
         let reason = if lits.len() == 1 || self.unit_theory_reason_is_root_level(&lits) {
             Reason::None
         } else {
-            Reason::Theory(self.push_theory_reason(&lits, assertion_level))
+            Reason::Theory(self.push_theory_reason(&lits, scope))
         };
         if !self.enqueue(lits[0], reason) {
-            self.inconsistent_assertion_level = Some(assertion_level);
+            self.inconsistent_scope = Some(scope);
             return AddClauseResult::Inconsistent;
         }
 
@@ -128,19 +121,19 @@ impl Solver {
     /// Inserts one theory clause with at least two currently live literals.
     pub(crate) fn insert_watched_theory_clause(
         &mut self,
-        mut lits: Vec<Lit>,
+        mut lits: Vec<Literal>,
         first: usize,
         second: usize,
-        assertion_level: AssertionLevel,
+        scope: Scope,
     ) -> AddClauseResult {
         if self.not_ok() {
             return AddClauseResult::Inconsistent;
         }
         move_two_indices_to_front(&mut lits, first, second);
         match lits.len() {
-            2 => self.attach_binary(lits[0], lits[1], assertion_level),
+            2 => self.attach_binary(lits[0], lits[1], scope),
             _ => {
-                self.attach_irredundant_long(&lits, assertion_level);
+                self.attach_irredundant_long(&lits, scope);
             }
         }
         AddClauseResult::Added
@@ -150,24 +143,27 @@ impl Solver {
     ///
     /// The returned clause is sorted and duplicate-free. Tautological clauses and
     /// clauses already satisfied by the current assignment return `None`.
-    fn normalize_clause<const KEEP_FALSE_LITERALS: bool>(&self, lits: &[Lit]) -> Option<Vec<Lit>> {
+    fn normalize_clause<const KEEP_FALSE_LITERALS: bool>(
+        &self,
+        lits: &[Literal],
+    ) -> Option<Vec<Literal>> {
         let mut ps = Vec::with_capacity(lits.len());
         for &lit in lits {
             match self.value_lit(lit) {
-                super::LBool::True => return None,
-                super::LBool::False => {
+                TruthValue::True => return None,
+                TruthValue::False => {
                     if KEEP_FALSE_LITERALS {
                         ps.push(lit);
                     }
                 }
-                super::LBool::Undef => ps.push(lit),
+                TruthValue::Unknown => ps.push(lit),
             }
         }
 
         ps.sort_unstable_by_key(|lit| lit.index());
 
         let mut out = Vec::with_capacity(ps.len());
-        let mut prev: Option<Lit> = None;
+        let mut prev: Option<Literal> = None;
         for lit in ps {
             if prev == Some(lit) {
                 continue;
@@ -185,28 +181,18 @@ impl Solver {
     }
 
     /// Attaches a binary clause to both of its watch lists.
-    fn attach_binary(&mut self, a: Lit, b: Lit, assertion_level: AssertionLevel) {
-        self.watches[a.index()].push(Watcher::Binary {
-            other: b,
-            assertion_level,
-        });
-        self.watches[b.index()].push(Watcher::Binary {
-            other: a,
-            assertion_level,
-        });
+    fn attach_binary(&mut self, a: Literal, b: Literal, scope: Scope) {
+        self.watches[a.index()].push(Watcher::Binary { other: b, scope });
+        self.watches[b.index()].push(Watcher::Binary { other: a, scope });
         telemetry::record_added_watchers(2);
     }
 
     /// Stores and watches one irredundant long clause.
-    fn attach_irredundant_long(
-        &mut self,
-        lits: &[Lit],
-        assertion_level: AssertionLevel,
-    ) -> ClauseId {
+    fn attach_irredundant_long(&mut self, lits: &[Literal], scope: Scope) -> Clause {
         debug_assert!(lits.len() >= 3);
         let w0 = lits[0];
         let w1 = lits[1];
-        let cid = self.clauses.alloc_irredundant(lits, assertion_level);
+        let cid = self.clauses.alloc_irredundant(lits, scope);
         self.watches[w0.index()].push(Watcher::Long {
             clause: cid,
             blocker: w1,
@@ -222,17 +208,15 @@ impl Solver {
     /// Stores and watches one learned long clause together with its initial LBD.
     pub(crate) fn attach_learnt_long(
         &mut self,
-        lits: &[Lit],
+        lits: &[Literal],
         lbd: u32,
-        assertion_level: AssertionLevel,
-    ) -> ClauseId {
+        scope: Scope,
+    ) -> Clause {
         debug_assert!(lits.len() >= 3);
         debug_assert!(lbd > 0);
         let w0 = lits[0];
         let w1 = lits[1];
-        let cid = self
-            .clauses
-            .alloc_learnt(lits, self.clause_inc, lbd, assertion_level);
+        let cid = self.clauses.alloc_learnt(lits, self.clause_inc, lbd, scope);
         self.watches[w0.index()].push(Watcher::Long {
             clause: cid,
             blocker: w1,
@@ -250,13 +234,8 @@ impl Solver {
     ///
     /// The caller must provide `lits` in asserting order as produced by
     /// [`Self::analyze`]: `lits[0]` is the asserting literal and, when `lits.len() > 1`,
-    /// `lits[1]` is the literal with the highest remaining decision level.
-    pub(crate) fn add_learnt_clause(
-        &mut self,
-        lits: &[Lit],
-        lbd: u32,
-        assertion_level: AssertionLevel,
-    ) {
+    /// `lits[1]` is the literal with the highest remaining level.
+    pub(crate) fn add_learnt_clause(&mut self, lits: &[Literal], lbd: u32, scope: Scope) {
         debug_assert!(!lits.is_empty());
         debug_assert!(lbd > 0);
         telemetry::record_learnt_clause();
@@ -266,73 +245,70 @@ impl Solver {
                 let _ = self.enqueue(lits[0], Reason::None);
             }
             2 => {
-                self.attach_binary(lits[0], lits[1], assertion_level);
+                self.attach_binary(lits[0], lits[1], scope);
                 let _ = self.enqueue(
                     lits[0],
                     Reason::Binary {
                         false_lit: lits[1],
                         other: lits[0],
-                        assertion_level,
+                        scope,
                     },
                 );
             }
             _ => {
-                let cid = self.attach_learnt_long(lits, lbd, assertion_level);
+                let cid = self.attach_learnt_long(lits, lbd, scope);
                 let _ = self.enqueue(lits[0], Reason::Clause(cid));
             }
         }
     }
 
     /// Computes the scope required for one frontend or input clause.
-    fn current_clause_assertion_level(&self, lits: &[Lit]) -> AssertionLevel {
+    fn input_clause_scope(&self, lits: &[Literal]) -> Scope {
         lits.iter()
-            .map(|lit| self.intro_level[lit.var().index()])
+            .map(|lit| self.variable_scope[lit.var().index()])
             .max()
-            .unwrap_or(self.assertion_level)
-            .max(self.assertion_level)
+            .unwrap_or(self.current_scope)
+            .max(self.current_scope)
     }
 
     /// Computes the scope required by one SAT-facing theory clause.
-    fn theory_clause_assertion_level(&self, clause: &TheoryClause) -> AssertionLevel {
+    fn theory_clause_scope(&self, clause: &TheoryClause) -> Scope {
         match clause.kind {
-            TheoryClauseKind::Input | TheoryClauseKind::Lemma => clause.assertion_level,
+            TheoryClauseKind::Input | TheoryClauseKind::Lemma => clause.scope,
             TheoryClauseKind::PropagationExplanation | TheoryClauseKind::ConflictExplanation => {
                 // regression test `empty_theory_conflict_preserves_declared_scope` in crates/sat/src/lib.rs
                 let a = {
                     clause
                         .lits
                         .iter()
-                        .map(|lit| self.intro_level[lit.var().index()])
+                        .map(|lit| self.variable_scope[lit.var().index()])
                         .max()
-                        .unwrap_or(AssertionLevel::ROOT)
+                        .unwrap_or(Scope::ROOT)
                 };
-                max(a, clause.assertion_level)
+                max(a, clause.scope)
             }
         }
     }
 
     /// Stores one transient theory reason and returns its stable id.
-    fn push_theory_reason(&mut self, lits: &[Lit], assertion_level: AssertionLevel) -> usize {
+    fn push_theory_reason(&mut self, lits: &[Literal], scope: Scope) -> usize {
         let start = u32::try_from(self.theory_reason_lits.len())
             .expect("theory reason literal arena exhausted u32 offsets");
         let len = u32::try_from(lits.len()).expect("theory reason length exceeds u32::MAX");
         let id = self.theory_reasons.len();
         self.theory_reason_lits.extend_from_slice(lits);
-        self.theory_reasons.push(super::TheoryReason {
-            start,
-            len,
-            assertion_level,
-        });
+        self.theory_reasons
+            .push(super::TheoryReason { start, len, scope });
         id
     }
 
     /// Returns whether one currently unit theory clause depends only on root
     /// assignments and therefore needs no stored implication-graph reason.
-    fn unit_theory_reason_is_root_level(&self, lits: &[Lit]) -> bool {
+    fn unit_theory_reason_is_root_level(&self, lits: &[Literal]) -> bool {
         debug_assert!(!lits.is_empty());
         lits[1..]
             .iter()
-            .all(|lit| self.sat_level[lit.var().index()] == 0)
+            .all(|lit| self.level[lit.var().index()] == Level::ROOT)
     }
 }
 
@@ -346,29 +322,29 @@ pub(crate) enum ClassifiedTheoryClause {
     /// Every normalized literal is currently false.
     Conflict {
         /// Normalized falsified literals retained for conflict analysis.
-        lits: Vec<Lit>,
-        /// User scope where the conflict must remain visible.
-        assertion_level: AssertionLevel,
+        lits: Vec<Literal>,
+        /// Scope where the conflict must remain visible.
+        scope: Scope,
     },
     /// Exactly one normalized literal is currently not false.
     Unit {
         /// Normalized clause literals retained as a propagation reason.
-        lits: Vec<Lit>,
+        lits: Vec<Literal>,
         /// Index of the literal to enqueue.
         unit_index: usize,
-        /// User scope where this theory clause remains valid.
-        assertion_level: AssertionLevel,
+        /// Scope where this theory clause remains valid.
+        scope: Scope,
     },
     /// At least two literals are not currently false.
     Watch {
         /// Normalized clause literals retained for future reasons.
-        lits: Vec<Lit>,
+        lits: Vec<Literal>,
         /// Index of the first live literal.
         first: usize,
         /// Index of the second live literal.
         second: usize,
-        /// User scope where this theory clause remains valid.
-        assertion_level: AssertionLevel,
+        /// Scope where this theory clause remains valid.
+        scope: Scope,
     },
 }
 
