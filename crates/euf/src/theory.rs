@@ -1,6 +1,6 @@
 //! SAT-facing EUF theory integration.
 
-use sat::{Lit, Scope, Theory, TheoryClause, TheoryClauseKind, Var};
+use sat::{Literal, Scope, Theory, TheoryClause, TheoryClauseKind, Var};
 
 use crate::registry::Registry;
 use crate::search_state::{
@@ -71,7 +71,7 @@ impl EufTheory {
     }
 
     /// Decodes one SAT literal as one EUF atom literal, if applicable.
-    fn atom_literal_kind(&self, lit: Lit) -> Option<AtomLiteralKind> {
+    fn atom_literal_kind(&self, lit: Literal) -> Option<AtomLiteralKind> {
         let atom = self.theory_atom_for_var(lit.var())?;
         match self.registry.atom_ref(atom) {
             AtomRef::Eq(lhs, rhs) => Some(AtomLiteralKind::Eq {
@@ -279,7 +279,7 @@ impl EufTheory {
         let Some(&sat_var) = self.theory_atom_to_var.get(atom.index()) else {
             return;
         };
-        let lit = Lit::new(sat_var, false);
+        let lit = Literal::new(sat_var, false);
         let equal_now = self.search.find(lhs) == self.search.find(rhs);
         let current_value = self.search.atom_value(atom);
 
@@ -316,8 +316,8 @@ impl EufTheory {
     /// Builds one SAT-facing theory clause from already explained premise literals.
     fn build_theory_clause(
         &self,
-        premises: &[Lit],
-        propagated: Option<Lit>,
+        premises: &[Literal],
+        propagated: Option<Literal>,
         kind: TheoryClauseKind,
     ) -> TheoryClause {
         let mut lits = Vec::with_capacity(premises.len() + usize::from(propagated.is_some()));
@@ -366,7 +366,7 @@ impl Theory for EufTheory {
         self.search.push_level();
     }
 
-    fn notify_assignment(&mut self, lit: Lit) {
+    fn notify_assignment(&mut self, lit: Literal) {
         if self.theory_atom_for_var(lit.var()).is_some() {
             self.search.enqueue_pending_assignment(lit);
         }
@@ -400,19 +400,19 @@ impl Theory for EufTheory {
 
 #[cfg(test)]
 mod tests {
-    use sat::{Lit, Var};
+    use sat::{Literal, Var};
 
     use super::EufTheory;
     use crate::{SortRef, SymbolRef, TermRef};
 
     /// Creates one positive Boolean literal for `var`.
-    fn bool_lit(var: Var) -> Lit {
-        Lit::new(var, false)
+    fn bool_lit(var: Var) -> Literal {
+        Literal::new(var, false)
     }
 
     /// Creates one negated Boolean literal for `var`.
-    fn neg_bool_lit(var: Var) -> Lit {
-        Lit::new(var, true)
+    fn neg_bool_lit(var: Var) -> Literal {
+        Literal::new(var, true)
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use std::cmp::max;
 
-use crate::{Level, Lit};
 use crate::clause_db::ClauseId;
 use crate::telemetry;
+use crate::{Level, Literal};
 
 use super::propagate::Watcher;
 use super::{AddClauseResult, Reason, Solver, TheoryClause, TheoryClauseKind, TruthValue};
@@ -20,13 +20,13 @@ impl Solver {
     /// The method returns `false` when the clause makes the formula immediately
     /// inconsistent; otherwise it returns `true`. Tautological and already-satisfied
     /// clauses are ignored.
-    pub fn add_clause(&mut self, lits: &[Lit]) -> AddClauseResult {
+    pub fn add_clause(&mut self, lits: &[Literal]) -> AddClauseResult {
         self.reset_search();
         self.add_scoped_clause(lits, self.input_clause_scope(lits))
     }
 
     /// Adds one input clause carrying an explicit scope level.
-    fn add_scoped_clause(&mut self, lits: &[Lit], scope: Scope) -> AddClauseResult {
+    fn add_scoped_clause(&mut self, lits: &[Literal], scope: Scope) -> AddClauseResult {
         if self.not_ok() {
             return AddClauseResult::Inconsistent;
         }
@@ -96,7 +96,7 @@ impl Solver {
     /// Inserts one currently unit theory clause and keeps its full reason when needed.
     pub(crate) fn insert_unit_theory_clause(
         &mut self,
-        mut lits: Vec<Lit>,
+        mut lits: Vec<Literal>,
         unit_index: usize,
         scope: Scope,
     ) -> AddClauseResult {
@@ -121,7 +121,7 @@ impl Solver {
     /// Inserts one theory clause with at least two currently live literals.
     pub(crate) fn insert_watched_theory_clause(
         &mut self,
-        mut lits: Vec<Lit>,
+        mut lits: Vec<Literal>,
         first: usize,
         second: usize,
         scope: Scope,
@@ -143,7 +143,10 @@ impl Solver {
     ///
     /// The returned clause is sorted and duplicate-free. Tautological clauses and
     /// clauses already satisfied by the current assignment return `None`.
-    fn normalize_clause<const KEEP_FALSE_LITERALS: bool>(&self, lits: &[Lit]) -> Option<Vec<Lit>> {
+    fn normalize_clause<const KEEP_FALSE_LITERALS: bool>(
+        &self,
+        lits: &[Literal],
+    ) -> Option<Vec<Literal>> {
         let mut ps = Vec::with_capacity(lits.len());
         for &lit in lits {
             match self.value_lit(lit) {
@@ -160,7 +163,7 @@ impl Solver {
         ps.sort_unstable_by_key(|lit| lit.index());
 
         let mut out = Vec::with_capacity(ps.len());
-        let mut prev: Option<Lit> = None;
+        let mut prev: Option<Literal> = None;
         for lit in ps {
             if prev == Some(lit) {
                 continue;
@@ -178,14 +181,14 @@ impl Solver {
     }
 
     /// Attaches a binary clause to both of its watch lists.
-    fn attach_binary(&mut self, a: Lit, b: Lit, scope: Scope) {
+    fn attach_binary(&mut self, a: Literal, b: Literal, scope: Scope) {
         self.watches[a.index()].push(Watcher::Binary { other: b, scope });
         self.watches[b.index()].push(Watcher::Binary { other: a, scope });
         telemetry::record_added_watchers(2);
     }
 
     /// Stores and watches one irredundant long clause.
-    fn attach_irredundant_long(&mut self, lits: &[Lit], scope: Scope) -> ClauseId {
+    fn attach_irredundant_long(&mut self, lits: &[Literal], scope: Scope) -> ClauseId {
         debug_assert!(lits.len() >= 3);
         let w0 = lits[0];
         let w1 = lits[1];
@@ -203,7 +206,12 @@ impl Solver {
     }
 
     /// Stores and watches one learned long clause together with its initial LBD.
-    pub(crate) fn attach_learnt_long(&mut self, lits: &[Lit], lbd: u32, scope: Scope) -> ClauseId {
+    pub(crate) fn attach_learnt_long(
+        &mut self,
+        lits: &[Literal],
+        lbd: u32,
+        scope: Scope,
+    ) -> ClauseId {
         debug_assert!(lits.len() >= 3);
         debug_assert!(lbd > 0);
         let w0 = lits[0];
@@ -227,7 +235,7 @@ impl Solver {
     /// The caller must provide `lits` in asserting order as produced by
     /// [`Self::analyze`]: `lits[0]` is the asserting literal and, when `lits.len() > 1`,
     /// `lits[1]` is the literal with the highest remaining level.
-    pub(crate) fn add_learnt_clause(&mut self, lits: &[Lit], lbd: u32, scope: Scope) {
+    pub(crate) fn add_learnt_clause(&mut self, lits: &[Literal], lbd: u32, scope: Scope) {
         debug_assert!(!lits.is_empty());
         debug_assert!(lbd > 0);
         telemetry::record_learnt_clause();
@@ -255,7 +263,7 @@ impl Solver {
     }
 
     /// Computes the scope required for one frontend or input clause.
-    fn input_clause_scope(&self, lits: &[Lit]) -> Scope {
+    fn input_clause_scope(&self, lits: &[Literal]) -> Scope {
         lits.iter()
             .map(|lit| self.variable_scope[lit.var().index()])
             .max()
@@ -283,7 +291,7 @@ impl Solver {
     }
 
     /// Stores one transient theory reason and returns its stable id.
-    fn push_theory_reason(&mut self, lits: &[Lit], scope: Scope) -> usize {
+    fn push_theory_reason(&mut self, lits: &[Literal], scope: Scope) -> usize {
         let start = u32::try_from(self.theory_reason_lits.len())
             .expect("theory reason literal arena exhausted u32 offsets");
         let len = u32::try_from(lits.len()).expect("theory reason length exceeds u32::MAX");
@@ -296,7 +304,7 @@ impl Solver {
 
     /// Returns whether one currently unit theory clause depends only on root
     /// assignments and therefore needs no stored implication-graph reason.
-    fn unit_theory_reason_is_root_level(&self, lits: &[Lit]) -> bool {
+    fn unit_theory_reason_is_root_level(&self, lits: &[Literal]) -> bool {
         debug_assert!(!lits.is_empty());
         lits[1..]
             .iter()
@@ -314,14 +322,14 @@ pub(crate) enum ClassifiedTheoryClause {
     /// Every normalized literal is currently false.
     Conflict {
         /// Normalized falsified literals retained for conflict analysis.
-        lits: Vec<Lit>,
+        lits: Vec<Literal>,
         /// Scope where the conflict must remain visible.
         scope: Scope,
     },
     /// Exactly one normalized literal is currently not false.
     Unit {
         /// Normalized clause literals retained as a propagation reason.
-        lits: Vec<Lit>,
+        lits: Vec<Literal>,
         /// Index of the literal to enqueue.
         unit_index: usize,
         /// Scope where this theory clause remains valid.
@@ -330,7 +338,7 @@ pub(crate) enum ClassifiedTheoryClause {
     /// At least two literals are not currently false.
     Watch {
         /// Normalized clause literals retained for future reasons.
-        lits: Vec<Lit>,
+        lits: Vec<Literal>,
         /// Index of the first live literal.
         first: usize,
         /// Index of the second live literal.

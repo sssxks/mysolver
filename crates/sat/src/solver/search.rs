@@ -1,8 +1,8 @@
 use crate::clause_db::ClauseId;
 use crate::telemetry;
-use crate::{Level, Lit, Var};
+use crate::{Level, Literal, Var};
 
-use super::{TruthValue, PopError, Reason, Solver};
+use super::{PopError, Reason, Solver, TruthValue};
 use crate::Scope;
 
 /// Learned clauses at or below this LBD stay in the protected core.
@@ -46,10 +46,10 @@ impl Solver {
     }
 
     /// Picks the next unassigned branching literal according to activity and phase.
-    pub(crate) fn pick_branch_lit(&mut self) -> Option<Lit> {
+    pub(crate) fn pick_branch_lit(&mut self) -> Option<Literal> {
         while let Some(v) = self.order.pop_max(&self.var_activity) {
             if self.assigns[v.index()] == TruthValue::Unknown {
-                return Some(Lit::new(v, !self.phase[v.index()]));
+                return Some(Literal::new(v, !self.phase[v.index()]));
             }
         }
         None
@@ -276,22 +276,24 @@ mod tests {
     #[cfg(feature = "telemetry")]
     use crate::Scope;
     #[cfg(feature = "telemetry")]
+    use crate::clause_db::ClauseId;
+    #[cfg(feature = "telemetry")]
     use crate::telemetry;
     #[cfg(feature = "telemetry")]
-    use crate::{Lit, Var};
+    use crate::{Literal, Var};
 
     #[cfg(feature = "telemetry")]
-    fn lit(index: usize) -> Lit {
-        Lit::new(Var::from_index(index), false)
+    fn lit(index: usize) -> Literal {
+        Literal::new(Var::from_index(index), false)
     }
 
     #[cfg(feature = "telemetry")]
-    fn nlit(index: usize) -> Lit {
-        Lit::new(Var::from_index(index), true)
+    fn nlit(index: usize) -> Literal {
+        Literal::new(Var::from_index(index), true)
     }
 
     #[cfg(feature = "telemetry")]
-    fn long_watch_count(solver: &Solver, watched: Lit, cid: crate::clause_db::ClauseId) -> usize {
+    fn long_watch_count(solver: &Solver, watched: Literal, cid: ClauseId) -> usize {
         solver.watches[watched.index()]
             .iter()
             .filter(|watcher| {

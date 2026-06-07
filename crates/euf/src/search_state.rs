@@ -5,7 +5,7 @@ use std::ptr::NonNull;
 
 use bumpalo::Bump;
 use hashbrown::{HashMap, HashSet};
-use sat::{Lit, TheoryClause};
+use sat::{Literal, TheoryClause};
 
 use crate::arena::{ArenaSlice, make_hash};
 use crate::registry::Registry;
@@ -19,7 +19,7 @@ pub struct MergeInput {
     /// Right term.
     pub(crate) rhs: TermId,
     /// Assigned SAT literal justifying this merge.
-    pub(crate) reason_lit: Lit,
+    pub(crate) reason_lit: Literal,
 }
 
 /// One input disequality waiting to become active.
@@ -30,7 +30,7 @@ pub struct DiseqInput {
     /// Right term.
     pub(crate) rhs: TermId,
     /// Assigned SAT literal justifying this disequality.
-    pub(crate) reason_lit: Lit,
+    pub(crate) reason_lit: Literal,
 }
 
 /// Borrowed congruence signature used for allocation-free probing.
@@ -65,7 +65,7 @@ pub enum MergeReason {
     /// One asserted equality literal.
     InputEq {
         /// The asserted equality literal.
-        reason_lit: Lit,
+        reason_lit: Literal,
     },
     /// Congruence closure of two application parents.
     Congruence {
@@ -208,7 +208,7 @@ pub struct DisequalityEntry {
     /// Right endpoint.
     pub(crate) rhs: TermId,
     /// SAT literal asserting disequality.
-    pub(crate) reason_lit: Lit,
+    pub(crate) reason_lit: Literal,
 }
 
 /// The result of merging two distinct equality classes.
@@ -302,7 +302,7 @@ pub struct SearchState {
     /// Pending input merges still to process.
     pub(crate) pending_merges: VecDeque<MergeInput>,
     /// Assigned theory literals not yet processed by EUF.
-    pending_assignments: VecDeque<Lit>,
+    pending_assignments: VecDeque<Literal>,
     /// Parent applications that must be reconsidered.
     pub(crate) pending_repairs: VecDeque<TermId>,
     /// Theory atoms affected by recent class changes.
@@ -637,12 +637,12 @@ impl SearchState {
     }
 
     /// Enqueues one SAT assignment whose variable is bound to a theory atom.
-    pub(crate) fn enqueue_pending_assignment(&mut self, lit: Lit) {
+    pub(crate) fn enqueue_pending_assignment(&mut self, lit: Literal) {
         self.pending_assignments.push_back(lit);
     }
 
     /// Pops the oldest unprocessed SAT assignment.
-    pub(crate) fn pop_pending_assignment(&mut self) -> Option<Lit> {
+    pub(crate) fn pop_pending_assignment(&mut self) -> Option<Literal> {
         self.pending_assignments.pop_front()
     }
 

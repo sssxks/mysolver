@@ -1,6 +1,6 @@
-use crate::{Level, Lit};
 use crate::Var;
 use crate::clause_db::ClauseId;
+use crate::{Level, Literal};
 
 use super::propagate::Conflict;
 use super::{AnalyzeSummary, Reason, Solver};
@@ -12,9 +12,9 @@ enum AnalyzeSource<'a> {
     /// Treat an inline binary clause as an analysis source.
     Binary {
         /// The literal that was false when the clause became active.
-        false_lit: Lit,
+        false_lit: Literal,
         /// The propagated or conflicting counterpart literal.
-        other: Lit,
+        other: Literal,
         /// Scope in which this binary clause exists.
         scope: Scope,
     },
@@ -23,7 +23,7 @@ enum AnalyzeSource<'a> {
     /// Treat one unstored theory explanation clause as an analysis source.
     TheoryClause {
         /// The falsified theory clause literals.
-        lits: &'a [Lit],
+        lits: &'a [Literal],
         /// Scope carried by the theory explanation.
         scope: Scope,
     },
@@ -38,7 +38,11 @@ impl Solver {
     /// The caller-provided `learnt` buffer is cleared and then populated in asserting
     /// order: slot 0 is the asserting literal, and slot 1, when present, is the
     /// literal with the highest remaining level.
-    pub(crate) fn analyze(&mut self, conflict: Conflict, learnt: &mut Vec<Lit>) -> AnalyzeSummary {
+    pub(crate) fn analyze(
+        &mut self,
+        conflict: Conflict,
+        learnt: &mut Vec<Literal>,
+    ) -> AnalyzeSummary {
         self.analyze_from_source(self.conflict_source(conflict), learnt)
     }
 
@@ -46,9 +50,9 @@ impl Solver {
     /// is already falsified under the current assignment.
     pub(crate) fn analyze_theory_clause(
         &mut self,
-        lits: &[Lit],
+        lits: &[Literal],
         scope: Scope,
-        learnt: &mut Vec<Lit>,
+        learnt: &mut Vec<Literal>,
     ) -> AnalyzeSummary {
         self.analyze_from_source(AnalyzeSource::TheoryClause { lits, scope }, learnt)
     }
@@ -57,12 +61,12 @@ impl Solver {
     fn analyze_from_source(
         &mut self,
         mut source: AnalyzeSource<'_>,
-        learnt: &mut Vec<Lit>,
+        learnt: &mut Vec<Literal>,
     ) -> AnalyzeSummary {
         let current_level = self.level();
         let mut required_scope = Scope::ROOT;
         learnt.clear();
-        learnt.push(Lit::from_raw(0));
+        learnt.push(Literal::from_raw(0));
 
         let mut path_count = 0usize;
         let mut trail_idx = self.trail.len();
@@ -192,9 +196,7 @@ impl Solver {
         if learnt.len() > 1 {
             let mut max_i = 1;
             for i in 2..learnt.len() {
-                if self.level[learnt[i].var().index()]
-                    > self.level[learnt[max_i].var().index()]
-                {
+                if self.level[learnt[i].var().index()] > self.level[learnt[max_i].var().index()] {
                     max_i = i;
                 }
             }
@@ -224,7 +226,7 @@ impl Solver {
     }
 
     /// Removes learned literals whose reasons are already implied by the rest.
-    fn minimize_learnt_clause(&mut self, learnt: &mut Vec<Lit>, required_scope: &mut Scope) {
+    fn minimize_learnt_clause(&mut self, learnt: &mut Vec<Literal>, required_scope: &mut Scope) {
         if learnt.len() <= 2 {
             return;
         }
@@ -332,7 +334,12 @@ impl Solver {
     }
 
     /// Returns whether one antecedent literal is already covered by the learned clause.
-    fn reason_literal_is_redundant(&mut self, current: Var, lit: Lit, scope: &mut Scope) -> bool {
+    fn reason_literal_is_redundant(
+        &mut self,
+        current: Var,
+        lit: Literal,
+        scope: &mut Scope,
+    ) -> bool {
         let antecedent = lit.var();
         if antecedent == current {
             return true;
@@ -356,7 +363,7 @@ impl Solver {
     }
 
     /// Counts distinct levels in one minimized learned clause.
-    fn learnt_clause_lbd(&mut self, learnt: &[Lit]) -> u32 {
+    fn learnt_clause_lbd(&mut self, learnt: &[Literal]) -> u32 {
         let epoch = self.next_lbd_epoch();
         let mut count = 0u32;
 
@@ -423,12 +430,12 @@ impl Solver {
     /// Marks one analysis literal and records its contribution to the learned clause.
     fn analyze_lit(
         &mut self,
-        q: Lit,
+        q: Literal,
         resolved: Option<Var>,
         current_level: Level,
         path_count: &mut usize,
         required_scope: &mut Scope,
-        learnt: &mut Vec<Lit>,
+        learnt: &mut Vec<Literal>,
     ) {
         let v = q.var();
         if resolved == Some(v) {
@@ -454,14 +461,14 @@ impl Solver {
 #[cfg(test)]
 mod tests {
     use super::Solver;
-    use crate::{AddClauseResult, Level, Lit, Scope, TheoryClause, TheoryClauseKind, Var};
+    use crate::{AddClauseResult, Level, Literal, Scope, TheoryClause, TheoryClauseKind, Var};
 
-    fn lit(index: usize) -> Lit {
-        Lit::new(Var::from_index(index), false)
+    fn lit(index: usize) -> Literal {
+        Literal::new(Var::from_index(index), false)
     }
 
-    fn nlit(index: usize) -> Lit {
-        Lit::new(Var::from_index(index), true)
+    fn nlit(index: usize) -> Literal {
+        Literal::new(Var::from_index(index), true)
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub use solver::{
     AddClauseResult, NullTheory, PopError, SatResult, Solver, Theory, TheoryClause,
     TheoryClauseKind,
 };
-pub use types::{Level, Lit, Scope, Var};
+pub use types::{Level, Literal, Scope, Var};
 
 #[cfg(test)]
 mod tests {
@@ -35,7 +35,7 @@ mod tests {
 
         fn notify_new_level(&mut self) {}
 
-        fn notify_assignment(&mut self, _lit: Lit) {}
+        fn notify_assignment(&mut self, _lit: Literal) {}
 
         fn notify_backtrack(&mut self, _level: Level) {}
 
@@ -49,9 +49,9 @@ mod tests {
     }
 
     struct TwoPropagationConflictTheory {
-        premise: Lit,
-        left: Lit,
-        right: Lit,
+        premise: Literal,
+        left: Literal,
+        right: Literal,
         saw_premise: bool,
         emitted_propagations: bool,
         emitted_conflict: bool,
@@ -66,7 +66,7 @@ mod tests {
 
         fn notify_new_level(&mut self) {}
 
-        fn notify_assignment(&mut self, lit: Lit) {
+        fn notify_assignment(&mut self, lit: Literal) {
             if lit == self.premise {
                 self.saw_premise = true;
             }
@@ -122,7 +122,7 @@ mod tests {
 
         fn notify_new_level(&mut self) {}
 
-        fn notify_assignment(&mut self, _lit: Lit) {}
+        fn notify_assignment(&mut self, _lit: Literal) {}
 
         fn notify_backtrack(&mut self, _level: Level) {}
 
@@ -145,12 +145,12 @@ mod tests {
         }
     }
 
-    fn lit(v: Var) -> Lit {
-        Lit::new(v, false)
+    fn lit(v: Var) -> Literal {
+        Literal::new(v, false)
     }
 
-    fn nlit(v: Var) -> Lit {
-        Lit::new(v, true)
+    fn nlit(v: Var) -> Literal {
+        Literal::new(v, true)
     }
 
     #[test]

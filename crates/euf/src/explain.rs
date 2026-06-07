@@ -1,6 +1,6 @@
 //! Equality and theory-clause explanation support.
 
-use sat::Lit;
+use sat::Literal;
 
 use crate::registry::Registry;
 use crate::search_state::{DirectedMergeEdgeId, DisequalityEntry, MergeReason, SearchState};
@@ -13,7 +13,7 @@ impl SearchState {
         registry: &Registry,
         lhs: TermId,
         rhs: TermId,
-        out: &mut Vec<Lit>,
+        out: &mut Vec<Literal>,
     ) {
         out.clear();
         self.explain_cache.clear();
@@ -27,7 +27,7 @@ impl SearchState {
         registry: &Registry,
         lhs: TermId,
         rhs: TermId,
-        out: &mut Vec<Lit>,
+        out: &mut Vec<Literal>,
     ) {
         if lhs == rhs {
             return;
@@ -150,7 +150,7 @@ impl SearchState {
         &mut self,
         registry: &Registry,
         diseq: DisequalityEntry,
-        out: &mut Vec<Lit>,
+        out: &mut Vec<Literal>,
     ) {
         out.clear();
         self.explain_cache.clear();

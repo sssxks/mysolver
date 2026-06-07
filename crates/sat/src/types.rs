@@ -75,9 +75,9 @@ impl Var {
 
 /// A propositional literal encoded as `var << 1 | negated`.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub struct Lit(u32);
+pub struct Literal(u32);
 
-impl Lit {
+impl Literal {
     /// Creates a literal from a variable and its sign.
     pub fn new(var: Var, negated: bool) -> Self {
         Self(((var.index() as u32) << 1) | negated as u32)
@@ -115,14 +115,14 @@ impl Lit {
     pub(crate) fn from_dimacs(x: i32) -> Self {
         assert!(x != 0);
         let v = Var::from_index((x.unsigned_abs() - 1) as usize);
-        Lit::new(v, x < 0)
+        Literal::new(v, x < 0)
     }
 }
 
-impl Not for Lit {
-    type Output = Lit;
+impl Not for Literal {
+    type Output = Literal;
 
-    fn not(self) -> Lit {
-        Lit::from_raw(self.0 ^ 1)
+    fn not(self) -> Literal {
+        Literal::from_raw(self.0 ^ 1)
     }
 }

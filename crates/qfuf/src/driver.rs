@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use euf::{EufTheory, SortRef, SymbolRef, TermRef};
-use sat::{AddClauseResult, Lit, SatResult, Solver};
+use sat::{AddClauseResult, Literal, SatResult, Solver};
 #[cfg(feature = "telemetry")]
 use telemetry::Gauges;
 
@@ -27,7 +27,7 @@ pub(crate) struct Driver {
     /// Declared function environment.
     funs: HashMap<Box<str>, FunDecl>,
     /// Reuse map for canonical equality atoms.
-    eq_lits: HashMap<(euf::TermId, euf::TermId), Lit>,
+    eq_lits: HashMap<(euf::TermId, euf::TermId), Literal>,
     /// Cached sort of each term interned through this driver.
     term_sorts: HashMap<euf::TermId, euf::SortId>,
     /// Bool-sorted terms that already have two-valued domain clauses attached.
@@ -510,20 +510,20 @@ impl Driver {
     }
 
     /// Returns one SAT literal representing the equality atom `lhs = rhs`.
-    fn equality_literal(&mut self, lhs: euf::TermId, rhs: euf::TermId) -> Lit {
+    fn equality_literal(&mut self, lhs: euf::TermId, rhs: euf::TermId) -> Literal {
         let key = if rhs < lhs { (rhs, lhs) } else { (lhs, rhs) };
         if let Some(&lit) = self.eq_lits.get(&key) {
             return lit;
         }
         let var = self.sat.new_var();
-        let lit = Lit::new(var, false);
+        let lit = Literal::new(var, false);
         let _ = self.euf.intern_equality_atom(key.0, key.1, var);
         self.eq_lits.insert(key, lit);
         lit
     }
 
     /// Returns one SAT literal representing the Boolean term `term = true`.
-    fn bool_term_literal(&mut self, term: euf::TermId) -> Lit {
+    fn bool_term_literal(&mut self, term: euf::TermId) -> Literal {
         let true_term = self.true_term().expect("true term must be available");
         self.equality_literal(term, true_term)
     }
@@ -773,7 +773,7 @@ impl Driver {
     }
 
     /// Allocates one fresh Tseitin literal.
-    fn new_tseitin_lit(&mut self) -> Lit {
-        Lit::new(self.sat.new_var(), false)
+    fn new_tseitin_lit(&mut self) -> Literal {
+        Literal::new(self.sat.new_var(), false)
     }
 }

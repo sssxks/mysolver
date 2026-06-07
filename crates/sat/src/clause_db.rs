@@ -1,4 +1,4 @@
-use crate::{Lit, Scope};
+use crate::{Literal, Scope};
 
 /// Minimum amount of dead literal payload before compaction becomes worthwhile.
 const MIN_COMPACTION_WASTE_WORDS: usize = 1_024;
@@ -205,14 +205,14 @@ impl ClauseHeader {
 #[derive(Debug)]
 pub(crate) struct ClauseRef<'a> {
     /// Trailing clause literals stored in the payload arena.
-    lits: &'a [Lit],
+    lits: &'a [Literal],
 }
 
 impl ClauseRef<'_> {
     /// Returns literal `idx` from the clause payload.
     ///
     /// Preconditoin: `idx` must be less than `len()`.
-    pub(crate) fn lit(&self, idx: usize) -> Lit {
+    pub(crate) fn lit(&self, idx: usize) -> Literal {
         self.lits[idx]
     }
 }
@@ -221,7 +221,7 @@ impl ClauseRef<'_> {
 #[derive(Debug)]
 pub(crate) struct ClauseMut<'a> {
     /// Trailing clause literals stored in the payload arena.
-    lits: &'a mut [Lit],
+    lits: &'a mut [Literal],
 }
 
 impl ClauseMut<'_> {
@@ -233,7 +233,7 @@ impl ClauseMut<'_> {
     /// Returns literal `idx` from the clause payload.
     ///
     /// Preconditoin: `idx` must be less than `len()`.
-    pub(crate) fn lit(&self, idx: usize) -> Lit {
+    pub(crate) fn lit(&self, idx: usize) -> Literal {
         self.lits[idx]
     }
 
@@ -260,7 +260,7 @@ pub(crate) struct ClauseArena {
     lbds: Vec<u32>,
 
     /// Dense literal payload storage for all long clauses.
-    words: Vec<Lit>,
+    words: Vec<Literal>,
     /// Head of the intrusive free list inside [`Self::headers`].
     free_head: Option<u32>,
     /// Number of literal words currently stranded behind deleted clauses.
@@ -274,7 +274,7 @@ impl ClauseArena {
     }
 
     /// Allocates one irredundant clause slot and appends its literal payload.
-    pub(crate) fn alloc_irredundant(&mut self, lits: &[Lit], scope: Scope) -> ClauseId {
+    pub(crate) fn alloc_irredundant(&mut self, lits: &[Literal], scope: Scope) -> ClauseId {
         self.alloc_with(lits, ClauseHeader::new_irredundant, 0.0, 0, scope)
     }
 
@@ -283,7 +283,7 @@ impl ClauseArena {
     /// Learned clauses must carry a positive LBD score.
     pub(crate) fn alloc_learnt(
         &mut self,
-        lits: &[Lit],
+        lits: &[Literal],
         activity: f32,
         lbd: u32,
         scope: Scope,
@@ -295,7 +295,7 @@ impl ClauseArena {
     /// Allocates one clause slot and appends its literal payload.
     fn alloc_with(
         &mut self,
-        lits: &[Lit],
+        lits: &[Literal],
         make_header: impl Fn(u32, u32, u32, Scope) -> ClauseHeader,
         activity: f32,
         lbd: u32,
@@ -575,10 +575,10 @@ impl ClauseArena {
 #[cfg(test)]
 mod tests {
     use super::ClauseArena;
-    use crate::{Lit, Scope, Var};
+    use crate::{Literal, Scope, Var};
 
-    fn lit(index: usize) -> Lit {
-        Lit::new(Var::from_index(index), false)
+    fn lit(index: usize) -> Literal {
+        Literal::new(Var::from_index(index), false)
     }
 
     #[test]
@@ -607,7 +607,7 @@ mod tests {
         let mut arena = ClauseArena::new();
 
         let make_clause =
-            |base: usize| -> Vec<Lit> { (0..600).map(|idx| lit(base + idx)).collect() };
+            |base: usize| -> Vec<Literal> { (0..600).map(|idx| lit(base + idx)).collect() };
 
         let a_lits = make_clause(0);
         let b_lits = make_clause(1_000);

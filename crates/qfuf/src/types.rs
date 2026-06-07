@@ -66,7 +66,7 @@ pub(crate) enum BoolView {
     /// Constant false.
     False,
     /// Existing SAT literal.
-    Lit(sat::Lit),
+    Lit(sat::Literal),
 }
 
 /// One local `let` binding visible while lowering one expression subtree.

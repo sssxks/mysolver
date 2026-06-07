@@ -1,11 +1,11 @@
 //! Single hotspot of the entire solver: Boolean constraint propagation, accounting for around 90% of the runtime in pure sat cases. The implementation is based on classical two-literal watching.
 use std::mem;
 
-use crate::Lit;
+use crate::Literal;
 use crate::clause_db::ClauseId;
 use crate::telemetry;
 
-use super::{TruthValue, Reason, Solver};
+use super::{Reason, Solver, TruthValue};
 use crate::Scope;
 
 /// A watched-literal entry attached to a literal's watch list.
@@ -14,7 +14,7 @@ pub(crate) enum Watcher {
     /// Watches a binary clause via the other literal in the clause.
     Binary {
         /// The other literal in the watched binary clause.
-        other: Lit,
+        other: Literal,
         /// Scope in which this binary clause exists.
         scope: Scope,
     },
@@ -23,7 +23,7 @@ pub(crate) enum Watcher {
         /// The watched long clause.
         clause: ClauseId,
         /// A literal that can satisfy the clause without reopening it.
-        blocker: Lit,
+        blocker: Literal,
     },
 }
 
@@ -33,9 +33,9 @@ pub(crate) enum Conflict {
     /// A conflict caused by a falsified binary clause.
     Binary {
         /// The literal that became false.
-        false_lit: Lit,
+        false_lit: Literal,
         /// The opposite endpoint of the binary clause.
-        other: Lit,
+        other: Literal,
         /// Scope in which this binary clause exists.
         scope: Scope,
     },
@@ -51,19 +51,19 @@ enum LongAction {
     /// Keep the watcher on the current literal with an updated blocker.
     Keep {
         /// A literal currently satisfying or otherwise blocking the clause.
-        blocker: Lit,
+        blocker: Literal,
     },
     /// Move the watcher to a different literal.
     Move {
         /// The literal that should receive the moved watcher.
-        new_watch: Lit,
+        new_watch: Literal,
         /// The blocker paired with the moved watcher.
-        blocker: Lit,
+        blocker: Literal,
     },
     /// The clause became unit and now forces the given literal.
     Unit {
         /// The unit literal implied by the clause.
-        lit: Lit,
+        lit: Literal,
     },
     /// The clause became conflicting under the current assignment.
     Conflict,
@@ -71,7 +71,7 @@ enum LongAction {
 
 impl Solver {
     /// Assigns `lit` if it is undefined and checks for immediate contradiction.
-    pub(crate) fn enqueue(&mut self, lit: Lit, reason: Reason) -> bool {
+    pub(crate) fn enqueue(&mut self, lit: Literal, reason: Reason) -> bool {
         match self.value_lit(lit) {
             TruthValue::True => true,
             TruthValue::False => false,
@@ -97,12 +97,12 @@ impl Solver {
     }
 
     /// Evaluates the current truth value of `lit`.
-    pub(crate) fn value_lit(&self, lit: Lit) -> TruthValue {
+    pub(crate) fn value_lit(&self, lit: Literal) -> TruthValue {
         Self::value_lit_in(&self.assigns, lit)
     }
 
     /// Evaluates `lit` against an arbitrary assignment slice.
-    fn value_lit_in(assigns: &[TruthValue], lit: Lit) -> TruthValue {
+    fn value_lit_in(assigns: &[TruthValue], lit: Literal) -> TruthValue {
         match assigns[lit.var().index()] {
             TruthValue::Unknown => TruthValue::Unknown,
             TruthValue::True => {
@@ -233,7 +233,7 @@ impl Solver {
     }
 
     /// Reprocesses a watched long clause whose second watcher became false.
-    fn process_long_watch(&mut self, cid: ClauseId, false_lit: Lit) -> LongAction {
+    fn process_long_watch(&mut self, cid: ClauseId, false_lit: Literal) -> LongAction {
         // This cid may be stale. If so, delete it from the watch list.
         let Some(mut clause) = self.clauses.try_clause_mut(cid) else {
             return LongAction::Drop;

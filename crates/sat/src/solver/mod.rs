@@ -14,7 +14,7 @@ use crate::heap::VarHeap;
 use crate::telemetry;
 #[cfg(feature = "telemetry")]
 use crate::telemetry::Gauges;
-use crate::{Level, Lit, Scope, Var};
+use crate::{Level, Literal, Scope, Var};
 
 use self::add::ClassifiedTheoryClause;
 use self::propagate::Watcher;
@@ -38,9 +38,9 @@ pub(crate) enum Reason {
     /// The assignment came from a binary clause represented by its two literals.
     Binary {
         /// The literal that was false when the reason clause became unit.
-        false_lit: Lit,
+        false_lit: Literal,
         /// The propagated literal.
-        other: Lit,
+        other: Literal,
         /// Scope in which this binary clause exists.
         scope: Scope,
     },
@@ -116,7 +116,7 @@ pub enum TheoryClauseKind {
 #[derive(Clone, Debug)]
 pub struct TheoryClause {
     /// Fully explained clause over SAT literals.
-    pub lits: Box<[Lit]>,
+    pub lits: Box<[Literal]>,
     /// Shallowest scope where this clause is valid.
     ///
     /// The theory producer must set this to at least the deepest `push()` frame
@@ -138,7 +138,7 @@ pub struct TheoryClause {
 #[derive(Clone, Debug)]
 struct TheoryConflict {
     /// Falsified theory-clause literals under the current trail.
-    lits: Box<[Lit]>,
+    lits: Box<[Literal]>,
     /// Scope carried by the theory explanation.
     scope: Scope,
 }
@@ -170,7 +170,7 @@ pub trait Theory {
     fn notify_new_level(&mut self);
 
     /// Called for one new assignment on the SAT trail.
-    fn notify_assignment(&mut self, lit: Lit);
+    fn notify_assignment(&mut self, lit: Literal);
 
     /// Called after the SAT solver backtracks to one CDCL level.
     fn notify_backtrack(&mut self, level: Level);
@@ -235,7 +235,7 @@ pub struct Solver {
     /// Antecedent reason for each assignment, eagerly maintained [`ClauseId`] liveness.
     reason: Vec<Reason>,
     /// Transient theory clauses used as reasons for unit theory propagations.
-    theory_reason_lits: Vec<Lit>,
+    theory_reason_lits: Vec<Literal>,
     /// Ranges into `theory_reason_lits`.
     theory_reasons: Vec<TheoryReason>,
     /// Scope where each variable was introduced.
@@ -246,7 +246,7 @@ pub struct Solver {
     assigned_count: usize,
 
     /// Assignment trail in chronological order.
-    trail: Vec<Lit>,
+    trail: Vec<Literal>,
     /// Trail indices that start each level.
     trail_lim: Vec<usize>,
     /// Read cursor into `trail` for propagation.
@@ -399,7 +399,7 @@ impl Solver {
     /// The return value is `Some(true)` when `lit` is satisfied, `Some(false)` when
     /// `lit` is falsified, and `None` when its variable is unassigned.
     #[cfg(test)]
-    pub(crate) fn value_lit_public(&self, lit: Lit) -> Option<bool> {
+    pub(crate) fn value_lit_public(&self, lit: Literal) -> Option<bool> {
         match self.value_lit(lit) {
             TruthValue::True => Some(true),
             TruthValue::False => Some(false),
@@ -416,7 +416,12 @@ impl Solver {
         if self.not_ok() || self.assigned_count != self.nvars {
             return None;
         }
-        Some(self.assigns.iter().map(|v| *v == TruthValue::True).collect())
+        Some(
+            self.assigns
+                .iter()
+                .map(|v| *v == TruthValue::True)
+                .collect(),
+        )
     }
 
     /// Captures the current solver gauges for one telemetry sample boundary.
@@ -447,7 +452,7 @@ impl Solver {
     /// Searches for a satisfying assignment under one transient assumption set.
     pub fn solve_with_assumptions<T: Theory>(
         &mut self,
-        assumptions: &[Lit],
+        assumptions: &[Literal],
         theory: &mut T,
     ) -> SatResult {
         self.reset_search();
@@ -652,7 +657,7 @@ impl Solver {
         &mut self,
         conflict: SearchConflict,
         theory: &mut T,
-        learnt: &mut Vec<Lit>,
+        learnt: &mut Vec<Literal>,
         restart_conflicts: &mut usize,
         next_reduce: &mut usize,
     ) -> Option<SatResult> {
@@ -757,7 +762,7 @@ impl Theory for NullTheory {
 
     fn notify_new_level(&mut self) {}
 
-    fn notify_assignment(&mut self, _lit: Lit) {}
+    fn notify_assignment(&mut self, _lit: Literal) {}
 
     fn notify_backtrack(&mut self, _level: Level) {}
 
