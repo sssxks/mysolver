@@ -83,7 +83,7 @@ impl Solver {
                     TruthValue::True
                 };
                 self.level[v] = self.level();
-                self.assignment_scope[v] = self.current_scope;
+                self.assignment_scope[v] = self.current;
                 self.reason[v] = reason;
                 self.phase[v] = !lit.is_negated();
                 self.trail.push(lit);

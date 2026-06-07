@@ -30,13 +30,13 @@ impl Solver {
         lits.iter()
             .map(|lit| self.variable_scope[lit.var().index()])
             .max()
-            .unwrap_or(self.current_scope)
-            .max(self.current_scope)
+            .unwrap_or(self.current)
+            .max(self.current)
     }
 
     /// Adds one input clause carrying an explicit scope level.
     fn add_scoped_clause(&mut self, lits: &[Literal], scope: Scope) {
-        if self.not_ok() {
+        if self.inconsistent() {
             return;
         }
         let Some(ps) = self.normalize_clause::<DROP_FALSE>(lits) else {
@@ -44,11 +44,11 @@ impl Solver {
         };
         match ps.len() {
             0 => {
-                self.inconsistent_scope = Some(scope);
+                self.inconsistent_since = Some(scope);
             }
             1 => {
                 if !self.enqueue(ps[0], Reason::None) {
-                    self.inconsistent_scope = Some(scope);
+                    self.inconsistent_since = Some(scope);
                 }
             }
             2 => {
@@ -104,7 +104,7 @@ impl Solver {
         unit_index: usize,
         scope: Scope,
     ) {
-        if self.not_ok() {
+        if self.inconsistent() {
             return;
         }
         lits.swap(0, unit_index);
@@ -115,7 +115,7 @@ impl Solver {
             Reason::Theory(self.push_theory_reason(&lits, scope))
         };
         if !self.enqueue(lits[0], reason) {
-            self.inconsistent_scope = Some(scope);
+            self.inconsistent_since = Some(scope);
         }
     }
 
@@ -127,7 +127,7 @@ impl Solver {
         second: usize,
         scope: Scope,
     ) {
-        if self.not_ok() {
+        if self.inconsistent() {
             return;
         }
         move_two_indices_to_front(&mut lits, first, second);

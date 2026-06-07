@@ -141,11 +141,11 @@ pub(crate) struct AnalyzeSummary {
 #[derive(Debug)]
 pub struct Solver {
     /// The shallowest scope currently known to be immediately inconsistent.
-    inconsistent_scope: Option<Scope>,
+    inconsistent_since: Option<Scope>,
     /// Current assertion-stack scope.
-    current_scope: Scope,
+    current: Scope,
     /// Stack of pushed scope frames above root.
-    scope_frames: Vec<ScopeFrame>,
+    frames: Vec<ScopeFrame>,
     /// The number of variables currently allocated and in scope.
     nvars: usize,
 
@@ -226,9 +226,9 @@ impl Solver {
     /// Creates an empty solver with no variables or clauses.
     pub fn new() -> Self {
         Self {
-            inconsistent_scope: None,
-            current_scope: Scope::ROOT,
-            scope_frames: Vec::new(),
+            inconsistent_since: None,
+            current: Scope::ROOT,
+            frames: Vec::new(),
             nvars: 0,
             assigns: Vec::new(),
             level: Vec::new(),
@@ -280,7 +280,7 @@ impl Solver {
         self.level.push(Level::ROOT);
         self.assignment_scope.push(Scope::ROOT);
         self.reason.push(Reason::None);
-        self.variable_scope.push(self.current_scope);
+        self.variable_scope.push(self.current);
         self.phase.push(true);
         self.watches.push(Vec::new());
         self.watches.push(Vec::new());
@@ -306,15 +306,15 @@ impl Solver {
 
     /// Returns whether a remembered inconsistency is active in the current scope.
     #[inline(always)]
-    fn not_ok(&self) -> bool {
-        self.inconsistent_scope
-            .is_some_and(|level| level <= self.current_scope)
+    fn inconsistent(&self) -> bool {
+        self.inconsistent_since
+            .is_some_and(|scope| scope <= self.current)
     }
 
     /// Returns the current assertion-stack scope.
     #[cfg(test)]
     pub(crate) fn current_scope(&self) -> Scope {
-        self.current_scope
+        self.current
     }
 
     /// Returns the current truth value of `lit`, if assigned.
@@ -336,7 +336,7 @@ impl Solver {
     /// not literal satisfaction.
     #[cfg(test)]
     pub(crate) fn model(&self) -> Option<Vec<bool>> {
-        if self.not_ok() || self.assigned_count != self.nvars {
+        if self.inconsistent() || self.assigned_count != self.nvars {
             return None;
         }
         Some(
@@ -384,7 +384,7 @@ impl Solver {
         let watcher_entries = self.watches.iter().map(Vec::len).sum::<usize>();
         telemetry::initialize_solver_gauges(live_irredundant_clauses, watcher_entries);
 
-        if self.not_ok() {
+        if self.inconsistent() {
             return SatResult::Unsat;
         }
 
@@ -493,19 +493,19 @@ impl Solver {
     pub fn push(&mut self) {
         self.reset_search();
         debug_assert_eq!(self.level(), Level::ROOT);
-        let new_scope = self.current_scope.next();
-        self.scope_frames.push(ScopeFrame {
+        let new_scope = self.current.next();
+        self.frames.push(ScopeFrame {
             scope: new_scope,
             vars_base: self.nvars,
         });
-        self.current_scope = new_scope;
+        self.current = new_scope;
     }
 
     /// Pops `n` assertion-stack scope frames.
     pub fn pop(&mut self, n: usize) -> Result<(), PopError> {
         self.reset_search();
         let target_depth = self
-            .current_scope
+            .current
             .index()
             .checked_sub(n)
             .ok_or(PopError::Underflow)?;
@@ -588,7 +588,7 @@ impl Solver {
 
         let conflict_scope = self.search_conflict_scope(&conflict);
         if conflict_scope.level == Level::ROOT {
-            self.inconsistent_scope = Some(conflict_scope.scope);
+            self.inconsistent_since = Some(conflict_scope.scope);
             self.maybe_emit_telemetry_sample(theory);
             return Some(SatResult::Unsat);
         }

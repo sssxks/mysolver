@@ -115,7 +115,7 @@ impl Solver {
 
     /// Shrinks every variable-indexed array back to the live frame boundary.
     fn shrink_vars_to_frame_boundary(&mut self, new_scope: Scope) {
-        let vars_base = self.scope_frames.last().map_or(0, |frame| {
+        let vars_base = self.frames.last().map_or(0, |frame| {
             debug_assert_eq!(frame.scope, new_scope);
             frame.vars_base
         });
@@ -131,21 +131,21 @@ impl Solver {
     /// Pops back to one assertion-stack scope.
     pub(crate) fn pop_to_scope(&mut self, new_scope: Scope) -> Result<(), PopError> {
         debug_assert_eq!(self.level(), Level::ROOT);
-        debug_assert!(new_scope <= self.current_scope);
+        debug_assert!(new_scope <= self.current);
 
-        self.current_scope = new_scope;
+        self.current = new_scope;
         if self
-            .inconsistent_scope
+            .inconsistent_since
             .is_some_and(|scope| scope > new_scope)
         {
-            self.inconsistent_scope = None;
+            self.inconsistent_since = None;
         }
         while self
-            .scope_frames
+            .frames
             .last()
             .is_some_and(|frame| frame.scope > new_scope)
         {
-            self.scope_frames.pop();
+            self.frames.pop();
         }
         while self
             .trail
