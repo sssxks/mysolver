@@ -7,6 +7,7 @@
 //! and out-of-memory kills stay isolated.
 
 mod benchmark;
+mod case_io;
 mod child;
 mod cli;
 mod compare;

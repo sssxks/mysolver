@@ -27,6 +27,7 @@ pub(crate) enum HarnessCommand {
     /// Discover and execute benchmark cases.
     Run(RunArgs),
     /// Run one benchmark case repeatedly and report elapsed-time distribution.
+    #[command(alias = "benchmark")]
     Bench(BenchmarkArgs),
     /// Compare two previously saved harness result files.
     Compare(CompareArgs),

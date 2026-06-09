@@ -2,16 +2,13 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashSet};
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bzip2::read::BzDecoder;
-use flate2::read::MultiGzDecoder;
-use walkdir::WalkDir;
-
+use crate::case_io::read_case_text;
 use crate::model::{CaseRecord, DiscoveredCase, ExpectationRule, ExpectedQueryResult, QueryAnswer};
+use walkdir::WalkDir;
 
 /// The hidden manifest file used to attach expected results to benchmark paths.
 const EXPECTATIONS_FILE: &str = "expectations.tsv";
@@ -183,39 +180,6 @@ fn lookup_expectation(
         }
     }
     (None, None)
-}
-
-/// Reads one benchmark file, transparently decompressing gzip and bzip2 inputs.
-fn read_case_text(path: &Path) -> Result<String, String> {
-    let mut text = String::new();
-    if has_suffix(path, ".gz") {
-        let file = File::open(path)
-            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
-        let mut decoder = MultiGzDecoder::new(file);
-        decoder
-            .read_to_string(&mut text)
-            .map_err(|error| format!("failed to decode gzip {}: {error}", path.display()))?;
-    } else if has_suffix(path, ".bz2") {
-        let file = File::open(path)
-            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
-        let mut decoder = BzDecoder::new(file);
-        decoder
-            .read_to_string(&mut text)
-            .map_err(|error| format!("failed to decode bzip2 {}: {error}", path.display()))?;
-    } else {
-        let mut file = File::open(path)
-            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
-        file.read_to_string(&mut text)
-            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    }
-    Ok(text)
-}
-
-/// Returns `true` when the path ends with the provided suffix.
-fn has_suffix(path: &Path, suffix: &str) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(suffix))
 }
 
 /// Extracts the logic and expected query answers from one SMT-LIB trace.
