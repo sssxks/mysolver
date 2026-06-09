@@ -376,31 +376,46 @@ impl RunSummary {
     }
 }
 
+/// Serializable duration payload used inside saved harness artifacts.
+#[derive(Deserialize, Serialize)]
+struct DurationRepr {
+    /// Whole seconds since the start instant.
+    secs: u64,
+    /// Additional nanoseconds beyond `secs`.
+    nanos: u32,
+}
+
+impl From<Duration> for DurationRepr {
+    /// Converts one runtime duration into the stable saved representation.
+    fn from(duration: Duration) -> Self {
+        Self {
+            secs: duration.as_secs(),
+            nanos: duration.subsec_nanos(),
+        }
+    }
+}
+
+impl From<DurationRepr> for Duration {
+    /// Converts one saved representation back into a runtime duration.
+    fn from(repr: DurationRepr) -> Self {
+        Self::new(repr.secs, repr.nanos)
+    }
+}
+
 /// Serde helpers that encode durations as `{ secs, nanos }`.
 mod duration_serde {
     use std::time::Duration;
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    /// Serializable duration payload used inside saved harness artifacts.
-    #[derive(Deserialize, Serialize)]
-    struct DurationRepr {
-        /// Whole seconds since the start instant.
-        secs: u64,
-        /// Additional nanoseconds beyond `secs`.
-        nanos: u32,
-    }
+    use super::DurationRepr;
 
     /// Serializes one duration into a stable structured representation.
     pub(crate) fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        DurationRepr {
-            secs: duration.as_secs(),
-            nanos: duration.subsec_nanos(),
-        }
-        .serialize(serializer)
+        DurationRepr::from(*duration).serialize(serializer)
     }
 
     /// Deserializes one duration from the saved structured representation.
@@ -409,7 +424,7 @@ mod duration_serde {
         D: Deserializer<'de>,
     {
         let repr = DurationRepr::deserialize(deserializer)?;
-        Ok(Duration::new(repr.secs, repr.nanos))
+        Ok(Duration::from(repr))
     }
 }
 
@@ -419,14 +434,7 @@ mod optional_duration_serde {
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    /// Serializable duration payload used inside saved harness artifacts.
-    #[derive(Deserialize, Serialize)]
-    struct DurationRepr {
-        /// Whole seconds since the start instant.
-        secs: u64,
-        /// Additional nanoseconds beyond `secs`.
-        nanos: u32,
-    }
+    use super::DurationRepr;
 
     /// Serializes one optional duration into a stable structured representation.
     pub(crate) fn serialize<S>(
@@ -436,12 +444,7 @@ mod optional_duration_serde {
     where
         S: Serializer,
     {
-        duration
-            .map(|duration| DurationRepr {
-                secs: duration.as_secs(),
-                nanos: duration.subsec_nanos(),
-            })
-            .serialize(serializer)
+        duration.map(DurationRepr::from).serialize(serializer)
     }
 
     /// Deserializes one optional duration from the saved structured representation.
@@ -450,6 +453,6 @@ mod optional_duration_serde {
         D: Deserializer<'de>,
     {
         let repr = Option::<DurationRepr>::deserialize(deserializer)?;
-        Ok(repr.map(|repr| Duration::new(repr.secs, repr.nanos)))
+        Ok(repr.map(Duration::from))
     }
 }
