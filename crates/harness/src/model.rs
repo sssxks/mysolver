@@ -119,13 +119,6 @@ impl DiscoveredCase {
     }
 }
 
-/// The structured report produced by a child process.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ChildReport {
-    /// The child-level outcome.
-    pub(crate) kind: ChildReportKind,
-}
-
 /// One complete query sequence returned by the child process.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct CompletedQueryRun {

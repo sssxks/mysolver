@@ -6,18 +6,13 @@ use std::time::{Duration, Instant};
 use crate::case_io::read_case_text;
 use crate::cli::RunCaseArgs;
 use crate::discover::query_count;
-use crate::model::{ChildReport, ChildReportKind, CompletedQueryRun, QueryAnswer};
+use crate::model::{ChildReportKind, CompletedQueryRun, QueryAnswer};
 
 /// Runs the isolated single-case entrypoint and writes the structured report.
 pub(crate) fn run_child(args: RunCaseArgs) -> Result<(), String> {
     let report = match read_case_text(&args.case) {
-        Ok(input) => {
-            let kind = solve_case_with_optional_telemetry(&input, &args)?;
-            ChildReport { kind }
-        }
-        Err(error) => ChildReport {
-            kind: ChildReportKind::InputError(error),
-        },
+        Ok(input) => solve_case_with_optional_telemetry(&input, &args)?,
+        Err(error) => ChildReportKind::InputError(error),
     };
     let payload = serde_json::to_vec(&report)
         .map_err(|error| format!("failed to serialize child report: {error}"))?;
