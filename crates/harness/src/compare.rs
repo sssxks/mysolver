@@ -116,19 +116,7 @@ fn index_cases(cases: &[CaseOutcome]) -> BTreeMap<String, CaseOutcome> {
 
 /// Returns whether two saved outcomes represent the same semantic result.
 fn outcomes_match(left: &CaseOutcome, right: &CaseOutcome) -> bool {
-    left.category == right.category
-        && left.detail == right.detail
-        && left.queries.len() == right.queries.len()
-        && left
-            .queries
-            .iter()
-            .zip(&right.queries)
-            .all(|(left_query, right_query)| {
-                left_query.query_index == right_query.query_index
-                    && left_query.category == right_query.category
-                    && left_query.expected == right_query.expected
-                    && left_query.actual == right_query.actual
-            })
+    left.category == right.category && left.detail == right.detail
 }
 
 /// Prints a complete human-readable comparison report.
@@ -251,7 +239,7 @@ fn format_missing_case(outcome: &CaseOutcome) -> String {
     format!(
         "    {:<width$} {:>6} {}{detail}",
         outcome.category.styled_label(),
-        format_compact_duration(outcome.displayed_elapsed()),
+        format_compact_duration(outcome.total_elapsed),
         path,
         width = width,
     )
@@ -260,10 +248,7 @@ fn format_missing_case(outcome: &CaseOutcome) -> String {
 /// Formats one changed case for terminal output.
 fn format_changed_case(change: &ChangedCase) -> String {
     let label = format_category_change(change.left.category, change.right.category);
-    let elapsed = format_elapsed_change(
-        change.left.displayed_elapsed(),
-        change.right.displayed_elapsed(),
-    );
+    let elapsed = format_elapsed_change(change.left.total_elapsed, change.right.total_elapsed);
     let detail = format_detail_change(
         change.left.detail.as_deref(),
         change.right.detail.as_deref(),
@@ -447,9 +432,7 @@ mod tests {
                 query_count: Some(1),
             },
             total_elapsed: elapsed,
-            solver_elapsed: None,
             category,
-            queries: Vec::new(),
             detail: detail.map(Into::into),
             telemetry: None,
         }

@@ -74,7 +74,7 @@ pub(crate) fn progress_message(stats: &OutcomeStats, running: usize) -> String {
 pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let label = outcome.category.styled_label();
     let width = OutcomeCategory::LABEL_WIDTH;
-    let elapsed = format_compact_duration(outcome.displayed_elapsed());
+    let elapsed = format_compact_duration(outcome.total_elapsed);
     let path = outcome.case.comparison_key();
 
     let detail = if let Some(detail) = outcome.detail.as_deref() {
@@ -207,17 +207,14 @@ mod tests {
                 query_count: Some(1),
             },
             total_elapsed: Duration::from_millis(42),
-            solver_elapsed: Some(Duration::from_millis(37)),
             category: OutcomeCategory::Pass,
-            queries: Vec::new(),
             detail: None,
             telemetry: None,
         };
 
         let rendered = format_outcome(&outcome);
         assert!(rendered.contains("PASS"));
-        assert!(rendered.contains("37.0ms"));
-        assert!(!rendered.contains("42.0ms"));
+        assert!(rendered.contains("42.0ms"));
         assert!(rendered.contains("fixture/example.cnf"));
     }
 
@@ -232,9 +229,7 @@ mod tests {
                 query_count: Some(1),
             },
             total_elapsed: Duration::from_millis(42),
-            solver_elapsed: None,
             category: OutcomeCategory::Pass,
-            queries: Vec::new(),
             detail: None,
             telemetry: None,
         };
@@ -254,9 +249,7 @@ mod tests {
                 query_count: Some(1),
             },
             total_elapsed: Duration::from_secs(1),
-            solver_elapsed: None,
             category: OutcomeCategory::Pass,
-            queries: Vec::new(),
             detail: None,
             telemetry: Some(CaseTelemetry {
                 summary: Summary {
@@ -280,7 +273,6 @@ mod tests {
                         ..EufSummary::default()
                     },
                 },
-                samples: Vec::new(),
             }),
         };
 

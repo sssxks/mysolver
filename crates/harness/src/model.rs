@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use console::{StyledObject, style};
 use serde::{Deserialize, Serialize};
-use telemetry::{Sample, Summary};
+use telemetry::Summary;
 
 use strum::VariantArray as _;
 
@@ -40,17 +40,6 @@ pub(crate) struct ExpectationRule {
     pub(crate) prefix: Box<str>,
     /// The expected solver answer for matching paths.
     pub(crate) expected: QueryAnswer,
-    /// A short human-readable source label.
-    pub(crate) source: Box<str>,
-}
-
-/// One expected answer attached to one `check-sat` call.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub(crate) struct ExpectedQueryResult {
-    /// Zero-based query index within the benchmark trace.
-    pub(crate) query_index: usize,
-    /// Expected answer for that query.
-    pub(crate) expected: QueryAnswer,
 }
 
 /// The stable case metadata kept in saved harness result files.
@@ -81,7 +70,7 @@ pub(crate) struct DiscoveredCase {
     /// The stable case metadata that survives into saved result files.
     record: CaseRecord,
     /// Expected answers for each `check-sat`, in order.
-    expected_queries: Vec<ExpectedQueryResult>,
+    expected_answers: Vec<QueryAnswer>,
 }
 
 impl DiscoveredCase {
@@ -89,12 +78,12 @@ impl DiscoveredCase {
     pub(crate) fn new(
         absolute_path: PathBuf,
         record: CaseRecord,
-        expected_queries: Vec<ExpectedQueryResult>,
+        expected_answers: Vec<QueryAnswer>,
     ) -> Self {
         Self {
             absolute_path,
             record,
-            expected_queries,
+            expected_answers,
         }
     }
 
@@ -108,9 +97,9 @@ impl DiscoveredCase {
         self.record.bytes
     }
 
-    /// Returns the expected query sequence.
-    pub(crate) fn expected_queries(&self) -> &[ExpectedQueryResult] {
-        &self.expected_queries
+    /// Returns the expected answer sequence.
+    pub(crate) fn expected_answers(&self) -> &[QueryAnswer] {
+        &self.expected_answers
     }
 
     /// Consumes the runtime case and returns the persistent case metadata.
@@ -124,9 +113,6 @@ impl DiscoveredCase {
 pub(crate) struct CompletedQueryRun {
     /// Actual answers returned by the solver, in query order.
     pub(crate) actual_answers: Vec<QueryAnswer>,
-    /// Wall-clock time spent inside the child solver boundary.
-    #[serde(with = "duration_serde")]
-    pub(crate) solver_elapsed: Duration,
 }
 
 /// All structured outcomes that can be reported by the child process.
@@ -143,22 +129,6 @@ pub(crate) enum ChildReport {
     ProtocolError(String),
 }
 
-/// One per-query outcome stored in saved harness artifacts.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct QueryOutcome {
-    /// Zero-based query index within the trace.
-    pub(crate) query_index: usize,
-    /// Expected answer for this query.
-    pub(crate) expected: QueryAnswer,
-    /// Actual solver answer for this query.
-    pub(crate) actual: QueryAnswer,
-    /// Elapsed time since case start when the query completed.
-    #[serde(with = "duration_serde")]
-    pub(crate) elapsed: Duration,
-    /// The classified query-level category.
-    pub(crate) category: OutcomeCategory,
-}
-
 /// One completed case outcome received by the parent process.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct CaseOutcome {
@@ -167,17 +137,8 @@ pub(crate) struct CaseOutcome {
     /// The wall-clock runtime measured by the parent process.
     #[serde(with = "duration_serde")]
     pub(crate) total_elapsed: Duration,
-    /// The child-measured solver runtime, excluding parent subprocess supervision.
-    #[serde(
-        default,
-        with = "optional_duration_serde",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub(crate) solver_elapsed: Option<Duration>,
     /// The classified case-level result category.
     pub(crate) category: OutcomeCategory,
-    /// One saved query outcome for each completed `check-sat`.
-    pub(crate) queries: Vec<QueryOutcome>,
     /// An optional detail string for failures and summaries.
     pub(crate) detail: Option<Box<str>>,
     /// Optional solver telemetry aggregated from periodic samples.
@@ -186,13 +147,8 @@ pub(crate) struct CaseOutcome {
 }
 
 impl CaseOutcome {
-    /// Returns the elapsed time users should see for one solver outcome.
-    pub(crate) fn displayed_elapsed(&self) -> Duration {
-        self.solver_elapsed.unwrap_or(self.total_elapsed)
-    }
-
-    /// Builds an outcome for a case-level result that has no completed query data.
-    pub(crate) fn without_queries(
+    /// Builds an outcome for a case-level result.
+    pub(crate) fn new(
         case: DiscoveredCase,
         total_elapsed: Duration,
         category: OutcomeCategory,
@@ -202,9 +158,7 @@ impl CaseOutcome {
         Self {
             case: case.into_record(),
             total_elapsed,
-            solver_elapsed: None,
             category,
-            queries: Vec::new(),
             detail,
             telemetry,
         }
@@ -216,7 +170,7 @@ impl CaseOutcome {
         total_elapsed: Duration,
         detail: impl Into<Box<str>>,
     ) -> Self {
-        Self::without_queries(
+        Self::new(
             case,
             total_elapsed,
             OutcomeCategory::HarnessError,
@@ -231,9 +185,6 @@ impl CaseOutcome {
 pub(crate) struct CaseTelemetry {
     /// Aggregate metrics derived from the raw periodic samples.
     pub(crate) summary: Summary,
-    /// The raw periodic samples, kept only when the user requested `--save`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) samples: Vec<Sample>,
 }
 
 /// The top-level result category used in summaries and exit codes.
@@ -382,7 +333,7 @@ pub(crate) struct RunSummary {
 
 impl RunSummary {
     /// The current on-disk file format version.
-    pub(crate) const FORMAT_VERSION: u32 = 3;
+    pub(crate) const FORMAT_VERSION: u32 = 4;
 
     /// Returns the current on-disk file format version.
     const fn format_version() -> u32 {
@@ -452,34 +403,5 @@ mod duration_serde {
     {
         let repr = DurationRepr::deserialize(deserializer)?;
         Ok(Duration::from(repr))
-    }
-}
-
-/// Serde helpers for optional durations encoded like `duration_serde`.
-mod optional_duration_serde {
-    use std::time::Duration;
-
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use super::DurationRepr;
-
-    /// Serializes one optional duration into a stable structured representation.
-    pub(crate) fn serialize<S>(
-        duration: &Option<Duration>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        duration.map(DurationRepr::from).serialize(serializer)
-    }
-
-    /// Deserializes one optional duration from the saved structured representation.
-    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let repr = Option::<DurationRepr>::deserialize(deserializer)?;
-        Ok(repr.map(Duration::from))
     }
 }

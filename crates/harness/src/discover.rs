@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::case_io::read_case_text;
-use crate::model::{CaseRecord, DiscoveredCase, ExpectationRule, ExpectedQueryResult, QueryAnswer};
+use crate::model::{CaseRecord, DiscoveredCase, ExpectationRule, QueryAnswer};
 use walkdir::WalkDir;
 
 /// The hidden manifest file used to attach expected results to benchmark paths.
@@ -19,7 +19,7 @@ struct TraceMetadata {
     /// Declared SMT logic, when any.
     logic: Option<Box<str>>,
     /// Expected results attached to `check-sat` commands.
-    expected_queries: Vec<ExpectedQueryResult>,
+    expected_answers: Vec<QueryAnswer>,
 }
 
 /// Discovers all supported benchmark files under the provided roots.
@@ -84,20 +84,17 @@ fn maybe_push_case(
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned();
-    let (default_expected, _source) = lookup_expectation(&display_path, &rules);
+    let default_expected = lookup_expectation(&display_path, &rules);
     let input = read_case_text(&canonical)?;
     let mut metadata = parse_trace_metadata(&input)?;
-    if metadata.expected_queries.is_empty() {
+    if metadata.expected_answers.is_empty() {
         if let Some(expected) = default_expected {
-            metadata.expected_queries.push(ExpectedQueryResult {
-                query_index: 0,
-                expected,
-            });
+            metadata.expected_answers.push(expected);
         }
     } else if let Some(expected) = default_expected {
-        for query in &mut metadata.expected_queries {
-            if query.expected == QueryAnswer::Unknown {
-                query.expected = expected;
+        for answer in &mut metadata.expected_answers {
+            if *answer == QueryAnswer::Unknown {
+                *answer = expected;
             }
         }
     }
@@ -105,7 +102,7 @@ fn maybe_push_case(
     let bytes = fs::metadata(&canonical)
         .map_err(|error| format!("failed to stat {}: {error}", canonical.display()))?
         .len();
-    let query_count = Some(metadata.expected_queries.len());
+    let query_count = Some(metadata.expected_answers.len());
     cases.push(DiscoveredCase::new(
         canonical,
         CaseRecord {
@@ -114,7 +111,7 @@ fn maybe_push_case(
             logic: metadata.logic,
             query_count,
         },
-        metadata.expected_queries,
+        metadata.expected_answers,
     ));
     Ok(())
 }
@@ -162,7 +159,6 @@ fn load_expectation_rules(root: &Path) -> Result<Vec<ExpectationRule>, String> {
         rules.push(ExpectationRule {
             prefix: parts[0].into(),
             expected: QueryAnswer::parse(parts[1])?,
-            source: parts[2].into(),
         });
     }
     rules.sort_by_key(|rule| Reverse(rule.prefix.len()));
@@ -170,16 +166,13 @@ fn load_expectation_rules(root: &Path) -> Result<Vec<ExpectationRule>, String> {
 }
 
 /// Looks up the longest matching expectation rule for one discovered path.
-fn lookup_expectation(
-    display_path: &str,
-    rules: &[ExpectationRule],
-) -> (Option<QueryAnswer>, Option<Box<str>>) {
+fn lookup_expectation(display_path: &str, rules: &[ExpectationRule]) -> Option<QueryAnswer> {
     for rule in rules {
         if display_path.starts_with(rule.prefix.as_ref()) {
-            return (Some(rule.expected), Some(rule.source.clone()));
+            return Some(rule.expected);
         }
     }
-    (None, None)
+    None
 }
 
 /// Extracts the logic and expected query answers from one SMT-LIB trace.
@@ -230,7 +223,7 @@ fn parse_trace_metadata(input: &str) -> Result<TraceMetadata, String> {
 
 /// Counts `check-sat` queries in one SMT-LIB trace without re-reading the file.
 pub(crate) fn query_count(input: &str) -> Result<usize, String> {
-    parse_trace_metadata(input).map(|metadata| metadata.expected_queries.len())
+    parse_trace_metadata(input).map(|metadata| metadata.expected_answers.len())
 }
 
 /// One token relevant to the metadata scanner.
@@ -389,10 +382,9 @@ fn apply_top_level_command(
             *pending_status = Some(QueryAnswer::parse(value)?);
         }
         ["check-sat"] => {
-            metadata.expected_queries.push(ExpectedQueryResult {
-                query_index: metadata.expected_queries.len(),
-                expected: pending_status.take().unwrap_or(QueryAnswer::Unknown),
-            });
+            metadata
+                .expected_answers
+                .push(pending_status.take().unwrap_or(QueryAnswer::Unknown));
         }
         _ => {}
     }
@@ -424,11 +416,7 @@ mod tests {
         .expect("parse metadata");
         assert_eq!(metadata.logic.as_deref(), Some("QF_UF"));
         assert_eq!(
-            metadata
-                .expected_queries
-                .iter()
-                .map(|query| query.expected)
-                .collect::<Vec<_>>(),
+            metadata.expected_answers.to_vec(),
             vec![QueryAnswer::Sat, QueryAnswer::Unsat, QueryAnswer::Unknown]
         );
     }
@@ -438,8 +426,8 @@ mod tests {
     fn parse_trace_metadata_ignores_non_flat_top_level_commands() {
         let metadata =
             parse_trace_metadata("(set-info (:status sat)) (check-sat)").expect("parse metadata");
-        assert_eq!(metadata.expected_queries.len(), 1);
-        assert_eq!(metadata.expected_queries[0].expected, QueryAnswer::Unknown);
+        assert_eq!(metadata.expected_answers.len(), 1);
+        assert_eq!(metadata.expected_answers[0], QueryAnswer::Unknown);
     }
 
     /// Ensures query counting still reuses the metadata parser behavior.
@@ -463,6 +451,6 @@ mod tests {
     fn parse_trace_metadata_returns_default_for_irrelevant_input() {
         let metadata = parse_trace_metadata("atom-only").expect("parse metadata");
         assert_eq!(metadata.logic, TraceMetadata::default().logic);
-        assert!(metadata.expected_queries.is_empty());
+        assert!(metadata.expected_answers.is_empty());
     }
 }

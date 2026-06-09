@@ -1,7 +1,6 @@
 //! Child-process execution for isolated benchmark runs.
 
 use std::fs;
-use std::time::{Duration, Instant};
 
 use crate::case_io::read_case_text;
 use crate::cli::RunCaseArgs;
@@ -30,22 +29,16 @@ fn solve_case_with_optional_telemetry(
     input: &str,
     args: &RunCaseArgs,
 ) -> Result<ChildReport, String> {
-    let expected_queries = match args.expected_query_count {
-        Some(count) => count,
-        None => match query_count(input) {
-            Ok(count) => count,
-            Err(error) => return Ok(ChildReport::ParseError(error)),
-        },
+    let expected_queries = match expected_query_count(input, args) {
+        Ok(count) => count,
+        Err(error) => return Ok(ChildReport::ParseError(error)),
     };
-
-    let solver_started = Instant::now();
     let output = match qfuf::run_script_with_telemetry(input, &args.telemetry) {
         Ok(output) => output,
         Err(error) => return Ok(ChildReport::ParseError(error)),
     };
-    let solver_elapsed = solver_started.elapsed();
 
-    classify_output(output, expected_queries, solver_elapsed)
+    classify_output(output, expected_queries)
 }
 
 /// Solves one case without compiling in telemetry instrumentation.
@@ -54,30 +47,28 @@ fn solve_case_with_optional_telemetry(
     input: &str,
     args: &RunCaseArgs,
 ) -> Result<ChildReport, String> {
-    let expected_queries = match args.expected_query_count {
-        Some(count) => count,
-        None => match query_count(input) {
-            Ok(count) => count,
-            Err(error) => return Ok(ChildReport::ParseError(error)),
-        },
+    let expected_queries = match expected_query_count(input, args) {
+        Ok(count) => count,
+        Err(error) => return Ok(ChildReport::ParseError(error)),
     };
-
-    let solver_started = Instant::now();
     let output = match qfuf::run_script(input) {
         Ok(output) => output,
         Err(error) => return Ok(ChildReport::ParseError(error)),
     };
-    let solver_elapsed = solver_started.elapsed();
 
-    classify_output(output, expected_queries, solver_elapsed)
+    classify_output(output, expected_queries)
+}
+
+/// Returns the expected number of solver answers for one child run.
+fn expected_query_count(input: &str, args: &RunCaseArgs) -> Result<usize, String> {
+    match args.expected_query_count {
+        Some(count) => Ok(count),
+        None => query_count(input),
+    }
 }
 
 /// Parses solver output lines and validates the answer count.
-fn classify_output(
-    output: String,
-    expected_queries: usize,
-    solver_elapsed: Duration,
-) -> Result<ChildReport, String> {
+fn classify_output(output: String, expected_queries: usize) -> Result<ChildReport, String> {
     let actual_answers = output
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -94,8 +85,5 @@ fn classify_output(
             actual_answers.len()
         )));
     }
-    Ok(ChildReport::Completed(CompletedQueryRun {
-        actual_answers,
-        solver_elapsed,
-    }))
+    Ok(ChildReport::Completed(CompletedQueryRun { actual_answers }))
 }

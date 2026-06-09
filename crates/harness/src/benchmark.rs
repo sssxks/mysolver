@@ -49,7 +49,7 @@ pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, Str
     }
 
     for index in 0..args.warmup {
-        let outcome = run_case_subprocess(&current_exe, case.clone(), args.timeout, false);
+        let outcome = run_case_subprocess(&current_exe, case.clone(), args.timeout);
         if outcome.category.is_failure() {
             eprintln!(
                 "{} {}/{} failed before measurement:",
@@ -70,7 +70,7 @@ pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, Str
     let started = Instant::now();
     let mut measured = Vec::with_capacity(args.iterations.get());
     for index in 0..args.iterations.get() {
-        let outcome = run_case_subprocess(&current_exe, case.clone(), args.timeout, false);
+        let outcome = run_case_subprocess(&current_exe, case.clone(), args.timeout);
         eprintln!(
             "{} {}/{} {}",
             style("run").cyan().bold(),
@@ -110,7 +110,7 @@ impl BenchmarkSummary {
         let mut timings = measured
             .iter()
             .filter(|outcome| is_measured_category(outcome.category))
-            .map(CaseOutcome::displayed_elapsed)
+            .map(|outcome| outcome.total_elapsed)
             .collect::<Vec<_>>();
         let distribution = ElapsedDistribution::new(&mut timings);
 
