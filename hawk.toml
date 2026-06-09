@@ -1,6 +1,6 @@
 [[production]]
-package = "my-harness"
-bin = "my-harness"
+package = "harness"
+bin = "harness"
 reason = "main binary"
 
 [[override]]

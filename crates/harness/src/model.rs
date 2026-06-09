@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use console::{StyledObject, style};
 use serde::{Deserialize, Serialize};
-use telemetry::{Sample, Summary};
+use telemetry::Summary;
 
 use strum::VariantArray as _;
 
@@ -40,35 +40,31 @@ pub(crate) struct ExpectationRule {
     pub(crate) prefix: Box<str>,
     /// The expected solver answer for matching paths.
     pub(crate) expected: QueryAnswer,
-    /// A short human-readable source label.
-    pub(crate) source: Box<str>,
 }
 
-/// One expected answer attached to one `check-sat` call.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub(crate) struct ExpectedQueryResult {
-    /// Zero-based query index within the benchmark trace.
-    pub(crate) query_index: usize,
-    /// Expected answer for that query.
-    pub(crate) expected: QueryAnswer,
-}
-
-/// The stable case metadata kept in saved harness result files.
+/// Stable manifest-relative key used when comparing saved harness results.
+///
+/// Semantically, a comparison key is one path key from the set of discovered benchmark cases.
+///
+/// # Encoding
+///
+/// The key is stored as the manifest-relative path string used by discovery. `ComparisonKey`
+/// carries no runtime-only case metadata, so saved-run comparison cannot accidentally depend on
+/// file size, query count, declared logic, or other data that is not part of the case identity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct CaseRecord {
+pub(crate) struct ComparisonKey {
     /// The stable manifest-relative key used when comparing saved runs.
-    pub(crate) key: Box<str>,
-    /// The file size in bytes used to sort long cases first.
-    pub(crate) bytes: u64,
-    /// The SMT-LIB logic declared by the case, when precomputed.
-    pub(crate) logic: Option<Box<str>>,
-    /// The number of `check-sat` queries discovered in the trace, when precomputed.
-    pub(crate) query_count: Option<usize>,
+    key: Box<str>,
 }
 
-impl CaseRecord {
+impl ComparisonKey {
+    /// Builds one stable comparison key.
+    pub(crate) fn new(key: impl Into<Box<str>>) -> Self {
+        Self { key: key.into() }
+    }
+
     /// Returns the stable key used when sorting or comparing saved runs.
-    pub(crate) fn comparison_key(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.key
     }
 }
@@ -78,23 +74,27 @@ impl CaseRecord {
 pub(crate) struct DiscoveredCase {
     /// The canonical absolute file path passed to the child process.
     absolute_path: PathBuf,
-    /// The stable case metadata that survives into saved result files.
-    record: CaseRecord,
+    /// The file size in bytes used to sort long cases first.
+    bytes: u64,
+    /// The stable key that survives into saved result files.
+    key: ComparisonKey,
     /// Expected answers for each `check-sat`, in order.
-    expected_queries: Vec<ExpectedQueryResult>,
+    expected: Vec<QueryAnswer>,
 }
 
 impl DiscoveredCase {
     /// Builds one discovered runtime case from its executable path and saved metadata.
     pub(crate) fn new(
         absolute_path: PathBuf,
-        record: CaseRecord,
-        expected_queries: Vec<ExpectedQueryResult>,
+        bytes: u64,
+        key: ComparisonKey,
+        expected: Vec<QueryAnswer>,
     ) -> Self {
         Self {
             absolute_path,
-            record,
-            expected_queries,
+            bytes,
+            key,
+            expected,
         }
     }
 
@@ -105,43 +105,29 @@ impl DiscoveredCase {
 
     /// Returns the file size used for discovery ordering.
     pub(crate) fn bytes(&self) -> u64 {
-        self.record.bytes
+        self.bytes
     }
 
-    /// Returns the expected query sequence.
-    pub(crate) fn expected_queries(&self) -> &[ExpectedQueryResult] {
-        &self.expected_queries
+    /// Returns the expected answer sequence.
+    pub(crate) fn expected(&self) -> &[QueryAnswer] {
+        &self.expected
     }
 
-    /// Consumes the runtime case and returns the persistent case metadata.
-    pub(crate) fn into_record(self) -> CaseRecord {
-        self.record
+    /// Consumes the runtime case and returns the persistent comparison key.
+    fn into_key(self) -> ComparisonKey {
+        self.key
     }
-}
-
-/// The structured report produced by a child process.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ChildReport {
-    /// The child-level outcome.
-    pub(crate) kind: ChildReportKind,
-}
-
-/// One complete query sequence returned by the child process.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct CompletedQueryRun {
-    /// Actual answers returned by the solver, in query order.
-    pub(crate) actual_answers: Vec<QueryAnswer>,
-    /// Wall-clock time spent inside the child solver boundary.
-    #[serde(with = "duration_serde")]
-    pub(crate) solver_elapsed: Duration,
 }
 
 /// All structured outcomes that can be reported by the child process.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "detail")]
-pub(crate) enum ChildReportKind {
+pub(crate) enum ChildReport {
     /// The solver completed the trace and returned one answer per query.
-    Completed(CompletedQueryRun),
+    Completed {
+        /// Actual answers returned by the solver, in query order.
+        actual: Vec<QueryAnswer>,
+    },
     /// The SMT-LIB input could not be parsed.
     ParseError(String),
     /// The case file could not be loaded from disk.
@@ -150,52 +136,55 @@ pub(crate) enum ChildReportKind {
     ProtocolError(String),
 }
 
-/// One per-query outcome stored in saved harness artifacts.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct QueryOutcome {
-    /// Zero-based query index within the trace.
-    pub(crate) query_index: usize,
-    /// Expected answer for this query.
-    pub(crate) expected: QueryAnswer,
-    /// Actual solver answer for this query.
-    pub(crate) actual: QueryAnswer,
-    /// Elapsed time since case start when the query completed.
-    #[serde(with = "duration_serde")]
-    pub(crate) elapsed: Duration,
-    /// The classified query-level category.
-    pub(crate) category: OutcomeCategory,
-}
-
 /// One completed case outcome received by the parent process.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct CaseOutcome {
-    /// The original benchmark metadata.
-    pub(crate) case: CaseRecord,
-    /// The wall-clock runtime measured by the parent process.
-    #[serde(with = "duration_serde")]
-    pub(crate) total_elapsed: Duration,
-    /// The child-measured solver runtime, excluding parent subprocess supervision.
-    #[serde(
-        default,
-        with = "optional_duration_serde",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub(crate) solver_elapsed: Option<Duration>,
+    /// The stable key for the benchmark case.
+    pub(crate) key: ComparisonKey,
+
     /// The classified case-level result category.
     pub(crate) category: OutcomeCategory,
-    /// One saved query outcome for each completed `check-sat`.
-    pub(crate) queries: Vec<QueryOutcome>,
-    /// An optional detail string for failures and summaries.
-    pub(crate) detail: Option<Box<str>>,
-    /// Optional solver telemetry aggregated from periodic samples.
+    /// The wall-clock runtime measured by the parent process.
+    #[serde(with = "duration_serde")]
+    pub(crate) elapsed: Duration,
+    /// Solver telemetry aggregated from periodic samples.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) telemetry: Option<CaseTelemetry>,
+    /// Detail string for failures and summaries.
+    pub(crate) detail: Option<Box<str>>,
 }
 
 impl CaseOutcome {
-    /// Returns the elapsed time users should see for one solver outcome.
-    pub(crate) fn displayed_elapsed(&self) -> Duration {
-        self.solver_elapsed.unwrap_or(self.total_elapsed)
+    /// Builds an outcome for a case-level result.
+    pub(crate) fn new(
+        case: DiscoveredCase,
+        elapsed: Duration,
+        category: OutcomeCategory,
+        detail: Option<Box<str>>,
+        telemetry: Option<CaseTelemetry>,
+    ) -> Self {
+        Self {
+            key: case.into_key(),
+            elapsed,
+            category,
+            detail,
+            telemetry,
+        }
+    }
+
+    /// Builds one harness infrastructure error outcome.
+    pub(crate) fn harness_error(
+        case: DiscoveredCase,
+        elapsed: Duration,
+        detail: impl Into<Box<str>>,
+    ) -> Self {
+        Self::new(
+            case,
+            elapsed,
+            OutcomeCategory::HarnessError,
+            Some(detail.into()),
+            None,
+        )
     }
 }
 
@@ -204,9 +193,6 @@ impl CaseOutcome {
 pub(crate) struct CaseTelemetry {
     /// Aggregate metrics derived from the raw periodic samples.
     pub(crate) summary: Summary,
-    /// The raw periodic samples, kept only when the user requested `--save`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) samples: Vec<Sample>,
 }
 
 /// The top-level result category used in summaries and exit codes.
@@ -344,18 +330,19 @@ pub(crate) struct RunSummary {
     /// The configured per-case timeout.
     #[serde(with = "duration_serde")]
     pub(crate) timeout: Duration,
+
     /// The end-to-end wall-clock time for the full run.
     #[serde(with = "duration_serde")]
-    pub(crate) total_elapsed: Duration,
-    /// One saved outcome for each discovered case, sorted by comparison key.
-    pub(crate) cases: Vec<CaseOutcome>,
+    pub(crate) elapsed: Duration,
     /// The final counters for all outcomes.
     pub(crate) stats: OutcomeStats,
+    /// One saved outcome for each discovered case, sorted by comparison key.
+    pub(crate) cases: Vec<CaseOutcome>,
 }
 
 impl RunSummary {
     /// The current on-disk file format version.
-    pub(crate) const FORMAT_VERSION: u32 = 3;
+    pub(crate) const FORMAT_VERSION: u32 = 6;
 
     /// Returns the current on-disk file format version.
     const fn format_version() -> u32 {
@@ -376,31 +363,46 @@ impl RunSummary {
     }
 }
 
+/// Serializable duration payload used inside saved harness artifacts.
+#[derive(Deserialize, Serialize)]
+struct DurationRepr {
+    /// Whole seconds since the start instant.
+    secs: u64,
+    /// Additional nanoseconds beyond `secs`.
+    nanos: u32,
+}
+
+impl From<Duration> for DurationRepr {
+    /// Converts one runtime duration into the stable saved representation.
+    fn from(duration: Duration) -> Self {
+        Self {
+            secs: duration.as_secs(),
+            nanos: duration.subsec_nanos(),
+        }
+    }
+}
+
+impl From<DurationRepr> for Duration {
+    /// Converts one saved representation back into a runtime duration.
+    fn from(repr: DurationRepr) -> Self {
+        Self::new(repr.secs, repr.nanos)
+    }
+}
+
 /// Serde helpers that encode durations as `{ secs, nanos }`.
 mod duration_serde {
     use std::time::Duration;
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    /// Serializable duration payload used inside saved harness artifacts.
-    #[derive(Deserialize, Serialize)]
-    struct DurationRepr {
-        /// Whole seconds since the start instant.
-        secs: u64,
-        /// Additional nanoseconds beyond `secs`.
-        nanos: u32,
-    }
+    use super::DurationRepr;
 
     /// Serializes one duration into a stable structured representation.
     pub(crate) fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        DurationRepr {
-            secs: duration.as_secs(),
-            nanos: duration.subsec_nanos(),
-        }
-        .serialize(serializer)
+        DurationRepr::from(*duration).serialize(serializer)
     }
 
     /// Deserializes one duration from the saved structured representation.
@@ -409,47 +411,6 @@ mod duration_serde {
         D: Deserializer<'de>,
     {
         let repr = DurationRepr::deserialize(deserializer)?;
-        Ok(Duration::new(repr.secs, repr.nanos))
-    }
-}
-
-/// Serde helpers for optional durations encoded like `duration_serde`.
-mod optional_duration_serde {
-    use std::time::Duration;
-
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    /// Serializable duration payload used inside saved harness artifacts.
-    #[derive(Deserialize, Serialize)]
-    struct DurationRepr {
-        /// Whole seconds since the start instant.
-        secs: u64,
-        /// Additional nanoseconds beyond `secs`.
-        nanos: u32,
-    }
-
-    /// Serializes one optional duration into a stable structured representation.
-    pub(crate) fn serialize<S>(
-        duration: &Option<Duration>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        duration
-            .map(|duration| DurationRepr {
-                secs: duration.as_secs(),
-                nanos: duration.subsec_nanos(),
-            })
-            .serialize(serializer)
-    }
-
-    /// Deserializes one optional duration from the saved structured representation.
-    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let repr = Option::<DurationRepr>::deserialize(deserializer)?;
-        Ok(repr.map(|repr| Duration::new(repr.secs, repr.nanos)))
+        Ok(Duration::from(repr))
     }
 }

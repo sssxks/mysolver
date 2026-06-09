@@ -5,7 +5,7 @@
 //!
 //! | Operation | Frequency | Complexity | Data structure | Forbidden Impl |
 //! | - | - | - | - | - |
-//! | Record one run | Once per run | O(1) | `Vec<BenchmarkRun>` | Re-discover case each iteration |
+//! | Record one run | Once per run | O(1) | `Vec<CaseOutcome>` | Re-discover case each iteration |
 //! | Compute distribution | Once after all runs | O(n log n) | Sorted `Vec<Duration>` | Re-scan outcomes for every percentile |
 
 use std::env;
@@ -14,15 +14,15 @@ use std::time::{Duration, Instant};
 use console::style;
 use indicatif::{HumanCount, HumanDuration};
 
-use crate::cli::BenchmarkArgs;
+use crate::cli::BenchArgs;
 use crate::discover::discover_cases;
 use crate::model::{CaseOutcome, OutcomeCategory};
 use crate::parent::run_case_subprocess;
 use crate::render::format_outcome;
-use crate::util::format_compact_duration;
+use crate::util::format_duration;
 
 /// Runs one case repeatedly and prints an elapsed-time distribution.
-pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, String> {
+pub(crate) fn run_benchmark(args: BenchArgs) -> Result<BenchmarkSummary, String> {
     let cases = discover_cases(std::slice::from_ref(&args.case))?;
     let [case] = cases.as_slice() else {
         return Err(format!(
@@ -49,7 +49,7 @@ pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, Str
     }
 
     for index in 0..args.warmup {
-        let outcome = run_case_subprocess(&current_exe, case.clone(), args.timeout, false);
+        let outcome = run_case_subprocess(&current_exe, case.clone(), args.timeout);
         if outcome.category.is_failure() {
             eprintln!(
                 "{} {}/{} failed before measurement:",
@@ -70,7 +70,7 @@ pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, Str
     let started = Instant::now();
     let mut measured = Vec::with_capacity(args.iterations.get());
     for index in 0..args.iterations.get() {
-        let outcome = run_case_subprocess(&current_exe, case.clone(), args.timeout, false);
+        let outcome = run_case_subprocess(&current_exe, case.clone(), args.timeout);
         eprintln!(
             "{} {}/{} {}",
             style("run").cyan().bold(),
@@ -78,7 +78,7 @@ pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, Str
             HumanCount(args.iterations.get() as u64),
             format_outcome(&outcome).trim_start(),
         );
-        measured.push(BenchmarkRun { outcome });
+        measured.push(outcome);
     }
     let total_elapsed = started.elapsed();
 
@@ -87,18 +87,11 @@ pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, Str
     Ok(summary)
 }
 
-/// One measured benchmark subprocess run.
-#[derive(Debug)]
-pub(crate) struct BenchmarkRun {
-    /// The classified subprocess outcome.
-    outcome: CaseOutcome,
-}
-
 /// Aggregate result for a repeated single-case benchmark.
 #[derive(Debug)]
 pub(crate) struct BenchmarkSummary {
     /// All measured subprocess runs.
-    measured: Vec<BenchmarkRun>,
+    measured: Vec<CaseOutcome>,
     /// Distribution over successful measured runs.
     distribution: Option<ElapsedDistribution>,
     /// The number of measured runs that failed classification.
@@ -109,15 +102,15 @@ pub(crate) struct BenchmarkSummary {
 
 impl BenchmarkSummary {
     /// Builds a summary from measured subprocess outcomes.
-    fn new(measured: Vec<BenchmarkRun>, total_elapsed: Duration) -> Self {
+    fn new(measured: Vec<CaseOutcome>, total_elapsed: Duration) -> Self {
         let failures = measured
             .iter()
-            .filter(|run| run.outcome.category.is_failure())
+            .filter(|outcome| outcome.category.is_failure())
             .count();
         let mut timings = measured
             .iter()
-            .filter(|run| is_measured_category(run.outcome.category))
-            .map(|run| run.outcome.displayed_elapsed())
+            .filter(|outcome| is_measured_category(outcome.category))
+            .map(|outcome| outcome.elapsed)
             .collect::<Vec<_>>();
         let distribution = ElapsedDistribution::new(&mut timings);
 
@@ -221,7 +214,7 @@ fn print_summary(summary: &BenchmarkSummary) {
         HumanCount(measured as u64),
         HumanCount(successful as u64),
         HumanCount(summary.failures as u64),
-        format_compact_duration(summary.total_elapsed),
+        format_duration(summary.total_elapsed),
         throughput,
     );
 
@@ -233,14 +226,14 @@ fn print_summary(summary: &BenchmarkSummary) {
     eprintln!(
         "samples {} | min {} | p25 {} | median {} | p75 {} | p90 {} | p99 {} | max {} | mean {}",
         HumanCount(distribution.samples as u64),
-        format_compact_duration(distribution.min),
-        format_compact_duration(distribution.p25),
-        format_compact_duration(distribution.median),
-        format_compact_duration(distribution.p75),
-        format_compact_duration(distribution.p90),
-        format_compact_duration(distribution.p99),
-        format_compact_duration(distribution.max),
-        format_compact_duration(distribution.mean),
+        format_duration(distribution.min),
+        format_duration(distribution.p25),
+        format_duration(distribution.median),
+        format_duration(distribution.p75),
+        format_duration(distribution.p90),
+        format_duration(distribution.p99),
+        format_duration(distribution.max),
+        format_duration(distribution.mean),
     );
 }
 

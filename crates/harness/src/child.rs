@@ -1,27 +1,17 @@
 //! Child-process execution for isolated benchmark runs.
 
-use std::fs::{self, File};
-use std::io::Read;
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::fs;
 
-use bzip2::read::BzDecoder;
-use flate2::read::MultiGzDecoder;
-
-use crate::cli::RunCaseArgs;
+use crate::case_io::read_case_text;
+use crate::cli::CaseArgs;
 use crate::discover::query_count;
-use crate::model::{ChildReport, ChildReportKind, CompletedQueryRun, QueryAnswer};
+use crate::model::{ChildReport, QueryAnswer};
 
 /// Runs the isolated single-case entrypoint and writes the structured report.
-pub(crate) fn run_child(args: RunCaseArgs) -> Result<(), String> {
+pub(crate) fn run_child(args: CaseArgs) -> Result<(), String> {
     let report = match read_case_text(&args.case) {
-        Ok(input) => {
-            let kind = solve_case_with_optional_telemetry(&input, &args)?;
-            ChildReport { kind }
-        }
-        Err(error) => ChildReport {
-            kind: ChildReportKind::InputError(error),
-        },
+        Ok(input) => solve_case_with_optional_telemetry(&input, &args)?,
+        Err(error) => ChildReport::InputError(error),
     };
     let payload = serde_json::to_vec(&report)
         .map_err(|error| format!("failed to serialize child report: {error}"))?;
@@ -35,109 +25,59 @@ pub(crate) fn run_child(args: RunCaseArgs) -> Result<(), String> {
 
 /// Solves one case, recording periodic telemetry samples when the feature is enabled.
 #[cfg(feature = "telemetry")]
-fn solve_case_with_optional_telemetry(
-    input: &str,
-    args: &RunCaseArgs,
-) -> Result<ChildReportKind, String> {
-    let expected_queries = match args.expected_query_count {
-        Some(count) => count,
-        None => match query_count(input) {
-            Ok(count) => count,
-            Err(error) => return Ok(ChildReportKind::ParseError(error)),
-        },
+fn solve_case_with_optional_telemetry(input: &str, args: &CaseArgs) -> Result<ChildReport, String> {
+    let expected_queries = match expected_query_count(input, args) {
+        Ok(count) => count,
+        Err(error) => return Ok(ChildReport::ParseError(error)),
     };
-
-    let solver_started = Instant::now();
     let output = match qfuf::run_script_with_telemetry(input, &args.telemetry) {
         Ok(output) => output,
-        Err(error) => return Ok(ChildReportKind::ParseError(error)),
+        Err(error) => return Ok(ChildReport::ParseError(error)),
     };
-    let solver_elapsed = solver_started.elapsed();
 
-    classify_output(output, expected_queries, solver_elapsed)
+    classify_output(output, expected_queries)
 }
 
 /// Solves one case without compiling in telemetry instrumentation.
 #[cfg(not(feature = "telemetry"))]
-fn solve_case_with_optional_telemetry(
-    input: &str,
-    args: &RunCaseArgs,
-) -> Result<ChildReportKind, String> {
-    let expected_queries = match args.expected_query_count {
-        Some(count) => count,
-        None => match query_count(input) {
-            Ok(count) => count,
-            Err(error) => return Ok(ChildReportKind::ParseError(error)),
-        },
+fn solve_case_with_optional_telemetry(input: &str, args: &CaseArgs) -> Result<ChildReport, String> {
+    let expected_queries = match expected_query_count(input, args) {
+        Ok(count) => count,
+        Err(error) => return Ok(ChildReport::ParseError(error)),
     };
-
-    let solver_started = Instant::now();
     let output = match qfuf::run_script(input) {
         Ok(output) => output,
-        Err(error) => return Ok(ChildReportKind::ParseError(error)),
+        Err(error) => return Ok(ChildReport::ParseError(error)),
     };
-    let solver_elapsed = solver_started.elapsed();
 
-    classify_output(output, expected_queries, solver_elapsed)
+    classify_output(output, expected_queries)
+}
+
+/// Returns the expected number of solver answers for one child run.
+fn expected_query_count(input: &str, args: &CaseArgs) -> Result<usize, String> {
+    match args.expected_query_count {
+        Some(count) => Ok(count),
+        None => query_count(input),
+    }
 }
 
 /// Parses solver output lines and validates the answer count.
-fn classify_output(
-    output: String,
-    expected_queries: usize,
-    solver_elapsed: Duration,
-) -> Result<ChildReportKind, String> {
-    let actual_answers = output
+fn classify_output(output: String, expected_queries: usize) -> Result<ChildReport, String> {
+    let answers = output
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| QueryAnswer::parse(line.trim()))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(ChildReportKind::ProtocolError)
+        .map_err(ChildReport::ProtocolError)
         .map_err(|error| match error {
-            ChildReportKind::ProtocolError(detail) => detail,
+            ChildReport::ProtocolError(detail) => detail,
             _ => unreachable!(),
         })?;
-    if actual_answers.len() != expected_queries {
-        return Ok(ChildReportKind::ProtocolError(format!(
+    if answers.len() != expected_queries {
+        return Ok(ChildReport::ProtocolError(format!(
             "expected {expected_queries} query answers from qfuf, got {}",
-            actual_answers.len()
+            answers.len()
         )));
     }
-    Ok(ChildReportKind::Completed(CompletedQueryRun {
-        actual_answers,
-        solver_elapsed,
-    }))
-}
-
-/// Returns `true` when the path ends with the provided suffix.
-fn has_suffix(path: &Path, suffix: &str) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(suffix))
-}
-
-/// Reads one benchmark file, transparently decompressing gzip and bzip2 inputs.
-fn read_case_text(path: &Path) -> Result<String, String> {
-    let mut text = String::new();
-    if has_suffix(path, ".gz") {
-        let file = File::open(path)
-            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
-        let mut decoder = MultiGzDecoder::new(file);
-        decoder
-            .read_to_string(&mut text)
-            .map_err(|error| format!("failed to decode gzip {}: {error}", path.display()))?;
-    } else if has_suffix(path, ".bz2") {
-        let file = File::open(path)
-            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
-        let mut decoder = BzDecoder::new(file);
-        decoder
-            .read_to_string(&mut text)
-            .map_err(|error| format!("failed to decode bzip2 {}: {error}", path.display()))?;
-    } else {
-        let mut file = File::open(path)
-            .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
-        file.read_to_string(&mut text)
-            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    }
-    Ok(text)
+    Ok(ChildReport::Completed { actual: answers })
 }

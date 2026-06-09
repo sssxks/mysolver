@@ -9,7 +9,7 @@ use indicatif::{HumanCount, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use telemetry::Summary;
 
 use crate::model::{CaseOutcome, OutcomeCategory, OutcomeStats};
-use crate::util::format_compact_duration;
+use crate::util::format_duration;
 
 /// The interactive refresh cadence used while waiting for the next completed case.
 pub(crate) const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
@@ -74,8 +74,8 @@ pub(crate) fn progress_message(stats: &OutcomeStats, running: usize) -> String {
 pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let label = outcome.category.styled_label();
     let width = OutcomeCategory::LABEL_WIDTH;
-    let elapsed = format_compact_duration(outcome.displayed_elapsed());
-    let path = outcome.case.comparison_key();
+    let elapsed = format_duration(outcome.elapsed);
+    let path = outcome.key.as_str();
 
     let detail = if let Some(detail) = outcome.detail.as_deref() {
         format!(" :: {}", detail)
@@ -132,7 +132,7 @@ pub(crate) fn print_summary(
     eprintln!(
         "{} in {} with {} workers, throughput: {:.1} cases/s",
         style("finished").cyan().bold(),
-        format_compact_duration(elapsed),
+        format_duration(elapsed),
         HumanCount(jobs as u64),
         throughput
     );
@@ -168,7 +168,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{format_outcome, progress_message};
-    use crate::model::{CaseOutcome, CaseRecord, CaseTelemetry, OutcomeCategory, OutcomeStats};
+    use crate::model::{CaseOutcome, CaseTelemetry, ComparisonKey, OutcomeCategory, OutcomeStats};
     use telemetry::{EufSummary, SatSummary, Summary};
 
     /// Ensures the live message exposes worker activity even before any case finishes.
@@ -200,24 +200,16 @@ mod tests {
     #[test]
     fn format_outcome_renders_successful_cases() {
         let outcome = CaseOutcome {
-            case: CaseRecord {
-                key: "fixture/example.cnf".into(),
-                bytes: 123,
-                logic: Some("QF_UF".into()),
-                query_count: Some(1),
-            },
-            total_elapsed: Duration::from_millis(42),
-            solver_elapsed: Some(Duration::from_millis(37)),
+            key: ComparisonKey::new("fixture/example.cnf"),
+            elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
-            queries: Vec::new(),
             detail: None,
             telemetry: None,
         };
 
         let rendered = format_outcome(&outcome);
         assert!(rendered.contains("PASS"));
-        assert!(rendered.contains("37.0ms"));
-        assert!(!rendered.contains("42.0ms"));
+        assert!(rendered.contains("42.0ms"));
         assert!(rendered.contains("fixture/example.cnf"));
     }
 
@@ -225,16 +217,9 @@ mod tests {
     #[test]
     fn format_outcome_renders_complete_long_paths() {
         let outcome = CaseOutcome {
-            case: CaseRecord {
-                key: "cases/satlib/instance-group/very-long-case-name.cnf.gz".into(),
-                bytes: 123,
-                logic: Some("QF_UF".into()),
-                query_count: Some(1),
-            },
-            total_elapsed: Duration::from_millis(42),
-            solver_elapsed: None,
+            key: ComparisonKey::new("cases/satlib/instance-group/very-long-case-name.cnf.gz"),
+            elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
-            queries: Vec::new(),
             detail: None,
             telemetry: None,
         };
@@ -247,16 +232,9 @@ mod tests {
     #[test]
     fn format_outcome_renders_telemetry_summary() {
         let outcome = CaseOutcome {
-            case: CaseRecord {
-                key: "fixture/example.cnf".into(),
-                bytes: 123,
-                logic: Some("QF_UF".into()),
-                query_count: Some(1),
-            },
-            total_elapsed: Duration::from_secs(1),
-            solver_elapsed: None,
+            key: ComparisonKey::new("fixture/example.cnf"),
+            elapsed: Duration::from_secs(1),
             category: OutcomeCategory::Pass,
-            queries: Vec::new(),
             detail: None,
             telemetry: Some(CaseTelemetry {
                 summary: Summary {
@@ -280,7 +258,6 @@ mod tests {
                         ..EufSummary::default()
                     },
                 },
-                samples: Vec::new(),
             }),
         };
 

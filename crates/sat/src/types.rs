@@ -17,7 +17,7 @@ pub struct Level(u32);
 
 impl Level {
     /// The root level.
-    pub const ROOT: Self = Self(0);
+    pub(crate) const ROOT: Self = Self(0);
 
     /// Creates a level from a zero-based index known to fit in the encoding.
     pub(crate) fn from_index(index: usize) -> Self {

@@ -6,8 +6,6 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::util::parse_timeout;
-
 /// The benchmark runner command line.
 #[derive(Debug, Parser)]
 #[command(
@@ -27,26 +25,26 @@ pub(crate) enum HarnessCommand {
     /// Discover and execute benchmark cases.
     Run(RunArgs),
     /// Run one benchmark case repeatedly and report elapsed-time distribution.
-    Bench(BenchmarkArgs),
+    Bench(BenchArgs),
     /// Compare two previously saved harness result files.
     Compare(CompareArgs),
     /// Run one benchmark case in an isolated process and emit raw artifacts.
     ///
     /// This command is primarily useful when inspecting the raw JSON report,
     /// telemetry stream, or an uncaptured Rust panic backtrace for one case.
-    Case(RunCaseArgs),
+    Case(CaseArgs),
 }
 
-/// Arguments for the user-facing `benchmark` command.
+/// Arguments for the user-facing `bench` command.
 #[derive(Debug, Args)]
-pub(crate) struct BenchmarkArgs {
+pub(crate) struct BenchArgs {
     /// The case file to execute repeatedly.
     pub(crate) case: PathBuf,
     /// The number of measured runs.
     #[arg(short = 'n', long, default_value = "20")]
     pub(crate) iterations: NonZeroUsize,
     /// The number of unmeasured runs to execute before measurement.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 1)]
     pub(crate) warmup: usize,
     /// The per-run timeout.
     #[arg(short, long, default_value = "30s", value_parser = parse_timeout)]
@@ -135,7 +133,7 @@ pub(crate) struct CompareArgs {
 
 /// Arguments for the isolated single-case execution entrypoint.
 #[derive(Debug, Args)]
-pub(crate) struct RunCaseArgs {
+pub(crate) struct CaseArgs {
     /// The case file to execute.
     pub(crate) case: PathBuf,
     /// The JSON report destination path.
@@ -148,6 +146,11 @@ pub(crate) struct RunCaseArgs {
     #[cfg(feature = "telemetry")]
     #[arg(long)]
     pub(crate) telemetry: PathBuf,
+}
+
+/// Parses a user-provided timeout string such as `30s` or `250ms`.
+fn parse_timeout(text: &str) -> Result<Duration, String> {
+    humantime::parse_duration(text).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -189,12 +192,12 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Ensures the repeated single-case benchmark command is publicly parseable.
+    /// Ensures the repeated single-case bench command is publicly parseable.
     #[test]
-    fn benchmark_is_publicly_parseable() {
+    fn bench_is_publicly_parseable() {
         let cli = Cli::parse_from([
             "my-harness",
-            "benchmark",
+            "bench",
             "fixture/example.smt2",
             "--iterations",
             "7",
@@ -204,7 +207,7 @@ mod tests {
             "5s",
         ]);
         let HarnessCommand::Bench(args) = cli.command else {
-            panic!("expected benchmark command");
+            panic!("expected bench command");
         };
         assert_eq!(args.iterations.get(), 7);
         assert_eq!(args.warmup, 2);

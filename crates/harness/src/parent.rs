@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -19,16 +20,14 @@ use wait_timeout::ChildExt;
 
 use crate::cli::{OutputMode, RunArgs};
 use crate::discover::discover_cases;
-use crate::jobs::default_jobs;
 use crate::model::{
-    CaseOutcome, CaseTelemetry, ChildReport, ChildReportKind, DiscoveredCase, OutcomeCategory,
-    OutcomeStats, QueryAnswer, QueryOutcome, RunSummary,
+    CaseOutcome, CaseTelemetry, ChildReport, DiscoveredCase, OutcomeCategory, OutcomeStats,
+    QueryAnswer, RunSummary,
 };
 use crate::render::{
     PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_outcome, print_summary,
     print_written_summary, progress_message,
 };
-use crate::util::{exit_signal, trim_detail};
 
 /// Executes the top-level parent harness flow.
 pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
@@ -52,7 +51,7 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
     }
 
     let jobs = jobs
-        .unwrap_or_else(default_jobs)
+        .unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN))
         .get()
         .min(cases.len())
         .max(1);
@@ -62,22 +61,14 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
     let queue = Arc::new(Mutex::new(VecDeque::from(cases)));
     let (sender, receiver) = mpsc::channel();
     let mut handles = Vec::with_capacity(jobs);
-    let retain_telemetry_samples = save.is_some();
 
     for _ in 0..jobs {
         let worker_queue = Arc::clone(&queue);
         let worker_sender = sender.clone();
         let worker_exe = current_exe.clone();
         let worker_timeout = timeout;
-        let worker_retain_telemetry_samples = retain_telemetry_samples;
         handles.push(thread::spawn(move || {
-            worker_loop(
-                worker_queue,
-                worker_sender,
-                worker_exe,
-                worker_timeout,
-                worker_retain_telemetry_samples,
-            );
+            worker_loop(worker_queue, worker_sender, worker_exe, worker_timeout);
         }));
     }
     drop(sender);
@@ -142,14 +133,14 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
     let elapsed = started.elapsed();
     progress_bar.finish_and_clear();
     print_summary(&outcomes, &stats, elapsed, jobs);
-    outcomes.sort_by(|left, right| left.case.comparison_key().cmp(right.case.comparison_key()));
+    outcomes.sort_by(|left, right| left.key.as_str().cmp(right.key.as_str()));
 
     let summary = RunSummary {
         format_version: RunSummary::FORMAT_VERSION,
         roots: requested_roots.into_boxed_slice(),
         jobs,
         timeout,
-        total_elapsed: elapsed,
+        elapsed,
         cases: outcomes,
         stats,
     };
@@ -177,7 +168,6 @@ fn worker_loop(
     sender: mpsc::Sender<CaseOutcome>,
     current_exe: PathBuf,
     timeout: Duration,
-    retain_telemetry_samples: bool,
 ) {
     loop {
         let next_case = match queue.lock() {
@@ -187,7 +177,7 @@ fn worker_loop(
         let Some(case) = next_case else {
             break;
         };
-        let outcome = run_case_subprocess(&current_exe, case, timeout, retain_telemetry_samples);
+        let outcome = run_case_subprocess(&current_exe, case, timeout);
         if sender.send(outcome).is_err() {
             break;
         }
@@ -199,25 +189,32 @@ pub(crate) fn run_case_subprocess(
     current_exe: &Path,
     case: DiscoveredCase,
     timeout: Duration,
-    retain_telemetry_samples: bool,
 ) -> CaseOutcome {
     let started = Instant::now();
     let report_file = match NamedTempFile::new() {
         Ok(file) => file,
         Err(error) => {
-            return harness_error(case, started.elapsed(), format!("tempfile error: {error}"));
+            return CaseOutcome::harness_error(
+                case,
+                started.elapsed(),
+                format!("tempfile error: {error}"),
+            );
         }
     };
     let stderr_file = match NamedTempFile::new() {
         Ok(file) => file,
         Err(error) => {
-            return harness_error(case, started.elapsed(), format!("tempfile error: {error}"));
+            return CaseOutcome::harness_error(
+                case,
+                started.elapsed(),
+                format!("tempfile error: {error}"),
+            );
         }
     };
     let stderr_stdio = match stderr_file.reopen() {
         Ok(file) => Stdio::from(file),
         Err(error) => {
-            return harness_error(
+            return CaseOutcome::harness_error(
                 case,
                 started.elapsed(),
                 format!("stderr capture error: {error}"),
@@ -227,7 +224,11 @@ pub(crate) fn run_case_subprocess(
     let telemetry_file = match create_telemetry_file() {
         Ok(file) => file,
         Err(error) => {
-            return harness_error(case, started.elapsed(), format!("tempfile error: {error}"));
+            return CaseOutcome::harness_error(
+                case,
+                started.elapsed(),
+                format!("tempfile error: {error}"),
+            );
         }
     };
 
@@ -238,7 +239,7 @@ pub(crate) fn run_case_subprocess(
         .arg("--report")
         .arg(report_file.path())
         .arg("--expected-query-count")
-        .arg(case.expected_queries().len().to_string());
+        .arg(case.expected().len().to_string());
     #[cfg(feature = "telemetry")]
     {
         let telemetry_path = telemetry_file
@@ -256,7 +257,11 @@ pub(crate) fn run_case_subprocess(
     {
         Ok(child) => child,
         Err(error) => {
-            return harness_error(case, started.elapsed(), format!("spawn error: {error}"));
+            return CaseOutcome::harness_error(
+                case,
+                started.elapsed(),
+                format!("spawn error: {error}"),
+            );
         }
     };
 
@@ -268,39 +273,35 @@ pub(crate) fn run_case_subprocess(
             Ok(Some(status)) => (false, Ok(status)),
             Ok(None) => (true, kill_timed_out_child(&mut child, &case, started)),
             Err(error) => {
-                return harness_error(case, started.elapsed(), format!("wait error: {error}"));
+                return CaseOutcome::harness_error(
+                    case,
+                    started.elapsed(),
+                    format!("wait error: {error}"),
+                );
             }
         }
     };
     let status = match status {
         Ok(status) => status,
-        Err(outcome) => return outcome,
+        Err(outcome) => return *outcome,
     };
 
     let elapsed = started.elapsed();
     if timed_out {
-        return CaseOutcome {
-            case: case.into_record(),
-            total_elapsed: elapsed,
-            solver_elapsed: None,
-            category: OutcomeCategory::Timeout,
-            queries: Vec::new(),
-            detail: None,
-            telemetry: load_case_telemetry(
-                telemetry_file.as_ref().map(NamedTempFile::path),
-                retain_telemetry_samples,
-            )
-            .ok()
-            .flatten(),
-        };
+        return CaseOutcome::new(
+            case,
+            elapsed,
+            OutcomeCategory::Timeout,
+            None,
+            load_case_telemetry(telemetry_file.as_ref().map(NamedTempFile::path))
+                .ok()
+                .flatten(),
+        );
     }
 
     let stderr = fs::read_to_string(stderr_file.path()).unwrap_or_default();
     let report_text = fs::read_to_string(report_file.path()).ok();
-    let telemetry = load_case_telemetry(
-        telemetry_file.as_ref().map(NamedTempFile::path),
-        retain_telemetry_samples,
-    );
+    let telemetry = load_case_telemetry(telemetry_file.as_ref().map(NamedTempFile::path));
     classify_child_completion(
         case,
         elapsed,
@@ -316,14 +317,14 @@ fn kill_timed_out_child(
     child: &mut std::process::Child,
     case: &DiscoveredCase,
     started: Instant,
-) -> Result<ExitStatus, CaseOutcome> {
+) -> Result<ExitStatus, Box<CaseOutcome>> {
     let _ = child.kill();
     child.wait().map_err(|error| {
-        harness_error(
+        Box::new(CaseOutcome::harness_error(
             case.clone(),
             started.elapsed(),
             format!("failed to wait after timeout: {error}"),
-        )
+        ))
     })
 }
 
@@ -350,36 +351,41 @@ fn classify_child_completion(
 ) -> CaseOutcome {
     if status.success() {
         let Some(report_text) = report_text else {
-            return harness_error(case, elapsed, "missing child report".to_string());
+            return CaseOutcome::harness_error(case, elapsed, "missing child report".to_string());
         };
         let report: ChildReport = match serde_json::from_str(report_text) {
             Ok(report) => report,
             Err(error) => {
-                return harness_error(case, elapsed, format!("invalid child report: {error}"));
+                return CaseOutcome::harness_error(
+                    case,
+                    elapsed,
+                    format!("invalid child report: {error}"),
+                );
             }
         };
         let telemetry = match telemetry {
             Ok(telemetry) => telemetry,
             Err(error) => {
-                return harness_error(case, elapsed, format!("invalid child telemetry: {error}"));
+                return CaseOutcome::harness_error(
+                    case,
+                    elapsed,
+                    format!("invalid child telemetry: {error}"),
+                );
             }
         };
         return classify_report(case, elapsed, report, telemetry);
     }
 
     let signal = exit_signal(status);
-    let stderr = stderr.trim();
     let telemetry = telemetry.ok().flatten();
     if stderr.contains("panicked at") {
-        return CaseOutcome {
-            case: case.into_record(),
-            total_elapsed: elapsed,
-            solver_elapsed: None,
-            category: OutcomeCategory::Panic,
-            queries: Vec::new(),
-            detail: Some(trim_detail(stderr).into()),
+        return CaseOutcome::new(
+            case,
+            elapsed,
+            OutcomeCategory::Panic,
+            Some(stderr.into()),
             telemetry,
-        };
+        );
     }
 
     if let Some(signal) = signal {
@@ -388,15 +394,13 @@ fn classify_child_completion(
         } else {
             format!("terminated by signal {signal}")
         };
-        return CaseOutcome {
-            case: case.into_record(),
-            total_elapsed: elapsed,
-            solver_elapsed: None,
-            category: OutcomeCategory::Killed,
-            queries: Vec::new(),
-            detail: Some(detail.into()),
+        return CaseOutcome::new(
+            case,
+            elapsed,
+            OutcomeCategory::Killed,
+            Some(detail.into_boxed_str()),
             telemetry,
-        };
+        );
     }
 
     let detail = match status.code() {
@@ -404,17 +408,18 @@ fn classify_child_completion(
             if stderr.is_empty() {
                 format!("child exited with status code {code}")
             } else {
-                format!(
-                    "child exited with status code {code}: {}",
-                    trim_detail(stderr)
-                )
+                format!("child exited with status code {code}: {stderr}")
             }
         }
         None => "child exited without status code".to_string(),
     };
-    let mut outcome = harness_error(case, elapsed, detail);
-    outcome.telemetry = telemetry;
-    outcome
+    CaseOutcome::new(
+        case,
+        elapsed,
+        OutcomeCategory::HarnessError,
+        Some(detail.into_boxed_str()),
+        telemetry,
+    )
 }
 
 /// Maps a structured child report onto the final parent outcome categories.
@@ -424,19 +429,19 @@ fn classify_report(
     report: ChildReport,
     telemetry: Option<CaseTelemetry>,
 ) -> CaseOutcome {
-    match report.kind {
-        ChildReportKind::Completed(run) => classify_completed_run(case, elapsed, run, telemetry),
-        ChildReportKind::ParseError(error) => CaseOutcome {
-            case: case.into_record(),
-            total_elapsed: elapsed,
-            solver_elapsed: None,
-            category: OutcomeCategory::ParseError,
-            queries: Vec::new(),
-            detail: Some(trim_detail(&error).into()),
+    match report {
+        ChildReport::Completed {
+            actual: actual_answers,
+        } => classify_completed_run(case, elapsed, actual_answers, telemetry),
+        ChildReport::ParseError(error) => CaseOutcome::new(
+            case,
+            elapsed,
+            OutcomeCategory::ParseError,
+            Some(error.into()),
             telemetry,
-        },
-        ChildReportKind::InputError(error) | ChildReportKind::ProtocolError(error) => {
-            harness_error(case, elapsed, error)
+        ),
+        ChildReport::InputError(error) | ChildReport::ProtocolError(error) => {
+            CaseOutcome::harness_error(case, elapsed, error)
         }
     }
 }
@@ -445,128 +450,55 @@ fn classify_report(
 fn classify_completed_run(
     case: DiscoveredCase,
     elapsed: Duration,
-    run: crate::model::CompletedQueryRun,
+    actual_answers: Vec<QueryAnswer>,
     telemetry: Option<CaseTelemetry>,
 ) -> CaseOutcome {
-    let solver_elapsed = run.solver_elapsed;
-    let mut queries = Vec::new();
-    let mut wrong = false;
-    let mut no_oracle = false;
-    let mut first_wrong = None;
-
-    for (query_index, actual) in run.actual_answers.iter().copied().enumerate() {
-        let expected = case
-            .expected_queries()
-            .get(query_index)
-            .map(|query| query.expected)
-            .unwrap_or(QueryAnswer::Unknown);
-        let category = match expected {
-            QueryAnswer::Unknown => {
-                no_oracle = true;
-                OutcomeCategory::NoOracle
-            }
-            _ if expected == actual => OutcomeCategory::Pass,
-            _ => {
-                wrong = true;
-                first_wrong.get_or_insert((query_index, expected, actual));
-                OutcomeCategory::WrongAnswer
-            }
-        };
-        queries.push(QueryOutcome {
-            query_index,
-            expected,
-            actual,
-            elapsed: solver_elapsed,
-            category,
-        });
+    let expected_len = case.expected().len();
+    let actual_len = actual_answers.len();
+    if actual_len != expected_len {
+        return CaseOutcome::harness_error(
+            case,
+            elapsed,
+            format!(
+                "expected {} query answers from child, got {}",
+                expected_len, actual_len
+            ),
+        );
     }
 
-    let missing = case.expected_queries().len().saturating_sub(queries.len());
-    if missing > 0 {
-        wrong = true;
-        for query in case.expected_queries().iter().skip(queries.len()) {
-            let category = if query.expected == QueryAnswer::Unknown {
-                no_oracle = true;
-                OutcomeCategory::NoOracle
-            } else {
-                first_wrong.get_or_insert((
-                    query.query_index,
-                    query.expected,
-                    QueryAnswer::Unknown,
-                ));
-                OutcomeCategory::WrongAnswer
-            };
-            queries.push(QueryOutcome {
-                query_index: query.query_index,
-                expected: query.expected,
-                actual: QueryAnswer::Unknown,
-                elapsed: solver_elapsed,
-                category,
-            });
-        }
-    }
+    let expected = case.expected();
+    let first_wrong = expected
+        .iter()
+        .zip(&actual_answers)
+        .enumerate()
+        .find(|(_, (expected, actual))| **expected != QueryAnswer::Unknown && expected != actual);
+    let has_unknown = expected.contains(&QueryAnswer::Unknown);
 
-    let category = if wrong {
-        OutcomeCategory::WrongAnswer
-    } else if queries.is_empty() || no_oracle {
-        OutcomeCategory::NoOracle
+    let (category, detail) = if let Some((query_index, (expected, actual))) = first_wrong {
+        (
+            OutcomeCategory::WrongAnswer,
+            Some(
+                format!(
+                    "query {} expected {:?}, got {:?}",
+                    query_index + 1,
+                    expected,
+                    actual
+                )
+                .into_boxed_str(),
+            ),
+        )
+    } else if expected.is_empty() || has_unknown {
+        (OutcomeCategory::NoOracle, None)
     } else {
-        OutcomeCategory::Pass
+        (OutcomeCategory::Pass, None)
     };
 
-    let detail = if let Some((query_index, expected, actual)) = first_wrong {
-        Some(
-            format!(
-                "query {} expected {:?}, got {:?}",
-                query_index + 1,
-                expected,
-                actual
-            )
-            .into_boxed_str(),
-        )
-    } else if missing > 0 {
-        Some(
-            format!(
-                "expected {} queries, got {}",
-                case.expected_queries().len(),
-                run.actual_answers.len()
-            )
-            .into_boxed_str(),
-        )
-    } else {
-        None
-    };
-
-    CaseOutcome {
-        case: case.into_record(),
-        total_elapsed: elapsed,
-        solver_elapsed: Some(solver_elapsed),
-        category,
-        queries,
-        detail,
-        telemetry,
-    }
+    CaseOutcome::new(case, elapsed, category, detail, telemetry)
 }
 
-/// Creates one infrastructure error outcome.
-fn harness_error(case: DiscoveredCase, elapsed: Duration, detail: String) -> CaseOutcome {
-    CaseOutcome {
-        case: case.into_record(),
-        total_elapsed: elapsed,
-        solver_elapsed: None,
-        category: OutcomeCategory::HarnessError,
-        queries: Vec::new(),
-        detail: Some(detail.into()),
-        telemetry: None,
-    }
-}
-
-/// Loads one child telemetry file and optionally retains raw samples for saving.
+/// Loads one child telemetry file and keeps only its aggregate summary.
 #[cfg(feature = "telemetry")]
-fn load_case_telemetry(
-    path: Option<&Path>,
-    retain_samples: bool,
-) -> Result<Option<CaseTelemetry>, String> {
+fn load_case_telemetry(path: Option<&Path>) -> Result<Option<CaseTelemetry>, String> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -575,10 +507,7 @@ fn load_case_telemetry(
         return Ok(None);
     };
 
-    Ok(Some(CaseTelemetry {
-        summary,
-        samples: if retain_samples { samples } else { Vec::new() },
-    }))
+    Ok(Some(CaseTelemetry { summary }))
 }
 
 /// Reads one JSONL telemetry file emitted by the child process.
@@ -609,10 +538,7 @@ fn load_telemetry_samples(path: &Path) -> Result<Vec<Sample>, String> {
 
 /// Returns no telemetry when the feature is disabled for the harness build.
 #[cfg(not(feature = "telemetry"))]
-fn load_case_telemetry(
-    _path: Option<&Path>,
-    _retain_samples: bool,
-) -> Result<Option<CaseTelemetry>, String> {
+fn load_case_telemetry(_path: Option<&Path>) -> Result<Option<CaseTelemetry>, String> {
     Ok(None)
 }
 
@@ -624,6 +550,13 @@ fn write_summary_file(path: &Path, summary: &RunSummary) -> Result<(), String> {
         .map_err(|error| format!("failed to write run summary {}: {error}", path.display()))
 }
 
+/// Returns the terminating Unix signal for a child process, when available.
+fn exit_signal(status: ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+
+    status.signal()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -632,8 +565,8 @@ mod tests {
     use super::{classify_completed_run, should_print_outcome, write_summary_file};
     use crate::cli::OutputMode;
     use crate::model::{
-        CaseOutcome, CaseRecord, CompletedQueryRun, DiscoveredCase, ExpectedQueryResult,
-        OutcomeCategory, OutcomeStats, QueryAnswer, RunSummary,
+        CaseOutcome, ComparisonKey, DiscoveredCase, OutcomeCategory, OutcomeStats, QueryAnswer,
+        RunSummary,
     };
 
     /// Ensures the default live stream remains failure-only.
@@ -682,18 +615,11 @@ mod tests {
             roots: vec![PathBuf::from("test/fixture/sat")].into_boxed_slice(),
             jobs: 2,
             timeout: Duration::from_secs(30),
-            total_elapsed: Duration::from_millis(50),
+            elapsed: Duration::from_millis(50),
             cases: vec![CaseOutcome {
-                case: CaseRecord {
-                    key: "cases/example.cnf".into(),
-                    bytes: 12,
-                    logic: Some("QF_UF".into()),
-                    query_count: Some(1),
-                },
-                total_elapsed: Duration::from_millis(5),
-                solver_elapsed: None,
+                key: ComparisonKey::new("cases/example.cnf"),
+                elapsed: Duration::from_millis(5),
                 category: OutcomeCategory::Pass,
-                queries: Vec::new(),
                 detail: None,
                 telemetry: None,
             }],
@@ -710,44 +636,65 @@ mod tests {
                 .expect("parse summary");
         assert_eq!(round_trip.format_version, RunSummary::FORMAT_VERSION);
         assert_eq!(round_trip.cases.len(), 1);
-        assert_eq!(
-            round_trip.cases[0].case.comparison_key(),
-            "cases/example.cnf"
-        );
+        assert_eq!(round_trip.cases[0].key.as_str(), "cases/example.cnf");
     }
 
     /// Ensures unknown oracle entries classify as `NoOracle` instead of wrong answer.
     #[test]
     fn classify_completed_run_marks_unknown_expectations_as_no_oracle() {
-        let case = DiscoveredCase::new(
-            PathBuf::from("/tmp/case.smt2"),
-            CaseRecord {
-                key: "cases/example.smt2".into(),
-                bytes: 12,
-                logic: Some("QF_UF".into()),
-                query_count: Some(1),
-            },
-            vec![ExpectedQueryResult {
-                query_index: 0,
-                expected: QueryAnswer::Unknown,
-            }],
-        );
-
         let outcome = classify_completed_run(
-            case,
+            sample_case(&[QueryAnswer::Unknown]),
             Duration::from_millis(5),
-            CompletedQueryRun {
-                actual_answers: vec![QueryAnswer::Sat],
-                solver_elapsed: Duration::from_millis(3),
-            },
+            vec![QueryAnswer::Sat],
             None,
         );
 
         assert_eq!(outcome.category, OutcomeCategory::NoOracle);
-        assert_eq!(outcome.solver_elapsed, Some(Duration::from_millis(3)));
-        assert_eq!(outcome.queries.len(), 1);
-        assert_eq!(outcome.queries[0].elapsed, Duration::from_millis(3));
-        assert_eq!(outcome.queries[0].category, OutcomeCategory::NoOracle);
+        assert_eq!(outcome.elapsed, Duration::from_millis(5));
         assert!(outcome.detail.is_none());
+    }
+
+    /// Ensures wrong solver answers remain classified as wrong-answer outcomes.
+    #[test]
+    fn classify_completed_run_marks_wrong_answers_as_wrong() {
+        let outcome = classify_completed_run(
+            sample_case(&[QueryAnswer::Sat, QueryAnswer::Unsat]),
+            Duration::from_millis(5),
+            vec![QueryAnswer::Sat, QueryAnswer::Sat],
+            None,
+        );
+
+        assert_eq!(outcome.category, OutcomeCategory::WrongAnswer);
+        assert_eq!(
+            outcome.detail.as_deref(),
+            Some("query 2 expected Unsat, got Sat")
+        );
+    }
+
+    /// Ensures completed child reports must satisfy the answer-count contract.
+    #[test]
+    fn classify_completed_run_rejects_answer_count_mismatch() {
+        let outcome = classify_completed_run(
+            sample_case(&[QueryAnswer::Sat]),
+            Duration::from_millis(5),
+            vec![QueryAnswer::Sat, QueryAnswer::Unsat],
+            None,
+        );
+
+        assert_eq!(outcome.category, OutcomeCategory::HarnessError);
+        assert_eq!(
+            outcome.detail.as_deref(),
+            Some("expected 1 query answers from child, got 2")
+        );
+    }
+
+    /// Builds one discovered-case fixture with the requested query expectations.
+    fn sample_case(expected: &[QueryAnswer]) -> DiscoveredCase {
+        DiscoveredCase::new(
+            PathBuf::from("/tmp/case.smt2"),
+            12,
+            ComparisonKey::new("cases/example.smt2"),
+            expected.to_vec(),
+        )
     }
 }
