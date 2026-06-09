@@ -28,7 +28,7 @@ use crate::render::{
     PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_outcome, print_summary,
     print_written_summary, progress_message,
 };
-use crate::util::{exit_signal, trim_detail};
+use crate::util::trim_detail;
 
 /// Executes the top-level parent harness flow.
 pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
@@ -553,6 +553,13 @@ fn write_summary_file(path: &Path, summary: &RunSummary) -> Result<(), String> {
         .map_err(|error| format!("failed to serialize run summary: {error}"))?;
     fs::write(path, payload)
         .map_err(|error| format!("failed to write run summary {}: {error}", path.display()))
+}
+
+/// Returns the terminating Unix signal for a child process, when available.
+pub(crate) fn exit_signal(status: ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+
+    status.signal()
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use indicatif::{HumanCount, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use telemetry::Summary;
 
 use crate::model::{CaseOutcome, OutcomeCategory, OutcomeStats};
-use crate::util::format_compact_duration;
+use crate::util::format_duration;
 
 /// The interactive refresh cadence used while waiting for the next completed case.
 pub(crate) const PROGRESS_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
@@ -74,7 +74,7 @@ pub(crate) fn progress_message(stats: &OutcomeStats, running: usize) -> String {
 pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let label = outcome.category.styled_label();
     let width = OutcomeCategory::LABEL_WIDTH;
-    let elapsed = format_compact_duration(outcome.elapsed);
+    let elapsed = format_duration(outcome.elapsed);
     let path = outcome.key.as_str();
 
     let detail = if let Some(detail) = outcome.detail.as_deref() {
@@ -132,7 +132,7 @@ pub(crate) fn print_summary(
     eprintln!(
         "{} in {} with {} workers, throughput: {:.1} cases/s",
         style("finished").cyan().bold(),
-        format_compact_duration(elapsed),
+        format_duration(elapsed),
         HumanCount(jobs as u64),
         throughput
     );

@@ -19,7 +19,7 @@ use crate::discover::discover_cases;
 use crate::model::{CaseOutcome, OutcomeCategory};
 use crate::parent::run_case_subprocess;
 use crate::render::format_outcome;
-use crate::util::format_compact_duration;
+use crate::util::format_duration;
 
 /// Runs one case repeatedly and prints an elapsed-time distribution.
 pub(crate) fn run_benchmark(args: BenchArgs) -> Result<BenchmarkSummary, String> {
@@ -214,7 +214,7 @@ fn print_summary(summary: &BenchmarkSummary) {
         HumanCount(measured as u64),
         HumanCount(successful as u64),
         HumanCount(summary.failures as u64),
-        format_compact_duration(summary.total_elapsed),
+        format_duration(summary.total_elapsed),
         throughput,
     );
 
@@ -226,14 +226,14 @@ fn print_summary(summary: &BenchmarkSummary) {
     eprintln!(
         "samples {} | min {} | p25 {} | median {} | p75 {} | p90 {} | p99 {} | max {} | mean {}",
         HumanCount(distribution.samples as u64),
-        format_compact_duration(distribution.min),
-        format_compact_duration(distribution.p25),
-        format_compact_duration(distribution.median),
-        format_compact_duration(distribution.p75),
-        format_compact_duration(distribution.p90),
-        format_compact_duration(distribution.p99),
-        format_compact_duration(distribution.max),
-        format_compact_duration(distribution.mean),
+        format_duration(distribution.min),
+        format_duration(distribution.p25),
+        format_duration(distribution.median),
+        format_duration(distribution.p75),
+        format_duration(distribution.p90),
+        format_duration(distribution.p99),
+        format_duration(distribution.max),
+        format_duration(distribution.mean),
     );
 }
 

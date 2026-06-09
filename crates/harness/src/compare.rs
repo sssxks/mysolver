@@ -9,7 +9,7 @@ use indicatif::HumanCount;
 
 use crate::cli::CompareArgs;
 use crate::model::{CaseOutcome, OutcomeCategory, RunSummary};
-use crate::util::format_compact_duration;
+use crate::util::format_duration;
 
 /// Loads two saved run summaries, prints a comparison, and returns whether they match.
 pub(crate) fn compare_saved_runs(args: CompareArgs) -> Result<bool, String> {
@@ -166,9 +166,9 @@ fn print_run_header(label: &str, summary: &RunSummary) {
         HumanCount(
             summary.stats.done as u64 - summary.stats.pass as u64 - summary.stats.no_oracle as u64
         ),
-        format_compact_duration(summary.elapsed),
+        format_duration(summary.elapsed),
         HumanCount(summary.jobs as u64),
-        format_compact_duration(summary.timeout),
+        format_duration(summary.timeout),
     );
 }
 
@@ -218,7 +218,7 @@ fn format_missing_case(outcome: &CaseOutcome) -> String {
     format!(
         "    {:<width$} {:>6} {}{detail}",
         outcome.category.styled_label(),
-        format_compact_duration(outcome.elapsed),
+        format_duration(outcome.elapsed),
         path,
         width = width,
     )
@@ -257,8 +257,8 @@ fn format_category_change(left: OutcomeCategory, right: OutcomeCategory) -> Stri
 
 /// Formats an elapsed-time change, omitting the arrow when both sides match.
 fn format_elapsed_change(left: std::time::Duration, right: std::time::Duration) -> String {
-    let left = format_compact_duration(left);
-    let right = format_compact_duration(right);
+    let left = format_duration(left);
+    let right = format_duration(right);
     if left == right {
         format!("{left:>6}")
     } else {
