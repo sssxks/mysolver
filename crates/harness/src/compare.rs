@@ -11,9 +11,6 @@ use crate::cli::CompareArgs;
 use crate::model::{CaseOutcome, OutcomeCategory, RunSummary};
 use crate::util::format_compact_duration;
 
-/// The maximum number of entries printed for any one difference section.
-const MAX_PRINTED_CASES_PER_SECTION: usize = 20;
-
 /// Loads two saved run summaries, prints a comparison, and returns whether they match.
 pub(crate) fn compare_saved_runs(args: CompareArgs) -> Result<bool, String> {
     let left = load_saved_run(&args.left)?;
@@ -202,30 +199,14 @@ fn print_case_section<T>(title: &str, entries: &[T], format_entry: fn(&T) -> Str
     }
 
     eprintln!();
-    if entries.len() > MAX_PRINTED_CASES_PER_SECTION {
-        eprintln!(
-            "{} {} (showing up to {})",
-            style(title).cyan().bold(),
-            HumanCount(entries.len() as u64),
-            MAX_PRINTED_CASES_PER_SECTION
-        );
-    } else {
-        eprintln!(
-            "{} {}",
-            style(title).cyan().bold(),
-            HumanCount(entries.len() as u64),
-        );
-    }
+    eprintln!(
+        "{} {}",
+        style(title).cyan().bold(),
+        HumanCount(entries.len() as u64),
+    );
 
-    for entry in entries.iter().take(MAX_PRINTED_CASES_PER_SECTION) {
+    for entry in entries {
         eprintln!("{}", format_entry(entry));
-    }
-
-    if entries.len() > MAX_PRINTED_CASES_PER_SECTION {
-        eprintln!(
-            "    ... {} more",
-            HumanCount((entries.len() - MAX_PRINTED_CASES_PER_SECTION) as u64)
-        );
     }
 }
 

@@ -37,7 +37,7 @@ pub(crate) enum HarnessCommand {
     Case(CaseArgs),
 }
 
-/// Arguments for the user-facing `benchmark` command.
+/// Arguments for the user-facing `bench` command.
 #[derive(Debug, Args)]
 pub(crate) struct BenchArgs {
     /// The case file to execute repeatedly.
@@ -189,12 +189,12 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Ensures the repeated single-case benchmark command is publicly parseable.
+    /// Ensures the repeated single-case bench command is publicly parseable.
     #[test]
-    fn benchmark_is_publicly_parseable() {
+    fn bench_is_publicly_parseable() {
         let cli = Cli::parse_from([
             "my-harness",
-            "benchmark",
+            "bench",
             "fixture/example.smt2",
             "--iterations",
             "7",
@@ -204,7 +204,7 @@ mod tests {
             "5s",
         ]);
         let HarnessCommand::Bench(args) = cli.command else {
-            panic!("expected benchmark command");
+            panic!("expected bench command");
         };
         assert_eq!(args.iterations.get(), 7);
         assert_eq!(args.warmup, 2);
