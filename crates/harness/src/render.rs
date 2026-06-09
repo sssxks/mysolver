@@ -74,8 +74,8 @@ pub(crate) fn progress_message(stats: &OutcomeStats, running: usize) -> String {
 pub(crate) fn format_outcome(outcome: &CaseOutcome) -> String {
     let label = outcome.category.styled_label();
     let width = OutcomeCategory::LABEL_WIDTH;
-    let elapsed = format_compact_duration(outcome.total_elapsed);
-    let path = outcome.case.comparison_key();
+    let elapsed = format_compact_duration(outcome.elapsed);
+    let path = outcome.key.as_str();
 
     let detail = if let Some(detail) = outcome.detail.as_deref() {
         format!(" :: {}", detail)
@@ -168,7 +168,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{format_outcome, progress_message};
-    use crate::model::{CaseOutcome, CaseRecord, CaseTelemetry, OutcomeCategory, OutcomeStats};
+    use crate::model::{CaseOutcome, CaseTelemetry, ComparisonKey, OutcomeCategory, OutcomeStats};
     use telemetry::{EufSummary, SatSummary, Summary};
 
     /// Ensures the live message exposes worker activity even before any case finishes.
@@ -200,10 +200,8 @@ mod tests {
     #[test]
     fn format_outcome_renders_successful_cases() {
         let outcome = CaseOutcome {
-            case: CaseRecord {
-                key: "fixture/example.cnf".into(),
-            },
-            total_elapsed: Duration::from_millis(42),
+            key: ComparisonKey::new("fixture/example.cnf"),
+            elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
             detail: None,
             telemetry: None,
@@ -219,10 +217,10 @@ mod tests {
     #[test]
     fn format_outcome_renders_complete_long_paths() {
         let outcome = CaseOutcome {
-            case: CaseRecord {
-                key: "cases/satlib/instance-group/very-long-case-name.cnf.gz".into(),
-            },
-            total_elapsed: Duration::from_millis(42),
+            key: ComparisonKey::new(
+                "cases/satlib/instance-group/very-long-case-name.cnf.gz",
+            ),
+            elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
             detail: None,
             telemetry: None,
@@ -236,10 +234,8 @@ mod tests {
     #[test]
     fn format_outcome_renders_telemetry_summary() {
         let outcome = CaseOutcome {
-            case: CaseRecord {
-                key: "fixture/example.cnf".into(),
-            },
-            total_elapsed: Duration::from_secs(1),
+            key: ComparisonKey::new("fixture/example.cnf"),
+            elapsed: Duration::from_secs(1),
             category: OutcomeCategory::Pass,
             detail: None,
             telemetry: Some(CaseTelemetry {

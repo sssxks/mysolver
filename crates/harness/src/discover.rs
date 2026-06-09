@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::case_io::read_case_text;
-use crate::model::{CaseRecord, DiscoveredCase, ExpectationRule, QueryAnswer};
+use crate::model::{ComparisonKey, DiscoveredCase, ExpectationRule, QueryAnswer};
 use walkdir::WalkDir;
 
 /// The hidden manifest file used to attach expected results to benchmark paths.
@@ -103,9 +103,7 @@ fn maybe_push_case(
     cases.push(DiscoveredCase::new(
         canonical,
         bytes,
-        CaseRecord {
-            key: display_path.clone().into_boxed_str(),
-        },
+        ComparisonKey::new(display_path.clone().into_boxed_str()),
         metadata.expected_answers,
     ));
     Ok(())

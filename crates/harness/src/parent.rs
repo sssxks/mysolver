@@ -134,14 +134,14 @@ pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
     let elapsed = started.elapsed();
     progress_bar.finish_and_clear();
     print_summary(&outcomes, &stats, elapsed, jobs);
-    outcomes.sort_by(|left, right| left.case.comparison_key().cmp(right.case.comparison_key()));
+    outcomes.sort_by(|left, right| left.key.as_str().cmp(right.key.as_str()));
 
     let summary = RunSummary {
         format_version: RunSummary::FORMAT_VERSION,
         roots: requested_roots.into_boxed_slice(),
         jobs,
         timeout,
-        total_elapsed: elapsed,
+        elapsed,
         cases: outcomes,
         stats,
     };
@@ -561,8 +561,8 @@ mod tests {
     use super::{classify_completed_run, should_print_outcome, write_summary_file};
     use crate::cli::OutputMode;
     use crate::model::{
-        CaseOutcome, CaseRecord, CompletedQueryRun, DiscoveredCase, OutcomeCategory, OutcomeStats,
-        QueryAnswer, RunSummary,
+        CaseOutcome, ComparisonKey, CompletedQueryRun, DiscoveredCase, OutcomeCategory,
+        OutcomeStats, QueryAnswer, RunSummary,
     };
 
     /// Ensures the default live stream remains failure-only.
@@ -611,12 +611,10 @@ mod tests {
             roots: vec![PathBuf::from("test/fixture/sat")].into_boxed_slice(),
             jobs: 2,
             timeout: Duration::from_secs(30),
-            total_elapsed: Duration::from_millis(50),
+            elapsed: Duration::from_millis(50),
             cases: vec![CaseOutcome {
-                case: CaseRecord {
-                    key: "cases/example.cnf".into(),
-                },
-                total_elapsed: Duration::from_millis(5),
+                key: ComparisonKey::new("cases/example.cnf"),
+                elapsed: Duration::from_millis(5),
                 category: OutcomeCategory::Pass,
                 detail: None,
                 telemetry: None,
@@ -634,10 +632,7 @@ mod tests {
                 .expect("parse summary");
         assert_eq!(round_trip.format_version, RunSummary::FORMAT_VERSION);
         assert_eq!(round_trip.cases.len(), 1);
-        assert_eq!(
-            round_trip.cases[0].case.comparison_key(),
-            "cases/example.cnf"
-        );
+        assert_eq!(round_trip.cases[0].key.as_str(), "cases/example.cnf");
     }
 
     /// Ensures unknown oracle entries classify as `NoOracle` instead of wrong answer.
@@ -653,7 +648,7 @@ mod tests {
         );
 
         assert_eq!(outcome.category, OutcomeCategory::NoOracle);
-        assert_eq!(outcome.total_elapsed, Duration::from_millis(5));
+        assert_eq!(outcome.elapsed, Duration::from_millis(5));
         assert!(outcome.detail.is_none());
     }
 
@@ -700,9 +695,7 @@ mod tests {
         DiscoveredCase::new(
             PathBuf::from("/tmp/case.smt2"),
             12,
-            CaseRecord {
-                key: "cases/example.smt2".into(),
-            },
+            ComparisonKey::new("cases/example.smt2"),
             expected.to_vec(),
         )
     }

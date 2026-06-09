@@ -85,10 +85,8 @@ impl RunComparison {
         }
 
         only_right.extend(right_cases.into_values());
-        only_left
-            .sort_by(|left, right| left.case.comparison_key().cmp(right.case.comparison_key()));
-        only_right
-            .sort_by(|left, right| left.case.comparison_key().cmp(right.case.comparison_key()));
+        only_left.sort_by(|left, right| left.key.as_str().cmp(right.key.as_str()));
+        only_right.sort_by(|left, right| left.key.as_str().cmp(right.key.as_str()));
         changed.sort_by(|left, right| left.key.cmp(&right.key));
 
         Self {
@@ -110,7 +108,7 @@ fn index_cases(cases: &[CaseOutcome]) -> BTreeMap<String, CaseOutcome> {
     cases
         .iter()
         .cloned()
-        .map(|case| (case.case.comparison_key().to_owned(), case))
+        .map(|case| (case.key.as_str().to_owned(), case))
         .collect()
 }
 
@@ -171,7 +169,7 @@ fn print_run_header(label: &str, summary: &RunSummary) {
         HumanCount(
             summary.stats.done as u64 - summary.stats.pass as u64 - summary.stats.no_oracle as u64
         ),
-        format_compact_duration(summary.total_elapsed),
+        format_compact_duration(summary.elapsed),
         HumanCount(summary.jobs as u64),
         format_compact_duration(summary.timeout),
     );
@@ -235,11 +233,11 @@ fn print_case_section<T>(title: &str, entries: &[T], format_entry: fn(&T) -> Str
 fn format_missing_case(outcome: &CaseOutcome) -> String {
     let width = OutcomeCategory::LABEL_WIDTH;
     let detail = format_case_detail(outcome.detail.as_deref());
-    let path = outcome.case.comparison_key();
+    let path = outcome.key.as_str();
     format!(
         "    {:<width$} {:>6} {}{detail}",
         outcome.category.styled_label(),
-        format_compact_duration(outcome.total_elapsed),
+        format_compact_duration(outcome.elapsed),
         path,
         width = width,
     )
@@ -248,7 +246,7 @@ fn format_missing_case(outcome: &CaseOutcome) -> String {
 /// Formats one changed case for terminal output.
 fn format_changed_case(change: &ChangedCase) -> String {
     let label = format_category_change(change.left.category, change.right.category);
-    let elapsed = format_elapsed_change(change.left.total_elapsed, change.right.total_elapsed);
+    let elapsed = format_elapsed_change(change.left.elapsed, change.right.elapsed);
     let detail = format_detail_change(
         change.left.detail.as_deref(),
         change.right.detail.as_deref(),
@@ -304,7 +302,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{RunComparison, format_changed_case, format_missing_case, outcomes_match};
-    use crate::model::{CaseOutcome, CaseRecord, OutcomeCategory, OutcomeStats, RunSummary};
+    use crate::model::{CaseOutcome, ComparisonKey, OutcomeCategory, OutcomeStats, RunSummary};
 
     /// Ensures saved-run comparisons ignore wall-clock runtime differences.
     #[test]
@@ -425,8 +423,8 @@ mod tests {
         detail: Option<&str>,
     ) -> CaseOutcome {
         CaseOutcome {
-            case: CaseRecord { key: key.into() },
-            total_elapsed: elapsed,
+            key: ComparisonKey::new(key),
+            elapsed,
             category,
             detail: detail.map(Into::into),
             telemetry: None,
@@ -444,7 +442,7 @@ mod tests {
             roots: vec![PathBuf::from("test/fixture/sat")].into_boxed_slice(),
             jobs: 1,
             timeout: Duration::from_secs(30),
-            total_elapsed: Duration::from_secs(3),
+            elapsed: Duration::from_secs(3),
             cases,
             stats,
         }

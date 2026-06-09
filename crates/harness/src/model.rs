@@ -42,16 +42,29 @@ pub(crate) struct ExpectationRule {
     pub(crate) expected: QueryAnswer,
 }
 
-/// The stable case metadata kept in saved harness result files.
+/// Stable manifest-relative key used when comparing saved harness results.
+///
+/// Semantically, a comparison key is one path key from the set of discovered benchmark cases.
+///
+/// # Encoding
+///
+/// The key is stored as the manifest-relative path string used by discovery. `ComparisonKey`
+/// carries no runtime-only case metadata, so saved-run comparison cannot accidentally depend on
+/// file size, query count, declared logic, or other data that is not part of the case identity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct CaseRecord {
+pub(crate) struct ComparisonKey {
     /// The stable manifest-relative key used when comparing saved runs.
-    pub(crate) key: Box<str>,
+    key: Box<str>,
 }
 
-impl CaseRecord {
+impl ComparisonKey {
+    /// Builds one stable comparison key.
+    pub(crate) fn new(key: impl Into<Box<str>>) -> Self {
+        Self { key: key.into() }
+    }
+
     /// Returns the stable key used when sorting or comparing saved runs.
-    pub(crate) fn comparison_key(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.key
     }
 }
@@ -63,8 +76,8 @@ pub(crate) struct DiscoveredCase {
     absolute_path: PathBuf,
     /// The file size in bytes used to sort long cases first.
     bytes: u64,
-    /// The stable case metadata that survives into saved result files.
-    record: CaseRecord,
+    /// The stable key that survives into saved result files.
+    key: ComparisonKey,
     /// Expected answers for each `check-sat`, in order.
     expected_answers: Vec<QueryAnswer>,
 }
@@ -74,13 +87,13 @@ impl DiscoveredCase {
     pub(crate) fn new(
         absolute_path: PathBuf,
         bytes: u64,
-        record: CaseRecord,
+        key: ComparisonKey,
         expected_answers: Vec<QueryAnswer>,
     ) -> Self {
         Self {
             absolute_path,
             bytes,
-            record,
+            key,
             expected_answers,
         }
     }
@@ -100,9 +113,9 @@ impl DiscoveredCase {
         &self.expected_answers
     }
 
-    /// Consumes the runtime case and returns the persistent case metadata.
-    pub(crate) fn into_record(self) -> CaseRecord {
-        self.record
+    /// Consumes the runtime case and returns the persistent comparison key.
+    pub(crate) fn into_key(self) -> ComparisonKey {
+        self.key
     }
 }
 
@@ -130,11 +143,11 @@ pub(crate) enum ChildReport {
 /// One completed case outcome received by the parent process.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct CaseOutcome {
-    /// The original benchmark metadata.
-    pub(crate) case: CaseRecord,
+    /// The stable key for the benchmark case.
+    pub(crate) key: ComparisonKey,
     /// The wall-clock runtime measured by the parent process.
     #[serde(with = "duration_serde")]
-    pub(crate) total_elapsed: Duration,
+    pub(crate) elapsed: Duration,
     /// The classified case-level result category.
     pub(crate) category: OutcomeCategory,
     /// An optional detail string for failures and summaries.
@@ -148,14 +161,14 @@ impl CaseOutcome {
     /// Builds an outcome for a case-level result.
     pub(crate) fn new(
         case: DiscoveredCase,
-        total_elapsed: Duration,
+        elapsed: Duration,
         category: OutcomeCategory,
         detail: Option<Box<str>>,
         telemetry: Option<CaseTelemetry>,
     ) -> Self {
         Self {
-            case: case.into_record(),
-            total_elapsed,
+            key: case.into_key(),
+            elapsed,
             category,
             detail,
             telemetry,
@@ -165,12 +178,12 @@ impl CaseOutcome {
     /// Builds one harness infrastructure error outcome.
     pub(crate) fn harness_error(
         case: DiscoveredCase,
-        total_elapsed: Duration,
+        elapsed: Duration,
         detail: impl Into<Box<str>>,
     ) -> Self {
         Self::new(
             case,
-            total_elapsed,
+            elapsed,
             OutcomeCategory::HarnessError,
             Some(detail.into()),
             None,
@@ -320,18 +333,19 @@ pub(crate) struct RunSummary {
     /// The configured per-case timeout.
     #[serde(with = "duration_serde")]
     pub(crate) timeout: Duration,
+
     /// The end-to-end wall-clock time for the full run.
     #[serde(with = "duration_serde")]
-    pub(crate) total_elapsed: Duration,
-    /// One saved outcome for each discovered case, sorted by comparison key.
-    pub(crate) cases: Vec<CaseOutcome>,
+    pub(crate) elapsed: Duration,
     /// The final counters for all outcomes.
     pub(crate) stats: OutcomeStats,
+    /// One saved outcome for each discovered case, sorted by comparison key.
+    pub(crate) cases: Vec<CaseOutcome>,
 }
 
 impl RunSummary {
     /// The current on-disk file format version.
-    pub(crate) const FORMAT_VERSION: u32 = 5;
+    pub(crate) const FORMAT_VERSION: u32 = 6;
 
     /// Returns the current on-disk file format version.
     const fn format_version() -> u32 {

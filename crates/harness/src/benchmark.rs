@@ -110,7 +110,7 @@ impl BenchmarkSummary {
         let mut timings = measured
             .iter()
             .filter(|outcome| is_measured_category(outcome.category))
-            .map(|outcome| outcome.total_elapsed)
+            .map(|outcome| outcome.elapsed)
             .collect::<Vec<_>>();
         let distribution = ElapsedDistribution::new(&mut timings);
 
