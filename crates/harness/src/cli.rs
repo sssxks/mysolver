@@ -27,7 +27,7 @@ pub(crate) enum HarnessCommand {
     /// Discover and execute benchmark cases.
     Run(RunArgs),
     /// Run one benchmark case repeatedly and report elapsed-time distribution.
-    Benchmark(BenchmarkArgs),
+    Bench(BenchmarkArgs),
     /// Compare two previously saved harness result files.
     Compare(CompareArgs),
     /// Run one benchmark case in an isolated process and emit raw artifacts.
@@ -203,7 +203,7 @@ mod tests {
             "--timeout",
             "5s",
         ]);
-        let HarnessCommand::Benchmark(args) = cli.command else {
+        let HarnessCommand::Bench(args) = cli.command else {
             panic!("expected benchmark command");
         };
         assert_eq!(args.iterations.get(), 7);
