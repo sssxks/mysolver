@@ -21,7 +21,7 @@ use crate::cli::{OutputMode, RunArgs};
 use crate::discover::discover_cases;
 use crate::jobs::default_jobs;
 use crate::model::{
-    CaseOutcome, CaseTelemetry, ChildReportKind, DiscoveredCase, OutcomeCategory, OutcomeStats,
+    CaseOutcome, CaseTelemetry, ChildReport, DiscoveredCase, OutcomeCategory, OutcomeStats,
     QueryAnswer, QueryOutcome, RunSummary,
 };
 use crate::render::{
@@ -370,7 +370,7 @@ fn classify_child_completion(
         let Some(report_text) = report_text else {
             return CaseOutcome::harness_error(case, elapsed, "missing child report".to_string());
         };
-        let report: ChildReportKind = match serde_json::from_str(report_text) {
+        let report: ChildReport = match serde_json::from_str(report_text) {
             Ok(report) => report,
             Err(error) => {
                 return CaseOutcome::harness_error(
@@ -447,19 +447,19 @@ fn classify_child_completion(
 fn classify_report(
     case: DiscoveredCase,
     elapsed: Duration,
-    report: ChildReportKind,
+    report: ChildReport,
     telemetry: Option<CaseTelemetry>,
 ) -> CaseOutcome {
     match report {
-        ChildReportKind::Completed(run) => classify_completed_run(case, elapsed, run, telemetry),
-        ChildReportKind::ParseError(error) => CaseOutcome::without_queries(
+        ChildReport::Completed(run) => classify_completed_run(case, elapsed, run, telemetry),
+        ChildReport::ParseError(error) => CaseOutcome::without_queries(
             case,
             elapsed,
             OutcomeCategory::ParseError,
             Some(trim_detail(&error).into()),
             telemetry,
         ),
-        ChildReportKind::InputError(error) | ChildReportKind::ProtocolError(error) => {
+        ChildReport::InputError(error) | ChildReport::ProtocolError(error) => {
             CaseOutcome::harness_error(case, elapsed, error)
         }
     }

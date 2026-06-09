@@ -132,7 +132,7 @@ pub(crate) struct CompletedQueryRun {
 /// All structured outcomes that can be reported by the child process.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "detail")]
-pub(crate) enum ChildReportKind {
+pub(crate) enum ChildReport {
     /// The solver completed the trace and returned one answer per query.
     Completed(CompletedQueryRun),
     /// The SMT-LIB input could not be parsed.
