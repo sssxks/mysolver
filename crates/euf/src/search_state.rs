@@ -84,9 +84,9 @@ pub struct MergeEdge {
     /// Right endpoint.
     rhs: Term,
     /// Previous adjacency-list head for the `lhs -> rhs` orientation.
-    next_lhs: DirectedMergeEdge,
+    next_lhs: DirectedEdge,
     /// Previous adjacency-list head for the `rhs -> lhs` orientation.
-    next_rhs: DirectedMergeEdge,
+    next_rhs: DirectedEdge,
     /// Justification for this equality edge.
     pub(crate) reason: MergeReason,
 }
@@ -104,7 +104,7 @@ impl MergeEdge {
 
     /// Returns the target endpoint for one directed orientation of this edge.
     #[inline(always)]
-    pub(crate) fn target(self, directed: DirectedMergeEdge) -> Term {
+    pub(crate) fn target(self, directed: DirectedEdge) -> Term {
         if directed.is_rhs_to_lhs() {
             return self.lhs;
         }
@@ -113,7 +113,7 @@ impl MergeEdge {
 
     /// Returns the next edge in the source endpoint adjacency list.
     #[inline(always)]
-    pub(crate) fn next(self, directed: DirectedMergeEdge) -> DirectedMergeEdge {
+    pub(crate) fn next(self, directed: DirectedEdge) -> DirectedEdge {
         if directed.is_rhs_to_lhs() {
             return self.next_rhs;
         }
@@ -132,9 +132,9 @@ impl MergeEdge {
 /// - `u32::MAX` is reserved as the null adjacency-list terminator.
 /// - Invariants: live raw handles are strictly smaller than `u32::MAX`.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub(crate) struct DirectedMergeEdge(u32);
+pub(crate) struct DirectedEdge(u32);
 
-impl DirectedMergeEdge {
+impl DirectedEdge {
     /// Sentinel for the end of one adjacency list.
     pub(crate) const NONE: Self = Self(u32::MAX);
 
@@ -185,7 +185,7 @@ impl DirectedMergeEdge {
     }
 }
 
-impl Default for DirectedMergeEdge {
+impl Default for DirectedEdge {
     fn default() -> Self {
         Self::NONE
     }
@@ -197,7 +197,7 @@ pub(crate) struct ExplainVisit {
     /// BFS epoch in which this record is live.
     pub(crate) epoch: u32,
     /// Incoming directed edge on the discovered BFS tree.
-    pub(crate) parent_edge: DirectedMergeEdge,
+    pub(crate) parent_edge: DirectedEdge,
 }
 
 /// One active disequality fact.
@@ -327,7 +327,7 @@ pub struct SearchState {
     /// Active equality-proof graph.
     pub(crate) edges: Vec<MergeEdge>,
     /// Per-term head of the directed equality-proof adjacency list.
-    pub(crate) graph_heads: Vec<DirectedMergeEdge>,
+    pub(crate) graph_heads: Vec<DirectedEdge>,
 
     /// Reusable visited records for equality explanation BFS.
     pub(crate) explain_visits: Vec<ExplainVisit>,
@@ -391,7 +391,7 @@ impl SearchState {
         self.disequality_incident_log.clear();
         self.edges.clear();
         self.graph_heads.clear();
-        self.graph_heads.resize(nterms, DirectedMergeEdge::NONE);
+        self.graph_heads.resize(nterms, DirectedEdge::NONE);
         self.explain_visits.clear();
         self.explain_epoch = 0;
         self.explain_queue.clear();
@@ -718,8 +718,8 @@ impl SearchState {
     #[inline(always)]
     pub(crate) fn push_merge_edge(&mut self, lhs: Term, rhs: Term, reason: MergeReason) {
         let edge_index = self.edges.len();
-        let lhs_directed = DirectedMergeEdge::lhs_to_rhs(edge_index);
-        let rhs_directed = DirectedMergeEdge::rhs_to_lhs(edge_index);
+        let lhs_directed = DirectedEdge::lhs_to_rhs(edge_index);
+        let rhs_directed = DirectedEdge::rhs_to_lhs(edge_index);
         let lhs_head = self.graph_heads[lhs.index()];
         let rhs_head = self.graph_heads[rhs.index()];
         self.edges.push(MergeEdge {
@@ -738,8 +738,8 @@ impl SearchState {
         while self.edges.len() > keep_len {
             let edge_index = self.edges.len() - 1;
             let edge = self.edges[edge_index];
-            let lhs_directed = DirectedMergeEdge::lhs_to_rhs(edge_index);
-            let rhs_directed = DirectedMergeEdge::rhs_to_lhs(edge_index);
+            let lhs_directed = DirectedEdge::lhs_to_rhs(edge_index);
+            let rhs_directed = DirectedEdge::rhs_to_lhs(edge_index);
             debug_assert_eq!(self.graph_heads[edge.lhs.index()], lhs_directed);
             debug_assert_eq!(self.graph_heads[edge.rhs.index()], rhs_directed);
 

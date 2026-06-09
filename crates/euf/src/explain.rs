@@ -3,7 +3,9 @@
 use sat::Literal;
 
 use crate::registry::Registry;
-use crate::search_state::{DirectedMergeEdge, DisequalityEntry, MergeReason, SearchState};
+use crate::search_state::{
+    DirectedEdge, DisequalityEntry, ExplainVisit, MergeEdge, MergeReason, SearchState,
+};
 use crate::types::Term;
 
 impl SearchState {
@@ -69,15 +71,15 @@ impl SearchState {
         registry: &Registry,
         lhs: Term,
         rhs: Term,
-    ) -> Option<Vec<crate::search_state::MergeEdge>> {
+    ) -> Option<Vec<MergeEdge>> {
         self.prepare_explanation_bfs(registry.num_terms());
 
         let epoch = self.explain_epoch;
         self.explain_queue.clear();
         self.explain_queue.push(lhs);
-        self.explain_visits[lhs.index()] = crate::search_state::ExplainVisit {
+        self.explain_visits[lhs.index()] = ExplainVisit {
             epoch,
-            parent_edge: DirectedMergeEdge::NONE,
+            parent_edge: DirectedEdge::NONE,
         };
 
         let mut qhead = 0;
@@ -91,7 +93,7 @@ impl SearchState {
                 let edge = self.edges[directed.edge_index()];
                 let next = edge.target(directed);
                 if self.explain_visits[next.index()].epoch != epoch {
-                    self.explain_visits[next.index()] = crate::search_state::ExplainVisit {
+                    self.explain_visits[next.index()] = ExplainVisit {
                         epoch,
                         parent_edge: directed,
                     };
@@ -128,9 +130,9 @@ impl SearchState {
     fn prepare_explanation_bfs(&mut self, num_terms: usize) {
         self.explain_visits.resize(
             num_terms,
-            crate::search_state::ExplainVisit {
+            ExplainVisit {
                 epoch: 0,
-                parent_edge: DirectedMergeEdge::NONE,
+                parent_edge: DirectedEdge::NONE,
             },
         );
 
