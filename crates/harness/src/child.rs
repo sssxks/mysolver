@@ -3,12 +3,12 @@
 use std::fs;
 
 use crate::case_io::read_case_text;
-use crate::cli::RunCaseArgs;
+use crate::cli::CaseArgs;
 use crate::discover::query_count;
 use crate::model::{ChildReport, QueryAnswer};
 
 /// Runs the isolated single-case entrypoint and writes the structured report.
-pub(crate) fn run_child(args: RunCaseArgs) -> Result<(), String> {
+pub(crate) fn run_child(args: CaseArgs) -> Result<(), String> {
     let report = match read_case_text(&args.case) {
         Ok(input) => solve_case_with_optional_telemetry(&input, &args)?,
         Err(error) => ChildReport::InputError(error),
@@ -25,10 +25,7 @@ pub(crate) fn run_child(args: RunCaseArgs) -> Result<(), String> {
 
 /// Solves one case, recording periodic telemetry samples when the feature is enabled.
 #[cfg(feature = "telemetry")]
-fn solve_case_with_optional_telemetry(
-    input: &str,
-    args: &RunCaseArgs,
-) -> Result<ChildReport, String> {
+fn solve_case_with_optional_telemetry(input: &str, args: &CaseArgs) -> Result<ChildReport, String> {
     let expected_queries = match expected_query_count(input, args) {
         Ok(count) => count,
         Err(error) => return Ok(ChildReport::ParseError(error)),
@@ -43,10 +40,7 @@ fn solve_case_with_optional_telemetry(
 
 /// Solves one case without compiling in telemetry instrumentation.
 #[cfg(not(feature = "telemetry"))]
-fn solve_case_with_optional_telemetry(
-    input: &str,
-    args: &RunCaseArgs,
-) -> Result<ChildReport, String> {
+fn solve_case_with_optional_telemetry(input: &str, args: &CaseArgs) -> Result<ChildReport, String> {
     let expected_queries = match expected_query_count(input, args) {
         Ok(count) => count,
         Err(error) => return Ok(ChildReport::ParseError(error)),
@@ -60,7 +54,7 @@ fn solve_case_with_optional_telemetry(
 }
 
 /// Returns the expected number of solver answers for one child run.
-fn expected_query_count(input: &str, args: &RunCaseArgs) -> Result<usize, String> {
+fn expected_query_count(input: &str, args: &CaseArgs) -> Result<usize, String> {
     match args.expected_query_count {
         Some(count) => Ok(count),
         None => query_count(input),

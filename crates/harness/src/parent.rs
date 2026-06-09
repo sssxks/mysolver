@@ -435,9 +435,9 @@ fn classify_report(
     telemetry: Option<CaseTelemetry>,
 ) -> CaseOutcome {
     match report {
-        ChildReport::Completed { actual: actual_answers } => {
-            classify_completed_run(case, elapsed, actual_answers, telemetry)
-        }
+        ChildReport::Completed {
+            actual: actual_answers,
+        } => classify_completed_run(case, elapsed, actual_answers, telemetry),
         ChildReport::ParseError(error) => CaseOutcome::new(
             case,
             elapsed,

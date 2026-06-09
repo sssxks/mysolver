@@ -28,19 +28,19 @@ pub(crate) enum HarnessCommand {
     Run(RunArgs),
     /// Run one benchmark case repeatedly and report elapsed-time distribution.
     #[command(alias = "benchmark")]
-    Bench(BenchmarkArgs),
+    Bench(BenchArgs),
     /// Compare two previously saved harness result files.
     Compare(CompareArgs),
     /// Run one benchmark case in an isolated process and emit raw artifacts.
     ///
     /// This command is primarily useful when inspecting the raw JSON report,
     /// telemetry stream, or an uncaptured Rust panic backtrace for one case.
-    Case(RunCaseArgs),
+    Case(CaseArgs),
 }
 
 /// Arguments for the user-facing `benchmark` command.
 #[derive(Debug, Args)]
-pub(crate) struct BenchmarkArgs {
+pub(crate) struct BenchArgs {
     /// The case file to execute repeatedly.
     pub(crate) case: PathBuf,
     /// The number of measured runs.
@@ -136,7 +136,7 @@ pub(crate) struct CompareArgs {
 
 /// Arguments for the isolated single-case execution entrypoint.
 #[derive(Debug, Args)]
-pub(crate) struct RunCaseArgs {
+pub(crate) struct CaseArgs {
     /// The case file to execute.
     pub(crate) case: PathBuf,
     /// The JSON report destination path.

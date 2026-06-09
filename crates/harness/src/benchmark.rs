@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use console::style;
 use indicatif::{HumanCount, HumanDuration};
 
-use crate::cli::BenchmarkArgs;
+use crate::cli::BenchArgs;
 use crate::discover::discover_cases;
 use crate::model::{CaseOutcome, OutcomeCategory};
 use crate::parent::run_case_subprocess;
@@ -22,7 +22,7 @@ use crate::render::format_outcome;
 use crate::util::format_compact_duration;
 
 /// Runs one case repeatedly and prints an elapsed-time distribution.
-pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, String> {
+pub(crate) fn run_benchmark(args: BenchArgs) -> Result<BenchmarkSummary, String> {
     let cases = discover_cases(std::slice::from_ref(&args.case))?;
     let [case] = cases.as_slice() else {
         return Err(format!(

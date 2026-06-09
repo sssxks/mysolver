@@ -75,15 +75,15 @@ fn maybe_push_case(
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned();
-    let default_expected = lookup_expectation(&display_path, &rules);
+    let rule_expected = lookup_expectation(&display_path, &rules);
     let input = read_case_text(&canonical)?;
-    let mut expected_answers = parse_expected_answers(&input)?;
-    if expected_answers.is_empty() {
-        if let Some(expected) = default_expected {
-            expected_answers.push(expected);
+    let mut answers = parse_expected_answers(&input)?;
+    if answers.is_empty() {
+        if let Some(expected) = rule_expected {
+            answers.push(expected);
         }
-    } else if let Some(expected) = default_expected {
-        for answer in &mut expected_answers {
+    } else if let Some(expected) = rule_expected {
+        for answer in &mut answers {
             if *answer == QueryAnswer::Unknown {
                 *answer = expected;
             }
@@ -97,7 +97,7 @@ fn maybe_push_case(
         canonical,
         bytes,
         ComparisonKey::new(display_path.clone().into_boxed_str()),
-        expected_answers,
+        answers,
     ));
     Ok(())
 }
@@ -165,13 +165,13 @@ fn lookup_expectation(display_path: &str, rules: &[ExpectationRule]) -> Option<Q
 fn parse_expected_answers(input: &str) -> Result<Vec<QueryAnswer>, String> {
     let mut expected_answers = Vec::new();
     let mut pending_status = None;
-    let mut scanner = ExpectedAnswerScanner::new(input);
+    let mut scanner = Scanner::new(input);
     let mut depth = 0usize;
     let mut command = None;
 
     while let Some(token) = scanner.next_token()? {
         match token {
-            ExpectedAnswerToken::OpenParen => {
+            Token::Open => {
                 depth += 1;
                 if depth == 1 {
                     command = Some(TopLevelCommand::default());
@@ -181,7 +181,7 @@ fn parse_expected_answers(input: &str) -> Result<Vec<QueryAnswer>, String> {
                     command.has_nested_child = true;
                 }
             }
-            ExpectedAnswerToken::CloseParen => {
+            Token::Close => {
                 let Some(next_depth) = depth.checked_sub(1) else {
                     return Err("unexpected `)`".to_owned());
                 };
@@ -192,7 +192,7 @@ fn parse_expected_answers(input: &str) -> Result<Vec<QueryAnswer>, String> {
                 }
                 depth = next_depth;
             }
-            ExpectedAnswerToken::Atom(atom) => {
+            Token::Atom(atom) => {
                 if depth == 1
                     && let Some(command) = command.as_mut()
                 {
@@ -214,11 +214,11 @@ pub(crate) fn query_count(input: &str) -> Result<usize, String> {
 
 /// One token relevant to expected-answer discovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ExpectedAnswerToken<'a> {
+enum Token<'a> {
     /// One opening parenthesis.
-    OpenParen,
+    Open,
     /// One closing parenthesis.
-    CloseParen,
+    Close,
     /// One atom token borrowed from the input.
     Atom(&'a str),
 }
@@ -234,14 +234,14 @@ struct TopLevelCommand<'a> {
 
 /// A lightweight token scanner for expected-answer discovery.
 #[derive(Debug)]
-struct ExpectedAnswerScanner<'a> {
+struct Scanner<'a> {
     /// The UTF-8 bytes of the input being scanned.
     input: &'a [u8],
     /// The next unread byte offset.
     index: usize,
 }
 
-impl<'a> ExpectedAnswerScanner<'a> {
+impl<'a> Scanner<'a> {
     /// Creates a new scanner over one SMT-LIB input string.
     fn new(input: &'a str) -> Self {
         Self {
@@ -251,7 +251,7 @@ impl<'a> ExpectedAnswerScanner<'a> {
     }
 
     /// Returns the next token, skipping whitespace and comments.
-    fn next_token(&mut self) -> Result<Option<ExpectedAnswerToken<'a>>, String> {
+    fn next_token(&mut self) -> Result<Option<Token<'a>>, String> {
         self.skip_layout();
         let Some(&byte) = self.input.get(self.index) else {
             return Ok(None);
@@ -259,11 +259,11 @@ impl<'a> ExpectedAnswerScanner<'a> {
         match byte {
             b'(' => {
                 self.index += 1;
-                Ok(Some(ExpectedAnswerToken::OpenParen))
+                Ok(Some(Token::Open))
             }
             b')' => {
                 self.index += 1;
-                Ok(Some(ExpectedAnswerToken::CloseParen))
+                Ok(Some(Token::Close))
             }
             b'"' => self.scan_quoted_string().map(Some),
             b'|' => self.scan_quoted_symbol().map(Some),
@@ -295,7 +295,7 @@ impl<'a> ExpectedAnswerScanner<'a> {
     }
 
     /// Scans one SMT-LIB quoted string, preserving the borrowed source slice.
-    fn scan_quoted_string(&mut self) -> Result<ExpectedAnswerToken<'a>, String> {
+    fn scan_quoted_string(&mut self) -> Result<Token<'a>, String> {
         let start = self.index;
         self.index += 1;
         while let Some(&byte) = self.input.get(self.index) {
@@ -312,7 +312,7 @@ impl<'a> ExpectedAnswerScanner<'a> {
     }
 
     /// Scans one SMT-LIB quoted symbol, preserving the borrowed source slice.
-    fn scan_quoted_symbol(&mut self) -> Result<ExpectedAnswerToken<'a>, String> {
+    fn scan_quoted_symbol(&mut self) -> Result<Token<'a>, String> {
         let start = self.index;
         self.index += 1;
         while let Some(&byte) = self.input.get(self.index) {
@@ -331,7 +331,7 @@ impl<'a> ExpectedAnswerScanner<'a> {
     }
 
     /// Scans one non-quoted atom token.
-    fn scan_bare_atom(&mut self) -> Result<ExpectedAnswerToken<'a>, String> {
+    fn scan_bare_atom(&mut self) -> Result<Token<'a>, String> {
         let start = self.index;
         while let Some(&byte) = self.input.get(self.index) {
             if byte.is_ascii_whitespace() || matches!(byte, b'(' | b')' | b';') {
@@ -343,18 +343,18 @@ impl<'a> ExpectedAnswerScanner<'a> {
     }
 
     /// Converts one byte range back into a borrowed UTF-8 atom token.
-    fn atom_from_range(&self, start: usize, end: usize) -> Result<ExpectedAnswerToken<'a>, String> {
+    fn atom_from_range(&self, start: usize, end: usize) -> Result<Token<'a>, String> {
         let atom = std::str::from_utf8(&self.input[start..end]).map_err(|error| {
             format!("invalid utf-8 in expected-answer token at byte {start}: {error}")
         })?;
-        Ok(ExpectedAnswerToken::Atom(atom))
+        Ok(Token::Atom(atom))
     }
 }
 
 /// Applies one fully scanned top-level command to the running expected-answer state.
 fn apply_top_level_command(
     command: TopLevelCommand<'_>,
-    expected_answers: &mut Vec<QueryAnswer>,
+    expected: &mut Vec<QueryAnswer>,
     pending_status: &mut Option<QueryAnswer>,
 ) -> Result<(), String> {
     if command.has_nested_child {
@@ -365,7 +365,7 @@ fn apply_top_level_command(
             *pending_status = Some(QueryAnswer::parse(value)?);
         }
         ["check-sat"] => {
-            expected_answers.push(pending_status.take().unwrap_or(QueryAnswer::Unknown));
+            expected.push(pending_status.take().unwrap_or(QueryAnswer::Unknown));
         }
         _ => {}
     }

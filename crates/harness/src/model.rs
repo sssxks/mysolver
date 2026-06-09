@@ -141,16 +141,17 @@ pub(crate) enum ChildReport {
 pub(crate) struct CaseOutcome {
     /// The stable key for the benchmark case.
     pub(crate) key: ComparisonKey,
+
+    /// The classified case-level result category.
+    pub(crate) category: OutcomeCategory,
     /// The wall-clock runtime measured by the parent process.
     #[serde(with = "duration_serde")]
     pub(crate) elapsed: Duration,
-    /// The classified case-level result category.
-    pub(crate) category: OutcomeCategory,
-    /// An optional detail string for failures and summaries.
-    pub(crate) detail: Option<Box<str>>,
-    /// Optional solver telemetry aggregated from periodic samples.
+    /// Solver telemetry aggregated from periodic samples.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) telemetry: Option<CaseTelemetry>,
+    /// Detail string for failures and summaries.
+    pub(crate) detail: Option<Box<str>>,
 }
 
 impl CaseOutcome {
