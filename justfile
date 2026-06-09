@@ -2,10 +2,6 @@
 
 set no-exit-message := true
 
-# Runs the harness with shared flags.
-harness-run *args="":
-    @cargo run -p harness --release -q -- run {{ args }}
-
 # Fetches SAT benchmarks.
 sat-bench-fetch *args="":
     @./scripts/fetch_sat_benchmarks.py {{ args }}
@@ -14,12 +10,28 @@ sat-bench-fetch *args="":
 smt-bench-fetch *args="":
     @./scripts/fetch_smt_benchmarks.py {{ args }}
 
-# Tests and benchmarks our SAT solver, default to hard subset.
-bench *extra:\
-  (sat-bench-fetch "--quiet") \
-  (harness-run extra)
+# Runs the harness with shared flags.
+harness subcommand *args="":
+    @cargo run -p harness --release -q -- {{ subcommand }} {{ args }}
 
-# recipe for perf recording. e.g. run with `just bench`, `timeout ...`, `cargo run ...`.
+# Tests and benchmarks our SAT solver, default to hard subset.
+run *extra:\
+  (smt-bench-fetch "--quiet") \
+  (harness "run" extra)
+
+bench *extra:\
+  (smt-bench-fetch "--quiet") \
+  (harness "bench" extra)
+
+case *extra:\
+  (smt-bench-fetch "--quiet") \
+  (harness "case" extra)
+
+compare *extra:\
+  (smt-bench-fetch "--quiet") \
+  (harness "compare" extra)
+
+# recipe for perf recording. e.g. run with `just bench`, `timeout ...`, `cargo run ...`, etc.
 perf *args="":
     samply record --unstable-presymbolicate -- {{ args }}
 
