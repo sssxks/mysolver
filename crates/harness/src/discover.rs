@@ -13,13 +13,6 @@ use walkdir::WalkDir;
 /// The hidden manifest file used to attach expected results to benchmark paths.
 const EXPECTATIONS_FILE: &str = "expectations.tsv";
 
-/// One metadata summary extracted from one SMT-LIB trace.
-#[derive(Debug, Default)]
-struct TraceMetadata {
-    /// Expected results attached to `check-sat` commands.
-    expected_answers: Vec<QueryAnswer>,
-}
-
 /// Discovers all supported benchmark files under the provided roots.
 pub(crate) fn discover_cases(roots: &[PathBuf]) -> Result<Vec<DiscoveredCase>, String> {
     let mut manifest_cache = BTreeMap::<PathBuf, Arc<Vec<ExpectationRule>>>::new();
@@ -84,13 +77,13 @@ fn maybe_push_case(
         .into_owned();
     let default_expected = lookup_expectation(&display_path, &rules);
     let input = read_case_text(&canonical)?;
-    let mut metadata = parse_trace_metadata(&input)?;
-    if metadata.expected_answers.is_empty() {
+    let mut expected_answers = parse_expected_answers(&input)?;
+    if expected_answers.is_empty() {
         if let Some(expected) = default_expected {
-            metadata.expected_answers.push(expected);
+            expected_answers.push(expected);
         }
     } else if let Some(expected) = default_expected {
-        for answer in &mut metadata.expected_answers {
+        for answer in &mut expected_answers {
             if *answer == QueryAnswer::Unknown {
                 *answer = expected;
             }
@@ -104,7 +97,7 @@ fn maybe_push_case(
         canonical,
         bytes,
         ComparisonKey::new(display_path.clone().into_boxed_str()),
-        metadata.expected_answers,
+        expected_answers,
     ));
     Ok(())
 }
@@ -168,17 +161,17 @@ fn lookup_expectation(display_path: &str, rules: &[ExpectationRule]) -> Option<Q
     None
 }
 
-/// Extracts expected query answers from one SMT-LIB trace.
-fn parse_trace_metadata(input: &str) -> Result<TraceMetadata, String> {
-    let mut metadata = TraceMetadata::default();
+/// Extracts expected answers for each top-level `check-sat` command in one SMT-LIB trace.
+fn parse_expected_answers(input: &str) -> Result<Vec<QueryAnswer>, String> {
+    let mut expected_answers = Vec::new();
     let mut pending_status = None;
-    let mut scanner = MetadataScanner::new(input);
+    let mut scanner = ExpectedAnswerScanner::new(input);
     let mut depth = 0usize;
     let mut command = None;
 
     while let Some(token) = scanner.next_token()? {
         match token {
-            MetadataToken::OpenParen => {
+            ExpectedAnswerToken::OpenParen => {
                 depth += 1;
                 if depth == 1 {
                     command = Some(TopLevelCommand::default());
@@ -188,18 +181,18 @@ fn parse_trace_metadata(input: &str) -> Result<TraceMetadata, String> {
                     command.has_nested_child = true;
                 }
             }
-            MetadataToken::CloseParen => {
+            ExpectedAnswerToken::CloseParen => {
                 let Some(next_depth) = depth.checked_sub(1) else {
                     return Err("unexpected `)`".to_owned());
                 };
                 if depth == 1
                     && let Some(command) = command.take()
                 {
-                    apply_top_level_command(command, &mut metadata, &mut pending_status)?;
+                    apply_top_level_command(command, &mut expected_answers, &mut pending_status)?;
                 }
                 depth = next_depth;
             }
-            MetadataToken::Atom(atom) => {
+            ExpectedAnswerToken::Atom(atom) => {
                 if depth == 1
                     && let Some(command) = command.as_mut()
                 {
@@ -211,17 +204,17 @@ fn parse_trace_metadata(input: &str) -> Result<TraceMetadata, String> {
     if depth != 0 {
         return Err("missing closing `)`".to_owned());
     }
-    Ok(metadata)
+    Ok(expected_answers)
 }
 
 /// Counts `check-sat` queries in one SMT-LIB trace without re-reading the file.
 pub(crate) fn query_count(input: &str) -> Result<usize, String> {
-    parse_trace_metadata(input).map(|metadata| metadata.expected_answers.len())
+    parse_expected_answers(input).map(|expected_answers| expected_answers.len())
 }
 
-/// One token relevant to the metadata scanner.
+/// One token relevant to expected-answer discovery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MetadataToken<'a> {
+enum ExpectedAnswerToken<'a> {
     /// One opening parenthesis.
     OpenParen,
     /// One closing parenthesis.
@@ -239,16 +232,16 @@ struct TopLevelCommand<'a> {
     has_nested_child: bool,
 }
 
-/// A lightweight token scanner that borrows atoms from the original input.
+/// A lightweight token scanner for expected-answer discovery.
 #[derive(Debug)]
-struct MetadataScanner<'a> {
+struct ExpectedAnswerScanner<'a> {
     /// The UTF-8 bytes of the input being scanned.
     input: &'a [u8],
     /// The next unread byte offset.
     index: usize,
 }
 
-impl<'a> MetadataScanner<'a> {
+impl<'a> ExpectedAnswerScanner<'a> {
     /// Creates a new scanner over one SMT-LIB input string.
     fn new(input: &'a str) -> Self {
         Self {
@@ -258,7 +251,7 @@ impl<'a> MetadataScanner<'a> {
     }
 
     /// Returns the next token, skipping whitespace and comments.
-    fn next_token(&mut self) -> Result<Option<MetadataToken<'a>>, String> {
+    fn next_token(&mut self) -> Result<Option<ExpectedAnswerToken<'a>>, String> {
         self.skip_layout();
         let Some(&byte) = self.input.get(self.index) else {
             return Ok(None);
@@ -266,11 +259,11 @@ impl<'a> MetadataScanner<'a> {
         match byte {
             b'(' => {
                 self.index += 1;
-                Ok(Some(MetadataToken::OpenParen))
+                Ok(Some(ExpectedAnswerToken::OpenParen))
             }
             b')' => {
                 self.index += 1;
-                Ok(Some(MetadataToken::CloseParen))
+                Ok(Some(ExpectedAnswerToken::CloseParen))
             }
             b'"' => self.scan_quoted_string().map(Some),
             b'|' => self.scan_quoted_symbol().map(Some),
@@ -302,7 +295,7 @@ impl<'a> MetadataScanner<'a> {
     }
 
     /// Scans one SMT-LIB quoted string, preserving the borrowed source slice.
-    fn scan_quoted_string(&mut self) -> Result<MetadataToken<'a>, String> {
+    fn scan_quoted_string(&mut self) -> Result<ExpectedAnswerToken<'a>, String> {
         let start = self.index;
         self.index += 1;
         while let Some(&byte) = self.input.get(self.index) {
@@ -319,7 +312,7 @@ impl<'a> MetadataScanner<'a> {
     }
 
     /// Scans one SMT-LIB quoted symbol, preserving the borrowed source slice.
-    fn scan_quoted_symbol(&mut self) -> Result<MetadataToken<'a>, String> {
+    fn scan_quoted_symbol(&mut self) -> Result<ExpectedAnswerToken<'a>, String> {
         let start = self.index;
         self.index += 1;
         while let Some(&byte) = self.input.get(self.index) {
@@ -338,7 +331,7 @@ impl<'a> MetadataScanner<'a> {
     }
 
     /// Scans one non-quoted atom token.
-    fn scan_bare_atom(&mut self) -> Result<MetadataToken<'a>, String> {
+    fn scan_bare_atom(&mut self) -> Result<ExpectedAnswerToken<'a>, String> {
         let start = self.index;
         while let Some(&byte) = self.input.get(self.index) {
             if byte.is_ascii_whitespace() || matches!(byte, b'(' | b')' | b';') {
@@ -350,18 +343,18 @@ impl<'a> MetadataScanner<'a> {
     }
 
     /// Converts one byte range back into a borrowed UTF-8 atom token.
-    fn atom_from_range(&self, start: usize, end: usize) -> Result<MetadataToken<'a>, String> {
+    fn atom_from_range(&self, start: usize, end: usize) -> Result<ExpectedAnswerToken<'a>, String> {
         let atom = std::str::from_utf8(&self.input[start..end]).map_err(|error| {
-            format!("invalid utf-8 in trace metadata token at byte {start}: {error}")
+            format!("invalid utf-8 in expected-answer token at byte {start}: {error}")
         })?;
-        Ok(MetadataToken::Atom(atom))
+        Ok(ExpectedAnswerToken::Atom(atom))
     }
 }
 
-/// Applies one fully scanned top-level command to the running metadata state.
+/// Applies one fully scanned top-level command to the running expected-answer state.
 fn apply_top_level_command(
     command: TopLevelCommand<'_>,
-    metadata: &mut TraceMetadata,
+    expected_answers: &mut Vec<QueryAnswer>,
     pending_status: &mut Option<QueryAnswer>,
 ) -> Result<(), String> {
     if command.has_nested_child {
@@ -372,9 +365,7 @@ fn apply_top_level_command(
             *pending_status = Some(QueryAnswer::parse(value)?);
         }
         ["check-sat"] => {
-            metadata
-                .expected_answers
-                .push(pending_status.take().unwrap_or(QueryAnswer::Unknown));
+            expected_answers.push(pending_status.take().unwrap_or(QueryAnswer::Unknown));
         }
         _ => {}
     }
@@ -383,13 +374,13 @@ fn apply_top_level_command(
 
 #[cfg(test)]
 mod tests {
-    use super::{TraceMetadata, parse_trace_metadata, query_count};
+    use super::{parse_expected_answers, query_count};
     use crate::model::QueryAnswer;
 
-    /// Ensures metadata scanning stays driven by top-level commands only.
+    /// Ensures answer scanning stays driven by top-level commands only.
     #[test]
-    fn parse_trace_metadata_tracks_pending_status() {
-        let metadata = parse_trace_metadata(
+    fn parse_expected_answers_tracks_pending_status() {
+        let expected_answers = parse_expected_answers(
             r#"
             ; Ignore comments and nested check-sat text.
             (set-info :notes "quoted ; comment (check-sat)")
@@ -403,23 +394,23 @@ mod tests {
             (check-sat)
             "#,
         )
-        .expect("parse metadata");
+        .expect("parse answers");
         assert_eq!(
-            metadata.expected_answers.to_vec(),
+            expected_answers,
             vec![QueryAnswer::Sat, QueryAnswer::Unsat, QueryAnswer::Unknown]
         );
     }
 
     /// Ensures nested list children do not get mistaken for simple top-level forms.
     #[test]
-    fn parse_trace_metadata_ignores_non_flat_top_level_commands() {
-        let metadata =
-            parse_trace_metadata("(set-info (:status sat)) (check-sat)").expect("parse metadata");
-        assert_eq!(metadata.expected_answers.len(), 1);
-        assert_eq!(metadata.expected_answers[0], QueryAnswer::Unknown);
+    fn parse_expected_answers_ignores_non_flat_top_level_commands() {
+        let expected_answers =
+            parse_expected_answers("(set-info (:status sat)) (check-sat)").expect("parse answers");
+        assert_eq!(expected_answers.len(), 1);
+        assert_eq!(expected_answers[0], QueryAnswer::Unknown);
     }
 
-    /// Ensures query counting still reuses the metadata parser behavior.
+    /// Ensures query counting still reuses the expected-answer parser behavior.
     #[test]
     fn query_count_counts_each_top_level_check_sat() {
         let count =
@@ -429,20 +420,16 @@ mod tests {
 
     /// Ensures malformed inputs still fail fast instead of silently undercounting.
     #[test]
-    fn parse_trace_metadata_rejects_unbalanced_or_unterminated_input() {
-        assert!(parse_trace_metadata("(check-sat").is_err());
-        assert!(parse_trace_metadata(r#"(set-info :notes "oops)"#).is_err());
-        assert!(parse_trace_metadata("(check-sat))").is_err());
+    fn parse_expected_answers_rejects_unbalanced_or_unterminated_input() {
+        assert!(parse_expected_answers("(check-sat").is_err());
+        assert!(parse_expected_answers(r#"(set-info :notes "oops)"#).is_err());
+        assert!(parse_expected_answers("(check-sat))").is_err());
     }
 
-    /// Keeps the parser return type referenced so missing-docs applies to the tests too.
+    /// Ensures irrelevant inputs produce no expected answers.
     #[test]
-    fn parse_trace_metadata_returns_default_for_irrelevant_input() {
-        let metadata = parse_trace_metadata("atom-only").expect("parse metadata");
-        assert_eq!(
-            metadata.expected_answers,
-            TraceMetadata::default().expected_answers
-        );
-        assert!(metadata.expected_answers.is_empty());
+    fn parse_expected_answers_returns_empty_for_irrelevant_input() {
+        let expected_answers = parse_expected_answers("atom-only").expect("parse answers");
+        assert!(expected_answers.is_empty());
     }
 }

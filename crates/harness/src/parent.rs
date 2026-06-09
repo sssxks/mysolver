@@ -240,7 +240,7 @@ pub(crate) fn run_case_subprocess(
         .arg("--report")
         .arg(report_file.path())
         .arg("--expected-query-count")
-        .arg(case.expected_answers().len().to_string());
+        .arg(case.expected().len().to_string());
     #[cfg(feature = "telemetry")]
     {
         let telemetry_path = telemetry_file
@@ -435,7 +435,9 @@ fn classify_report(
     telemetry: Option<CaseTelemetry>,
 ) -> CaseOutcome {
     match report {
-        ChildReport::Completed(run) => classify_completed_run(case, elapsed, run, telemetry),
+        ChildReport::Completed { actual: actual_answers } => {
+            classify_completed_run(case, elapsed, actual_answers, telemetry)
+        }
         ChildReport::ParseError(error) => CaseOutcome::new(
             case,
             elapsed,
@@ -453,11 +455,11 @@ fn classify_report(
 fn classify_completed_run(
     case: DiscoveredCase,
     elapsed: Duration,
-    run: crate::model::CompletedQueryRun,
+    actual_answers: Vec<QueryAnswer>,
     telemetry: Option<CaseTelemetry>,
 ) -> CaseOutcome {
-    let expected_len = case.expected_answers().len();
-    let actual_len = run.actual_answers.len();
+    let expected_len = case.expected().len();
+    let actual_len = actual_answers.len();
     if actual_len != expected_len {
         return CaseOutcome::harness_error(
             case,
@@ -469,10 +471,10 @@ fn classify_completed_run(
         );
     }
 
-    let expected = case.expected_answers();
+    let expected = case.expected();
     let first_wrong = expected
         .iter()
-        .zip(&run.actual_answers)
+        .zip(&actual_answers)
         .enumerate()
         .find(|(_, (expected, actual))| **expected != QueryAnswer::Unknown && expected != actual);
     let has_unknown = expected.contains(&QueryAnswer::Unknown);
@@ -561,8 +563,8 @@ mod tests {
     use super::{classify_completed_run, should_print_outcome, write_summary_file};
     use crate::cli::OutputMode;
     use crate::model::{
-        CaseOutcome, ComparisonKey, CompletedQueryRun, DiscoveredCase, OutcomeCategory,
-        OutcomeStats, QueryAnswer, RunSummary,
+        CaseOutcome, ComparisonKey, DiscoveredCase, OutcomeCategory, OutcomeStats, QueryAnswer,
+        RunSummary,
     };
 
     /// Ensures the default live stream remains failure-only.
@@ -641,9 +643,7 @@ mod tests {
         let outcome = classify_completed_run(
             sample_case(&[QueryAnswer::Unknown]),
             Duration::from_millis(5),
-            CompletedQueryRun {
-                actual_answers: vec![QueryAnswer::Sat],
-            },
+            vec![QueryAnswer::Sat],
             None,
         );
 
@@ -658,9 +658,7 @@ mod tests {
         let outcome = classify_completed_run(
             sample_case(&[QueryAnswer::Sat, QueryAnswer::Unsat]),
             Duration::from_millis(5),
-            CompletedQueryRun {
-                actual_answers: vec![QueryAnswer::Sat, QueryAnswer::Sat],
-            },
+            vec![QueryAnswer::Sat, QueryAnswer::Sat],
             None,
         );
 
@@ -677,9 +675,7 @@ mod tests {
         let outcome = classify_completed_run(
             sample_case(&[QueryAnswer::Sat]),
             Duration::from_millis(5),
-            CompletedQueryRun {
-                actual_answers: vec![QueryAnswer::Sat, QueryAnswer::Unsat],
-            },
+            vec![QueryAnswer::Sat, QueryAnswer::Unsat],
             None,
         );
 

@@ -5,7 +5,7 @@ use std::fs;
 use crate::case_io::read_case_text;
 use crate::cli::RunCaseArgs;
 use crate::discover::query_count;
-use crate::model::{ChildReport, CompletedQueryRun, QueryAnswer};
+use crate::model::{ChildReport, QueryAnswer};
 
 /// Runs the isolated single-case entrypoint and writes the structured report.
 pub(crate) fn run_child(args: RunCaseArgs) -> Result<(), String> {
@@ -69,7 +69,7 @@ fn expected_query_count(input: &str, args: &RunCaseArgs) -> Result<usize, String
 
 /// Parses solver output lines and validates the answer count.
 fn classify_output(output: String, expected_queries: usize) -> Result<ChildReport, String> {
-    let actual_answers = output
+    let answers = output
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| QueryAnswer::parse(line.trim()))
@@ -79,11 +79,11 @@ fn classify_output(output: String, expected_queries: usize) -> Result<ChildRepor
             ChildReport::ProtocolError(detail) => detail,
             _ => unreachable!(),
         })?;
-    if actual_answers.len() != expected_queries {
+    if answers.len() != expected_queries {
         return Ok(ChildReport::ProtocolError(format!(
             "expected {expected_queries} query answers from qfuf, got {}",
-            actual_answers.len()
+            answers.len()
         )));
     }
-    Ok(ChildReport::Completed(CompletedQueryRun { actual_answers }))
+    Ok(ChildReport::Completed { actual: answers })
 }

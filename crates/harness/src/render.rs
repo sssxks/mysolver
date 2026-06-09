@@ -217,9 +217,7 @@ mod tests {
     #[test]
     fn format_outcome_renders_complete_long_paths() {
         let outcome = CaseOutcome {
-            key: ComparisonKey::new(
-                "cases/satlib/instance-group/very-long-case-name.cnf.gz",
-            ),
+            key: ComparisonKey::new("cases/satlib/instance-group/very-long-case-name.cnf.gz"),
             elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
             detail: None,

@@ -79,7 +79,7 @@ pub(crate) struct DiscoveredCase {
     /// The stable key that survives into saved result files.
     key: ComparisonKey,
     /// Expected answers for each `check-sat`, in order.
-    expected_answers: Vec<QueryAnswer>,
+    expected: Vec<QueryAnswer>,
 }
 
 impl DiscoveredCase {
@@ -88,13 +88,13 @@ impl DiscoveredCase {
         absolute_path: PathBuf,
         bytes: u64,
         key: ComparisonKey,
-        expected_answers: Vec<QueryAnswer>,
+        expected: Vec<QueryAnswer>,
     ) -> Self {
         Self {
             absolute_path,
             bytes,
             key,
-            expected_answers,
+            expected,
         }
     }
 
@@ -109,8 +109,8 @@ impl DiscoveredCase {
     }
 
     /// Returns the expected answer sequence.
-    pub(crate) fn expected_answers(&self) -> &[QueryAnswer] {
-        &self.expected_answers
+    pub(crate) fn expected(&self) -> &[QueryAnswer] {
+        &self.expected
     }
 
     /// Consumes the runtime case and returns the persistent comparison key.
@@ -119,19 +119,15 @@ impl DiscoveredCase {
     }
 }
 
-/// One complete query sequence returned by the child process.
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct CompletedQueryRun {
-    /// Actual answers returned by the solver, in query order.
-    pub(crate) actual_answers: Vec<QueryAnswer>,
-}
-
 /// All structured outcomes that can be reported by the child process.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "detail")]
 pub(crate) enum ChildReport {
     /// The solver completed the trace and returned one answer per query.
-    Completed(CompletedQueryRun),
+    Completed {
+        /// Actual answers returned by the solver, in query order.
+        actual: Vec<QueryAnswer>,
+    },
     /// The SMT-LIB input could not be parsed.
     ParseError(String),
     /// The case file could not be loaded from disk.
