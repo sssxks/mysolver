@@ -473,28 +473,42 @@ fn classify_completed_run(
     telemetry: Option<CaseTelemetry>,
 ) -> CaseOutcome {
     let solver_elapsed = run.solver_elapsed;
-    let mut queries = Vec::new();
+    let actual_len = run.actual_answers.len();
+    let expected_len = case.expected_queries().len();
+    let mut queries = Vec::with_capacity(actual_len.max(expected_len));
     let mut wrong = false;
     let mut no_oracle = false;
     let mut first_wrong = None;
 
-    for (query_index, actual) in run.actual_answers.iter().copied().enumerate() {
+    for query_index in 0..actual_len.max(expected_len) {
         let expected = case
             .expected_queries()
             .get(query_index)
             .map(|query| query.expected)
             .unwrap_or(QueryAnswer::Unknown);
-        let category = match expected {
-            QueryAnswer::Unknown => {
+        let actual = run
+            .actual_answers
+            .get(query_index)
+            .copied()
+            .unwrap_or(QueryAnswer::Unknown);
+        let category = if query_index >= actual_len {
+            wrong = true;
+            if expected == QueryAnswer::Unknown {
                 no_oracle = true;
                 OutcomeCategory::NoOracle
-            }
-            _ if expected == actual => OutcomeCategory::Pass,
-            _ => {
-                wrong = true;
+            } else {
                 first_wrong.get_or_insert((query_index, expected, actual));
                 OutcomeCategory::WrongAnswer
             }
+        } else if expected == QueryAnswer::Unknown {
+            no_oracle = true;
+            OutcomeCategory::NoOracle
+        } else if expected == actual {
+            OutcomeCategory::Pass
+        } else {
+            wrong = true;
+            first_wrong.get_or_insert((query_index, expected, actual));
+            OutcomeCategory::WrongAnswer
         };
         queries.push(QueryOutcome {
             query_index,
@@ -505,31 +519,7 @@ fn classify_completed_run(
         });
     }
 
-    let missing = case.expected_queries().len().saturating_sub(queries.len());
-    if missing > 0 {
-        wrong = true;
-        for query in case.expected_queries().iter().skip(queries.len()) {
-            let category = if query.expected == QueryAnswer::Unknown {
-                no_oracle = true;
-                OutcomeCategory::NoOracle
-            } else {
-                first_wrong.get_or_insert((
-                    query.query_index,
-                    query.expected,
-                    QueryAnswer::Unknown,
-                ));
-                OutcomeCategory::WrongAnswer
-            };
-            queries.push(QueryOutcome {
-                query_index: query.query_index,
-                expected: query.expected,
-                actual: QueryAnswer::Unknown,
-                elapsed: solver_elapsed,
-                category,
-            });
-        }
-    }
-
+    let missing = expected_len.saturating_sub(actual_len);
     let category = if wrong {
         OutcomeCategory::WrongAnswer
     } else if queries.is_empty() || no_oracle {
@@ -549,14 +539,7 @@ fn classify_completed_run(
             .into_boxed_str(),
         )
     } else if missing > 0 {
-        Some(
-            format!(
-                "expected {} queries, got {}",
-                case.expected_queries().len(),
-                run.actual_answers.len()
-            )
-            .into_boxed_str(),
-        )
+        Some(format!("expected {} queries, got {}", expected_len, actual_len).into_boxed_str())
     } else {
         None
     };
@@ -730,22 +713,8 @@ mod tests {
     /// Ensures unknown oracle entries classify as `NoOracle` instead of wrong answer.
     #[test]
     fn classify_completed_run_marks_unknown_expectations_as_no_oracle() {
-        let case = DiscoveredCase::new(
-            PathBuf::from("/tmp/case.smt2"),
-            CaseRecord {
-                key: "cases/example.smt2".into(),
-                bytes: 12,
-                logic: Some("QF_UF".into()),
-                query_count: Some(1),
-            },
-            vec![ExpectedQueryResult {
-                query_index: 0,
-                expected: QueryAnswer::Unknown,
-            }],
-        );
-
         let outcome = classify_completed_run(
-            case,
+            sample_case(&[QueryAnswer::Unknown]),
             Duration::from_millis(5),
             CompletedQueryRun {
                 actual_answers: vec![QueryAnswer::Sat],
@@ -760,5 +729,74 @@ mod tests {
         assert_eq!(outcome.queries[0].elapsed, Duration::from_millis(3));
         assert_eq!(outcome.queries[0].category, OutcomeCategory::NoOracle);
         assert!(outcome.detail.is_none());
+    }
+
+    /// Ensures missing child answers remain classified as wrong-answer outcomes.
+    #[test]
+    fn classify_completed_run_marks_missing_answers_as_wrong() {
+        let outcome = classify_completed_run(
+            sample_case(&[QueryAnswer::Sat, QueryAnswer::Unsat]),
+            Duration::from_millis(5),
+            CompletedQueryRun {
+                actual_answers: vec![QueryAnswer::Sat],
+                solver_elapsed: Duration::from_millis(3),
+            },
+            None,
+        );
+
+        assert_eq!(outcome.category, OutcomeCategory::WrongAnswer);
+        assert_eq!(outcome.queries.len(), 2);
+        assert_eq!(outcome.queries[0].category, OutcomeCategory::Pass);
+        assert_eq!(outcome.queries[1].query_index, 1);
+        assert_eq!(outcome.queries[1].actual, QueryAnswer::Unknown);
+        assert_eq!(outcome.queries[1].category, OutcomeCategory::WrongAnswer);
+        assert_eq!(
+            outcome.detail.as_deref(),
+            Some("query 2 expected Unsat, got Unknown")
+        );
+    }
+
+    /// Ensures extra child answers keep the existing no-oracle fallback semantics.
+    #[test]
+    fn classify_completed_run_marks_extra_answers_as_no_oracle() {
+        let outcome = classify_completed_run(
+            sample_case(&[QueryAnswer::Sat]),
+            Duration::from_millis(5),
+            CompletedQueryRun {
+                actual_answers: vec![QueryAnswer::Sat, QueryAnswer::Unsat],
+                solver_elapsed: Duration::from_millis(3),
+            },
+            None,
+        );
+
+        assert_eq!(outcome.category, OutcomeCategory::NoOracle);
+        assert_eq!(outcome.queries.len(), 2);
+        assert_eq!(outcome.queries[0].category, OutcomeCategory::Pass);
+        assert_eq!(outcome.queries[1].expected, QueryAnswer::Unknown);
+        assert_eq!(outcome.queries[1].actual, QueryAnswer::Unsat);
+        assert_eq!(outcome.queries[1].category, OutcomeCategory::NoOracle);
+        assert!(outcome.detail.is_none());
+    }
+
+    /// Builds one discovered-case fixture with the requested query expectations.
+    fn sample_case(expected: &[QueryAnswer]) -> DiscoveredCase {
+        DiscoveredCase::new(
+            PathBuf::from("/tmp/case.smt2"),
+            CaseRecord {
+                key: "cases/example.smt2".into(),
+                bytes: 12,
+                logic: Some("QF_UF".into()),
+                query_count: Some(expected.len()),
+            },
+            expected
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(query_index, expected)| ExpectedQueryResult {
+                    query_index,
+                    expected,
+                })
+                .collect(),
+        )
     }
 }
