@@ -5,7 +5,7 @@
 //!
 //! | Operation | Frequency | Complexity | Data structure | Forbidden Impl |
 //! | - | - | - | - | - |
-//! | Record one run | Once per run | O(1) | `Vec<BenchmarkRun>` | Re-discover case each iteration |
+//! | Record one run | Once per run | O(1) | `Vec<CaseOutcome>` | Re-discover case each iteration |
 //! | Compute distribution | Once after all runs | O(n log n) | Sorted `Vec<Duration>` | Re-scan outcomes for every percentile |
 
 use std::env;
@@ -78,7 +78,7 @@ pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, Str
             HumanCount(args.iterations.get() as u64),
             format_outcome(&outcome).trim_start(),
         );
-        measured.push(BenchmarkRun { outcome });
+        measured.push(outcome);
     }
     let total_elapsed = started.elapsed();
 
@@ -87,18 +87,11 @@ pub(crate) fn run_benchmark(args: BenchmarkArgs) -> Result<BenchmarkSummary, Str
     Ok(summary)
 }
 
-/// One measured benchmark subprocess run.
-#[derive(Debug)]
-pub(crate) struct BenchmarkRun {
-    /// The classified subprocess outcome.
-    outcome: CaseOutcome,
-}
-
 /// Aggregate result for a repeated single-case benchmark.
 #[derive(Debug)]
 pub(crate) struct BenchmarkSummary {
     /// All measured subprocess runs.
-    measured: Vec<BenchmarkRun>,
+    measured: Vec<CaseOutcome>,
     /// Distribution over successful measured runs.
     distribution: Option<ElapsedDistribution>,
     /// The number of measured runs that failed classification.
@@ -109,15 +102,15 @@ pub(crate) struct BenchmarkSummary {
 
 impl BenchmarkSummary {
     /// Builds a summary from measured subprocess outcomes.
-    fn new(measured: Vec<BenchmarkRun>, total_elapsed: Duration) -> Self {
+    fn new(measured: Vec<CaseOutcome>, total_elapsed: Duration) -> Self {
         let failures = measured
             .iter()
-            .filter(|run| run.outcome.category.is_failure())
+            .filter(|outcome| outcome.category.is_failure())
             .count();
         let mut timings = measured
             .iter()
-            .filter(|run| is_measured_category(run.outcome.category))
-            .map(|run| run.outcome.displayed_elapsed())
+            .filter(|outcome| is_measured_category(outcome.category))
+            .map(CaseOutcome::displayed_elapsed)
             .collect::<Vec<_>>();
         let distribution = ElapsedDistribution::new(&mut timings);
 
