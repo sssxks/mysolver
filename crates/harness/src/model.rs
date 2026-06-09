@@ -114,7 +114,7 @@ impl DiscoveredCase {
     }
 
     /// Consumes the runtime case and returns the persistent comparison key.
-    pub(crate) fn into_key(self) -> ComparisonKey {
+    fn into_key(self) -> ComparisonKey {
         self.key
     }
 }

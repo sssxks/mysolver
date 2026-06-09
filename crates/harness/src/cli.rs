@@ -149,7 +149,7 @@ pub(crate) struct CaseArgs {
 }
 
 /// Parses a user-provided timeout string such as `30s` or `250ms`.
-pub(crate) fn parse_timeout(text: &str) -> Result<Duration, String> {
+fn parse_timeout(text: &str) -> Result<Duration, String> {
     humantime::parse_duration(text).map_err(|error| error.to_string())
 }
 

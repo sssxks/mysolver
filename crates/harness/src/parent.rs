@@ -551,7 +551,7 @@ fn write_summary_file(path: &Path, summary: &RunSummary) -> Result<(), String> {
 }
 
 /// Returns the terminating Unix signal for a child process, when available.
-pub(crate) fn exit_signal(status: ExitStatus) -> Option<i32> {
+fn exit_signal(status: ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;
 
     status.signal()
