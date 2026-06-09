@@ -2,17 +2,6 @@
 
 use std::time::Duration;
 
-/// Truncates long stderr and parser messages to a readable one-line detail.
-pub(crate) fn trim_detail(text: &str) -> String {
-    const LIMIT: usize = 160;
-    let compact = text.replace('\n', " ");
-    if compact.len() <= LIMIT {
-        compact
-    } else {
-        format!("{}...", &compact[..LIMIT])
-    }
-}
-
 /// Formats a duration using a short, benchmark-oriented representation.
 pub(crate) fn format_duration(duration: Duration) -> String {
     let seconds = duration.as_secs_f64();

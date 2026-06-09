@@ -1,5 +1,5 @@
 [package]
-name = "my-harness"
+name = "harness"
 version.workspace = true
 edition.workspace = true
 

@@ -28,7 +28,6 @@ use crate::render::{
     PROGRESS_HEARTBEAT_INTERVAL, build_progress_bar, format_outcome, print_summary,
     print_written_summary, progress_message,
 };
-use crate::util::trim_detail;
 
 /// Executes the top-level parent harness flow.
 pub(crate) fn run_parent(args: RunArgs) -> Result<RunSummary, String> {
@@ -378,14 +377,13 @@ fn classify_child_completion(
     }
 
     let signal = exit_signal(status);
-    let stderr = stderr.trim();
     let telemetry = telemetry.ok().flatten();
     if stderr.contains("panicked at") {
         return CaseOutcome::new(
             case,
             elapsed,
             OutcomeCategory::Panic,
-            Some(trim_detail(stderr).into()),
+            Some(stderr.into()),
             telemetry,
         );
     }
@@ -410,10 +408,7 @@ fn classify_child_completion(
             if stderr.is_empty() {
                 format!("child exited with status code {code}")
             } else {
-                format!(
-                    "child exited with status code {code}: {}",
-                    trim_detail(stderr)
-                )
+                format!("child exited with status code {code}: {stderr}")
             }
         }
         None => "child exited without status code".to_string(),
@@ -442,7 +437,7 @@ fn classify_report(
             case,
             elapsed,
             OutcomeCategory::ParseError,
-            Some(trim_detail(&error).into()),
+            Some(error.into()),
             telemetry,
         ),
         ChildReport::InputError(error) | ChildReport::ProtocolError(error) => {

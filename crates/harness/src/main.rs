@@ -2,5 +2,5 @@
 
 /// Runs the benchmark harness command line.
 fn main() -> std::process::ExitCode {
-    my_harness::main()
+    harness::main()
 }
