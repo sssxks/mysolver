@@ -251,7 +251,7 @@ fn format_missing_case(outcome: &CaseOutcome) -> String {
     format!(
         "    {:<width$} {:>6} {}{detail}",
         outcome.category.styled_label(),
-        format_compact_duration(outcome.total_elapsed),
+        format_compact_duration(outcome.displayed_elapsed()),
         path,
         width = width,
     )
@@ -260,7 +260,10 @@ fn format_missing_case(outcome: &CaseOutcome) -> String {
 /// Formats one changed case for terminal output.
 fn format_changed_case(change: &ChangedCase) -> String {
     let label = format_category_change(change.left.category, change.right.category);
-    let elapsed = format_elapsed_change(change.left.total_elapsed, change.right.total_elapsed);
+    let elapsed = format_elapsed_change(
+        change.left.displayed_elapsed(),
+        change.right.displayed_elapsed(),
+    );
     let detail = format_detail_change(
         change.left.detail.as_deref(),
         change.right.detail.as_deref(),
@@ -444,6 +447,7 @@ mod tests {
                 query_count: Some(1),
             },
             total_elapsed: elapsed,
+            solver_elapsed: None,
             category,
             queries: Vec::new(),
             detail: detail.map(Into::into),

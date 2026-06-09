@@ -15,6 +15,7 @@ use indicatif::{HumanCount, HumanDuration};
 #[cfg(feature = "telemetry")]
 use telemetry::{Sample, Summary};
 use tempfile::NamedTempFile;
+use wait_timeout::ChildExt;
 
 use crate::cli::{OutputMode, RunArgs};
 use crate::discover::discover_cases;
@@ -194,7 +195,7 @@ fn worker_loop(
 }
 
 /// Executes one case in a fresh child process and classifies its outcome.
-fn run_case_subprocess(
+pub(crate) fn run_case_subprocess(
     current_exe: &Path,
     case: DiscoveredCase,
     timeout: Duration,
@@ -259,31 +260,21 @@ fn run_case_subprocess(
         }
     };
 
-    let mut timed_out = false;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    timed_out = true;
-                    let _ = child.kill();
-                    match child.wait() {
-                        Ok(status) => break status,
-                        Err(error) => {
-                            return harness_error(
-                                case,
-                                started.elapsed(),
-                                format!("failed to wait after timeout: {error}"),
-                            );
-                        }
-                    }
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
+    let remaining_timeout = timeout.saturating_sub(started.elapsed());
+    let (timed_out, status) = if remaining_timeout.is_zero() {
+        (true, kill_timed_out_child(&mut child, &case, started))
+    } else {
+        match child.wait_timeout(remaining_timeout) {
+            Ok(Some(status)) => (false, Ok(status)),
+            Ok(None) => (true, kill_timed_out_child(&mut child, &case, started)),
             Err(error) => {
                 return harness_error(case, started.elapsed(), format!("wait error: {error}"));
             }
         }
+    };
+    let status = match status {
+        Ok(status) => status,
+        Err(outcome) => return outcome,
     };
 
     let elapsed = started.elapsed();
@@ -291,6 +282,7 @@ fn run_case_subprocess(
         return CaseOutcome {
             case: case.into_record(),
             total_elapsed: elapsed,
+            solver_elapsed: None,
             category: OutcomeCategory::Timeout,
             queries: Vec::new(),
             detail: None,
@@ -317,6 +309,22 @@ fn run_case_subprocess(
         &stderr,
         telemetry,
     )
+}
+
+/// Kills a child that exceeded its timeout and waits for process reaping.
+fn kill_timed_out_child(
+    child: &mut std::process::Child,
+    case: &DiscoveredCase,
+    started: Instant,
+) -> Result<ExitStatus, CaseOutcome> {
+    let _ = child.kill();
+    child.wait().map_err(|error| {
+        harness_error(
+            case.clone(),
+            started.elapsed(),
+            format!("failed to wait after timeout: {error}"),
+        )
+    })
 }
 
 /// Creates the child telemetry file only when the feature is enabled.
@@ -366,6 +374,7 @@ fn classify_child_completion(
         return CaseOutcome {
             case: case.into_record(),
             total_elapsed: elapsed,
+            solver_elapsed: None,
             category: OutcomeCategory::Panic,
             queries: Vec::new(),
             detail: Some(trim_detail(stderr).into()),
@@ -382,6 +391,7 @@ fn classify_child_completion(
         return CaseOutcome {
             case: case.into_record(),
             total_elapsed: elapsed,
+            solver_elapsed: None,
             category: OutcomeCategory::Killed,
             queries: Vec::new(),
             detail: Some(detail.into()),
@@ -419,6 +429,7 @@ fn classify_report(
         ChildReportKind::ParseError(error) => CaseOutcome {
             case: case.into_record(),
             total_elapsed: elapsed,
+            solver_elapsed: None,
             category: OutcomeCategory::ParseError,
             queries: Vec::new(),
             detail: Some(trim_detail(&error).into()),
@@ -437,6 +448,7 @@ fn classify_completed_run(
     run: crate::model::CompletedQueryRun,
     telemetry: Option<CaseTelemetry>,
 ) -> CaseOutcome {
+    let solver_elapsed = run.solver_elapsed;
     let mut queries = Vec::new();
     let mut wrong = false;
     let mut no_oracle = false;
@@ -464,7 +476,7 @@ fn classify_completed_run(
             query_index,
             expected,
             actual,
-            elapsed,
+            elapsed: solver_elapsed,
             category,
         });
     }
@@ -488,7 +500,7 @@ fn classify_completed_run(
                 query_index: query.query_index,
                 expected: query.expected,
                 actual: QueryAnswer::Unknown,
-                elapsed,
+                elapsed: solver_elapsed,
                 category,
             });
         }
@@ -528,6 +540,7 @@ fn classify_completed_run(
     CaseOutcome {
         case: case.into_record(),
         total_elapsed: elapsed,
+        solver_elapsed: Some(solver_elapsed),
         category,
         queries,
         detail,
@@ -540,6 +553,7 @@ fn harness_error(case: DiscoveredCase, elapsed: Duration, detail: String) -> Cas
     CaseOutcome {
         case: case.into_record(),
         total_elapsed: elapsed,
+        solver_elapsed: None,
         category: OutcomeCategory::HarnessError,
         queries: Vec::new(),
         detail: Some(detail.into()),
@@ -677,6 +691,7 @@ mod tests {
                     query_count: Some(1),
                 },
                 total_elapsed: Duration::from_millis(5),
+                solver_elapsed: None,
                 category: OutcomeCategory::Pass,
                 queries: Vec::new(),
                 detail: None,
@@ -723,12 +738,15 @@ mod tests {
             Duration::from_millis(5),
             CompletedQueryRun {
                 actual_answers: vec![QueryAnswer::Sat],
+                solver_elapsed: Duration::from_millis(3),
             },
             None,
         );
 
         assert_eq!(outcome.category, OutcomeCategory::NoOracle);
+        assert_eq!(outcome.solver_elapsed, Some(Duration::from_millis(3)));
         assert_eq!(outcome.queries.len(), 1);
+        assert_eq!(outcome.queries[0].elapsed, Duration::from_millis(3));
         assert_eq!(outcome.queries[0].category, OutcomeCategory::NoOracle);
         assert!(outcome.detail.is_none());
     }

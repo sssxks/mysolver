@@ -6,6 +6,7 @@
 //! directly, and emits a compact JSON report so that panics, signals,
 //! and out-of-memory kills stay isolated.
 
+mod benchmark;
 mod child;
 mod cli;
 mod compare;
@@ -21,6 +22,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use console::style;
 
+use crate::benchmark::run_benchmark;
 use crate::child::run_child;
 use crate::cli::{Cli, HarnessCommand};
 use crate::compare::compare_saved_runs;
@@ -41,6 +43,7 @@ pub fn main() -> ExitCode {
 fn run_command(cli: Cli) -> Result<u8, String> {
     match cli.command {
         HarnessCommand::Run(args) => Ok(u8::from(run_parent(args)?.stats.has_failures())),
+        HarnessCommand::Benchmark(args) => Ok(u8::from(run_benchmark(args)?.has_failures())),
         HarnessCommand::Compare(args) => Ok(u8::from(!compare_saved_runs(args)?)),
         HarnessCommand::Case(args) => {
             run_child(args)?;

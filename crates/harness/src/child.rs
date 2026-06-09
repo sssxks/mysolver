@@ -3,6 +3,7 @@
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use bzip2::read::BzDecoder;
 use flate2::read::MultiGzDecoder;
@@ -46,12 +47,14 @@ fn solve_case_with_optional_telemetry(
         },
     };
 
+    let solver_started = Instant::now();
     let output = match qfuf::run_script_with_telemetry(input, &args.telemetry) {
         Ok(output) => output,
         Err(error) => return Ok(ChildReportKind::ParseError(error)),
     };
+    let solver_elapsed = solver_started.elapsed();
 
-    classify_output(output, expected_queries)
+    classify_output(output, expected_queries, solver_elapsed)
 }
 
 /// Solves one case without compiling in telemetry instrumentation.
@@ -68,16 +71,22 @@ fn solve_case_with_optional_telemetry(
         },
     };
 
+    let solver_started = Instant::now();
     let output = match qfuf::run_script(input) {
         Ok(output) => output,
         Err(error) => return Ok(ChildReportKind::ParseError(error)),
     };
+    let solver_elapsed = solver_started.elapsed();
 
-    classify_output(output, expected_queries)
+    classify_output(output, expected_queries, solver_elapsed)
 }
 
 /// Parses solver output lines and validates the answer count.
-fn classify_output(output: String, expected_queries: usize) -> Result<ChildReportKind, String> {
+fn classify_output(
+    output: String,
+    expected_queries: usize,
+    solver_elapsed: Duration,
+) -> Result<ChildReportKind, String> {
     let actual_answers = output
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -96,6 +105,7 @@ fn classify_output(output: String, expected_queries: usize) -> Result<ChildRepor
     }
     Ok(ChildReportKind::Completed(CompletedQueryRun {
         actual_answers,
+        solver_elapsed,
     }))
 }
 

@@ -131,6 +131,9 @@ pub(crate) struct ChildReport {
 pub(crate) struct CompletedQueryRun {
     /// Actual answers returned by the solver, in query order.
     pub(crate) actual_answers: Vec<QueryAnswer>,
+    /// Wall-clock time spent inside the child solver boundary.
+    #[serde(with = "duration_serde")]
+    pub(crate) solver_elapsed: Duration,
 }
 
 /// All structured outcomes that can be reported by the child process.
@@ -171,6 +174,13 @@ pub(crate) struct CaseOutcome {
     /// The wall-clock runtime measured by the parent process.
     #[serde(with = "duration_serde")]
     pub(crate) total_elapsed: Duration,
+    /// The child-measured solver runtime, excluding parent subprocess supervision.
+    #[serde(
+        default,
+        with = "optional_duration_serde",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) solver_elapsed: Option<Duration>,
     /// The classified case-level result category.
     pub(crate) category: OutcomeCategory,
     /// One saved query outcome for each completed `check-sat`.
@@ -180,6 +190,13 @@ pub(crate) struct CaseOutcome {
     /// Optional solver telemetry aggregated from periodic samples.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) telemetry: Option<CaseTelemetry>,
+}
+
+impl CaseOutcome {
+    /// Returns the elapsed time users should see for one solver outcome.
+    pub(crate) fn displayed_elapsed(&self) -> Duration {
+        self.solver_elapsed.unwrap_or(self.total_elapsed)
+    }
 }
 
 /// Saved solver telemetry for one executed benchmark case.
@@ -393,5 +410,46 @@ mod duration_serde {
     {
         let repr = DurationRepr::deserialize(deserializer)?;
         Ok(Duration::new(repr.secs, repr.nanos))
+    }
+}
+
+/// Serde helpers for optional durations encoded like `duration_serde`.
+mod optional_duration_serde {
+    use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// Serializable duration payload used inside saved harness artifacts.
+    #[derive(Deserialize, Serialize)]
+    struct DurationRepr {
+        /// Whole seconds since the start instant.
+        secs: u64,
+        /// Additional nanoseconds beyond `secs`.
+        nanos: u32,
+    }
+
+    /// Serializes one optional duration into a stable structured representation.
+    pub(crate) fn serialize<S>(
+        duration: &Option<Duration>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        duration
+            .map(|duration| DurationRepr {
+                secs: duration.as_secs(),
+                nanos: duration.subsec_nanos(),
+            })
+            .serialize(serializer)
+    }
+
+    /// Deserializes one optional duration from the saved structured representation.
+    pub(crate) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let repr = Option::<DurationRepr>::deserialize(deserializer)?;
+        Ok(repr.map(|repr| Duration::new(repr.secs, repr.nanos)))
     }
 }

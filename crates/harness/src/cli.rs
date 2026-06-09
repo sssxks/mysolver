@@ -26,6 +26,8 @@ pub(crate) struct Cli {
 pub(crate) enum HarnessCommand {
     /// Discover and execute benchmark cases.
     Run(RunArgs),
+    /// Run one benchmark case repeatedly and report elapsed-time distribution.
+    Benchmark(BenchmarkArgs),
     /// Compare two previously saved harness result files.
     Compare(CompareArgs),
     /// Run one benchmark case in an isolated process and emit raw artifacts.
@@ -33,6 +35,22 @@ pub(crate) enum HarnessCommand {
     /// This command is primarily useful when inspecting the raw JSON report,
     /// telemetry stream, or an uncaptured Rust panic backtrace for one case.
     Case(RunCaseArgs),
+}
+
+/// Arguments for the user-facing `benchmark` command.
+#[derive(Debug, Args)]
+pub(crate) struct BenchmarkArgs {
+    /// The case file to execute repeatedly.
+    pub(crate) case: PathBuf,
+    /// The number of measured runs.
+    #[arg(short = 'n', long, default_value = "20")]
+    pub(crate) iterations: NonZeroUsize,
+    /// The number of unmeasured runs to execute before measurement.
+    #[arg(long, default_value_t = 0)]
+    pub(crate) warmup: usize,
+    /// The per-run timeout.
+    #[arg(short, long, default_value = "30s", value_parser = parse_timeout)]
+    pub(crate) timeout: Duration,
 }
 
 /// Arguments for the user-facing `run` command.
@@ -169,6 +187,27 @@ mod tests {
     fn run_rejects_multiple_output_mode_flags() {
         let result = Cli::try_parse_from(["my-harness", "run", "--all", "--terse"]);
         assert!(result.is_err());
+    }
+
+    /// Ensures the repeated single-case benchmark command is publicly parseable.
+    #[test]
+    fn benchmark_is_publicly_parseable() {
+        let cli = Cli::parse_from([
+            "my-harness",
+            "benchmark",
+            "fixture/example.smt2",
+            "--iterations",
+            "7",
+            "--warmup",
+            "2",
+            "--timeout",
+            "5s",
+        ]);
+        let HarnessCommand::Benchmark(args) = cli.command else {
+            panic!("expected benchmark command");
+        };
+        assert_eq!(args.iterations.get(), 7);
+        assert_eq!(args.warmup, 2);
     }
 
     /// Ensures the single-case entrypoint is publicly available under `case`.
