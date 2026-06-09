@@ -27,7 +27,6 @@ pub(crate) enum HarnessCommand {
     /// Discover and execute benchmark cases.
     Run(RunArgs),
     /// Run one benchmark case repeatedly and report elapsed-time distribution.
-    #[command(alias = "benchmark")]
     Bench(BenchArgs),
     /// Compare two previously saved harness result files.
     Compare(CompareArgs),
@@ -47,7 +46,7 @@ pub(crate) struct BenchArgs {
     #[arg(short = 'n', long, default_value = "20")]
     pub(crate) iterations: NonZeroUsize,
     /// The number of unmeasured runs to execute before measurement.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 1)]
     pub(crate) warmup: usize,
     /// The per-run timeout.
     #[arg(short, long, default_value = "30s", value_parser = parse_timeout)]
