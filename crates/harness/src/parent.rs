@@ -294,7 +294,7 @@ pub(crate) fn run_case_subprocess(
     };
     let status = match status {
         Ok(status) => status,
-        Err(outcome) => return outcome,
+        Err(outcome) => return *outcome,
     };
 
     let elapsed = started.elapsed();
@@ -334,14 +334,14 @@ fn kill_timed_out_child(
     child: &mut std::process::Child,
     case: &DiscoveredCase,
     started: Instant,
-) -> Result<ExitStatus, CaseOutcome> {
+) -> Result<ExitStatus, Box<CaseOutcome>> {
     let _ = child.kill();
     child.wait().map_err(|error| {
-        CaseOutcome::harness_error(
+        Box::new(CaseOutcome::harness_error(
             case.clone(),
             started.elapsed(),
             format!("failed to wait after timeout: {error}"),
-        )
+        ))
     })
 }
 
