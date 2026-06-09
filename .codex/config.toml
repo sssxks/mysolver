@@ -2,7 +2,7 @@
 command = "npx"
 args = ["-y", "mcp-samply"]
 enabled = true
-startup_timeout_sec = 5
+startup_timeout_sec = 30
 
 [mcp_servers.samply.tools.samply_record]
 approval_mode = "approve"
