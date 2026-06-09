@@ -202,9 +202,6 @@ mod tests {
         let outcome = CaseOutcome {
             case: CaseRecord {
                 key: "fixture/example.cnf".into(),
-                bytes: 123,
-                logic: Some("QF_UF".into()),
-                query_count: Some(1),
             },
             total_elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
@@ -224,9 +221,6 @@ mod tests {
         let outcome = CaseOutcome {
             case: CaseRecord {
                 key: "cases/satlib/instance-group/very-long-case-name.cnf.gz".into(),
-                bytes: 123,
-                logic: Some("QF_UF".into()),
-                query_count: Some(1),
             },
             total_elapsed: Duration::from_millis(42),
             category: OutcomeCategory::Pass,
@@ -244,9 +238,6 @@ mod tests {
         let outcome = CaseOutcome {
             case: CaseRecord {
                 key: "fixture/example.cnf".into(),
-                bytes: 123,
-                logic: Some("QF_UF".into()),
-                query_count: Some(1),
             },
             total_elapsed: Duration::from_secs(1),
             category: OutcomeCategory::Pass,

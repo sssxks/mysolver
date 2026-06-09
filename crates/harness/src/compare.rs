@@ -425,12 +425,7 @@ mod tests {
         detail: Option<&str>,
     ) -> CaseOutcome {
         CaseOutcome {
-            case: CaseRecord {
-                key: key.into(),
-                bytes: 1,
-                logic: Some("QF_UF".into()),
-                query_count: Some(1),
-            },
+            case: CaseRecord { key: key.into() },
             total_elapsed: elapsed,
             category,
             detail: detail.map(Into::into),

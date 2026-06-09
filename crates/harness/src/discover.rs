@@ -16,8 +16,6 @@ const EXPECTATIONS_FILE: &str = "expectations.tsv";
 /// One metadata summary extracted from one SMT-LIB trace.
 #[derive(Debug, Default)]
 struct TraceMetadata {
-    /// Declared SMT logic, when any.
-    logic: Option<Box<str>>,
     /// Expected results attached to `check-sat` commands.
     expected_answers: Vec<QueryAnswer>,
 }
@@ -102,14 +100,11 @@ fn maybe_push_case(
     let bytes = fs::metadata(&canonical)
         .map_err(|error| format!("failed to stat {}: {error}", canonical.display()))?
         .len();
-    let query_count = Some(metadata.expected_answers.len());
     cases.push(DiscoveredCase::new(
         canonical,
+        bytes,
         CaseRecord {
             key: display_path.clone().into_boxed_str(),
-            bytes,
-            logic: metadata.logic,
-            query_count,
         },
         metadata.expected_answers,
     ));
@@ -175,7 +170,7 @@ fn lookup_expectation(display_path: &str, rules: &[ExpectationRule]) -> Option<Q
     None
 }
 
-/// Extracts the logic and expected query answers from one SMT-LIB trace.
+/// Extracts expected query answers from one SMT-LIB trace.
 fn parse_trace_metadata(input: &str) -> Result<TraceMetadata, String> {
     let mut metadata = TraceMetadata::default();
     let mut pending_status = None;
@@ -375,9 +370,6 @@ fn apply_top_level_command(
         return Ok(());
     }
     match command.direct_atoms.as_slice() {
-        ["set-logic", logic] => {
-            metadata.logic = Some((*logic).into());
-        }
         ["set-info", ":status", value] => {
             *pending_status = Some(QueryAnswer::parse(value)?);
         }
@@ -398,7 +390,7 @@ mod tests {
 
     /// Ensures metadata scanning stays driven by top-level commands only.
     #[test]
-    fn parse_trace_metadata_tracks_logic_and_pending_status() {
+    fn parse_trace_metadata_tracks_pending_status() {
         let metadata = parse_trace_metadata(
             r#"
             ; Ignore comments and nested check-sat text.
@@ -414,7 +406,6 @@ mod tests {
             "#,
         )
         .expect("parse metadata");
-        assert_eq!(metadata.logic.as_deref(), Some("QF_UF"));
         assert_eq!(
             metadata.expected_answers.to_vec(),
             vec![QueryAnswer::Sat, QueryAnswer::Unsat, QueryAnswer::Unknown]
@@ -450,7 +441,10 @@ mod tests {
     #[test]
     fn parse_trace_metadata_returns_default_for_irrelevant_input() {
         let metadata = parse_trace_metadata("atom-only").expect("parse metadata");
-        assert_eq!(metadata.logic, TraceMetadata::default().logic);
+        assert_eq!(
+            metadata.expected_answers,
+            TraceMetadata::default().expected_answers
+        );
         assert!(metadata.expected_answers.is_empty());
     }
 }

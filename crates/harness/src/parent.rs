@@ -615,9 +615,6 @@ mod tests {
             cases: vec![CaseOutcome {
                 case: CaseRecord {
                     key: "cases/example.cnf".into(),
-                    bytes: 12,
-                    logic: Some("QF_UF".into()),
-                    query_count: Some(1),
                 },
                 total_elapsed: Duration::from_millis(5),
                 category: OutcomeCategory::Pass,
@@ -702,11 +699,9 @@ mod tests {
     fn sample_case(expected: &[QueryAnswer]) -> DiscoveredCase {
         DiscoveredCase::new(
             PathBuf::from("/tmp/case.smt2"),
+            12,
             CaseRecord {
                 key: "cases/example.smt2".into(),
-                bytes: 12,
-                logic: Some("QF_UF".into()),
-                query_count: Some(expected.len()),
             },
             expected.to_vec(),
         )

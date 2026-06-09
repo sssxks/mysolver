@@ -47,12 +47,6 @@ pub(crate) struct ExpectationRule {
 pub(crate) struct CaseRecord {
     /// The stable manifest-relative key used when comparing saved runs.
     pub(crate) key: Box<str>,
-    /// The file size in bytes used to sort long cases first.
-    pub(crate) bytes: u64,
-    /// The SMT-LIB logic declared by the case, when precomputed.
-    pub(crate) logic: Option<Box<str>>,
-    /// The number of `check-sat` queries discovered in the trace, when precomputed.
-    pub(crate) query_count: Option<usize>,
 }
 
 impl CaseRecord {
@@ -67,6 +61,8 @@ impl CaseRecord {
 pub(crate) struct DiscoveredCase {
     /// The canonical absolute file path passed to the child process.
     absolute_path: PathBuf,
+    /// The file size in bytes used to sort long cases first.
+    bytes: u64,
     /// The stable case metadata that survives into saved result files.
     record: CaseRecord,
     /// Expected answers for each `check-sat`, in order.
@@ -77,11 +73,13 @@ impl DiscoveredCase {
     /// Builds one discovered runtime case from its executable path and saved metadata.
     pub(crate) fn new(
         absolute_path: PathBuf,
+        bytes: u64,
         record: CaseRecord,
         expected_answers: Vec<QueryAnswer>,
     ) -> Self {
         Self {
             absolute_path,
+            bytes,
             record,
             expected_answers,
         }
@@ -94,7 +92,7 @@ impl DiscoveredCase {
 
     /// Returns the file size used for discovery ordering.
     pub(crate) fn bytes(&self) -> u64 {
-        self.record.bytes
+        self.bytes
     }
 
     /// Returns the expected answer sequence.
@@ -333,7 +331,7 @@ pub(crate) struct RunSummary {
 
 impl RunSummary {
     /// The current on-disk file format version.
-    pub(crate) const FORMAT_VERSION: u32 = 4;
+    pub(crate) const FORMAT_VERSION: u32 = 5;
 
     /// Returns the current on-disk file format version.
     const fn format_version() -> u32 {
