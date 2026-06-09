@@ -205,19 +205,27 @@ pub(crate) fn run_case_subprocess(
     let report_file = match NamedTempFile::new() {
         Ok(file) => file,
         Err(error) => {
-            return harness_error(case, started.elapsed(), format!("tempfile error: {error}"));
+            return CaseOutcome::harness_error(
+                case,
+                started.elapsed(),
+                format!("tempfile error: {error}"),
+            );
         }
     };
     let stderr_file = match NamedTempFile::new() {
         Ok(file) => file,
         Err(error) => {
-            return harness_error(case, started.elapsed(), format!("tempfile error: {error}"));
+            return CaseOutcome::harness_error(
+                case,
+                started.elapsed(),
+                format!("tempfile error: {error}"),
+            );
         }
     };
     let stderr_stdio = match stderr_file.reopen() {
         Ok(file) => Stdio::from(file),
         Err(error) => {
-            return harness_error(
+            return CaseOutcome::harness_error(
                 case,
                 started.elapsed(),
                 format!("stderr capture error: {error}"),
@@ -227,7 +235,11 @@ pub(crate) fn run_case_subprocess(
     let telemetry_file = match create_telemetry_file() {
         Ok(file) => file,
         Err(error) => {
-            return harness_error(case, started.elapsed(), format!("tempfile error: {error}"));
+            return CaseOutcome::harness_error(
+                case,
+                started.elapsed(),
+                format!("tempfile error: {error}"),
+            );
         }
     };
 
@@ -256,7 +268,11 @@ pub(crate) fn run_case_subprocess(
     {
         Ok(child) => child,
         Err(error) => {
-            return harness_error(case, started.elapsed(), format!("spawn error: {error}"));
+            return CaseOutcome::harness_error(
+                case,
+                started.elapsed(),
+                format!("spawn error: {error}"),
+            );
         }
     };
 
@@ -268,7 +284,11 @@ pub(crate) fn run_case_subprocess(
             Ok(Some(status)) => (false, Ok(status)),
             Ok(None) => (true, kill_timed_out_child(&mut child, &case, started)),
             Err(error) => {
-                return harness_error(case, started.elapsed(), format!("wait error: {error}"));
+                return CaseOutcome::harness_error(
+                    case,
+                    started.elapsed(),
+                    format!("wait error: {error}"),
+                );
             }
         }
     };
@@ -279,20 +299,18 @@ pub(crate) fn run_case_subprocess(
 
     let elapsed = started.elapsed();
     if timed_out {
-        return CaseOutcome {
-            case: case.into_record(),
-            total_elapsed: elapsed,
-            solver_elapsed: None,
-            category: OutcomeCategory::Timeout,
-            queries: Vec::new(),
-            detail: None,
-            telemetry: load_case_telemetry(
+        return CaseOutcome::without_queries(
+            case,
+            elapsed,
+            OutcomeCategory::Timeout,
+            None,
+            load_case_telemetry(
                 telemetry_file.as_ref().map(NamedTempFile::path),
                 retain_telemetry_samples,
             )
             .ok()
             .flatten(),
-        };
+        );
     }
 
     let stderr = fs::read_to_string(stderr_file.path()).unwrap_or_default();
@@ -319,7 +337,7 @@ fn kill_timed_out_child(
 ) -> Result<ExitStatus, CaseOutcome> {
     let _ = child.kill();
     child.wait().map_err(|error| {
-        harness_error(
+        CaseOutcome::harness_error(
             case.clone(),
             started.elapsed(),
             format!("failed to wait after timeout: {error}"),
@@ -350,18 +368,26 @@ fn classify_child_completion(
 ) -> CaseOutcome {
     if status.success() {
         let Some(report_text) = report_text else {
-            return harness_error(case, elapsed, "missing child report".to_string());
+            return CaseOutcome::harness_error(case, elapsed, "missing child report".to_string());
         };
         let report: ChildReportKind = match serde_json::from_str(report_text) {
             Ok(report) => report,
             Err(error) => {
-                return harness_error(case, elapsed, format!("invalid child report: {error}"));
+                return CaseOutcome::harness_error(
+                    case,
+                    elapsed,
+                    format!("invalid child report: {error}"),
+                );
             }
         };
         let telemetry = match telemetry {
             Ok(telemetry) => telemetry,
             Err(error) => {
-                return harness_error(case, elapsed, format!("invalid child telemetry: {error}"));
+                return CaseOutcome::harness_error(
+                    case,
+                    elapsed,
+                    format!("invalid child telemetry: {error}"),
+                );
             }
         };
         return classify_report(case, elapsed, report, telemetry);
@@ -371,15 +397,13 @@ fn classify_child_completion(
     let stderr = stderr.trim();
     let telemetry = telemetry.ok().flatten();
     if stderr.contains("panicked at") {
-        return CaseOutcome {
-            case: case.into_record(),
-            total_elapsed: elapsed,
-            solver_elapsed: None,
-            category: OutcomeCategory::Panic,
-            queries: Vec::new(),
-            detail: Some(trim_detail(stderr).into()),
+        return CaseOutcome::without_queries(
+            case,
+            elapsed,
+            OutcomeCategory::Panic,
+            Some(trim_detail(stderr).into()),
             telemetry,
-        };
+        );
     }
 
     if let Some(signal) = signal {
@@ -388,15 +412,13 @@ fn classify_child_completion(
         } else {
             format!("terminated by signal {signal}")
         };
-        return CaseOutcome {
-            case: case.into_record(),
-            total_elapsed: elapsed,
-            solver_elapsed: None,
-            category: OutcomeCategory::Killed,
-            queries: Vec::new(),
-            detail: Some(detail.into()),
+        return CaseOutcome::without_queries(
+            case,
+            elapsed,
+            OutcomeCategory::Killed,
+            Some(detail.into_boxed_str()),
             telemetry,
-        };
+        );
     }
 
     let detail = match status.code() {
@@ -412,9 +434,13 @@ fn classify_child_completion(
         }
         None => "child exited without status code".to_string(),
     };
-    let mut outcome = harness_error(case, elapsed, detail);
-    outcome.telemetry = telemetry;
-    outcome
+    CaseOutcome::without_queries(
+        case,
+        elapsed,
+        OutcomeCategory::HarnessError,
+        Some(detail.into_boxed_str()),
+        telemetry,
+    )
 }
 
 /// Maps a structured child report onto the final parent outcome categories.
@@ -426,17 +452,15 @@ fn classify_report(
 ) -> CaseOutcome {
     match report {
         ChildReportKind::Completed(run) => classify_completed_run(case, elapsed, run, telemetry),
-        ChildReportKind::ParseError(error) => CaseOutcome {
-            case: case.into_record(),
-            total_elapsed: elapsed,
-            solver_elapsed: None,
-            category: OutcomeCategory::ParseError,
-            queries: Vec::new(),
-            detail: Some(trim_detail(&error).into()),
+        ChildReportKind::ParseError(error) => CaseOutcome::without_queries(
+            case,
+            elapsed,
+            OutcomeCategory::ParseError,
+            Some(trim_detail(&error).into()),
             telemetry,
-        },
+        ),
         ChildReportKind::InputError(error) | ChildReportKind::ProtocolError(error) => {
-            harness_error(case, elapsed, error)
+            CaseOutcome::harness_error(case, elapsed, error)
         }
     }
 }
@@ -545,19 +569,6 @@ fn classify_completed_run(
         queries,
         detail,
         telemetry,
-    }
-}
-
-/// Creates one infrastructure error outcome.
-fn harness_error(case: DiscoveredCase, elapsed: Duration, detail: String) -> CaseOutcome {
-    CaseOutcome {
-        case: case.into_record(),
-        total_elapsed: elapsed,
-        solver_elapsed: None,
-        category: OutcomeCategory::HarnessError,
-        queries: Vec::new(),
-        detail: Some(detail.into()),
-        telemetry: None,
     }
 }
 

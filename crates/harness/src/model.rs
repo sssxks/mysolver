@@ -190,6 +190,40 @@ impl CaseOutcome {
     pub(crate) fn displayed_elapsed(&self) -> Duration {
         self.solver_elapsed.unwrap_or(self.total_elapsed)
     }
+
+    /// Builds an outcome for a case-level result that has no completed query data.
+    pub(crate) fn without_queries(
+        case: DiscoveredCase,
+        total_elapsed: Duration,
+        category: OutcomeCategory,
+        detail: Option<Box<str>>,
+        telemetry: Option<CaseTelemetry>,
+    ) -> Self {
+        Self {
+            case: case.into_record(),
+            total_elapsed,
+            solver_elapsed: None,
+            category,
+            queries: Vec::new(),
+            detail,
+            telemetry,
+        }
+    }
+
+    /// Builds one harness infrastructure error outcome.
+    pub(crate) fn harness_error(
+        case: DiscoveredCase,
+        total_elapsed: Duration,
+        detail: impl Into<Box<str>>,
+    ) -> Self {
+        Self::without_queries(
+            case,
+            total_elapsed,
+            OutcomeCategory::HarnessError,
+            Some(detail.into()),
+            None,
+        )
+    }
 }
 
 /// Saved solver telemetry for one executed benchmark case.
